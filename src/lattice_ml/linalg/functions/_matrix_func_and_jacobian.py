@@ -4,7 +4,7 @@ import torch
 
 from abc import abstractmethod, ABC
 
-from torch_linalg_ext import eigh, eigu, inverse_eign, reciprocal
+from lattice_ml.linalg import eigh, eigu, inverse_eign, reciprocal
 
 
 # =============================================================================
