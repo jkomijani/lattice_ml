@@ -10,11 +10,11 @@ Jacobian determinant of transformations.
 import functools
 import torch
 
-from ._lie_group_odeint import lie_group_odeint
+from ._lie_group_odeint import lie_odeint
 from ._hutchinson_estimator import hutchinson_estimator
 
 
-class LieODEflow(torch.nn.Module):
+class LieODEFlow(torch.nn.Module):
     """
     A PyTorch module for evolving Lie-group state variables via ODEs.
 
@@ -34,7 +34,7 @@ class LieODEflow(torch.nn.Module):
 
     Args:
         - func (Callable): A function computing `f(t, U; p)` or `F(t, U; p)`.
-          See `lie_group_odeint`. (Default is `f`.)
+          See `lie_odeint`. (Default is `f`.)
         - t_span (Tuple[float, float]): Tuple specifying the initial and final
           integration times.
         - **odeint_kwargs: Additional keyword arguments for the ODE solver.
@@ -44,7 +44,7 @@ class LieODEflow(torch.nn.Module):
         super().__init__()
         self.func = func
         self.t_span = t_span
-        self.odeint = functools.partial(lie_group_odeint, **odeint_kwargs)
+        self.odeint = functools.partial(lie_odeint, **odeint_kwargs)
 
     def forward(self, var, args=None):
         """
@@ -73,9 +73,9 @@ class LieODEflow(torch.nn.Module):
         return self.odeint(self.func, self.t_span[::-1], var, args=args)
 
 
-class LieODEflow_(LieODEflow):  # pylint: disable=invalid-name
+class LieODEFlow_(LieODEFlow):  # pylint: disable=invalid-name
     """
-    An extension of `LieODEflow` that also returns the log-Jacobian of the
+    An extension of `LieODEFlow` that also returns the log-Jacobian of the
     flow.
 
     This class evolves a system of ODEs while also tracking the log-determinant
@@ -84,28 +84,30 @@ class LieODEflow_(LieODEflow):  # pylint: disable=invalid-name
     trace is estimated using the Hutchinson estimator with a specified number
     of samples.
 
-    If `num_samples` is `None`, the Hutchinson estimator is not actually used.
+    If `num_hutchinson_samples` is None, the Hutchinson estimator is not used.
     Instead, the Jacobian trace is computed exactly via automatic
     differentiation, which can be computationally expensive in high dimensions.
 
     Args:
         - func (Callable): A function computing `f(t, U; p)` or `F(t, U; p)`.
-          See `lie_group_odeint`. (Default is `f`.)
+          See `lie_odeint`. (Default is `f`.)
         - t_span (Tuple[float, float]): A tuple specifying initial and final
           times.
-        - num_samples (Optional[int | None]): The number of random samples used
-          in the Hutchinson estimator. If `None`, the Jacobian trace is
-          computed exactly. Defaults to 1.
+        - num_hutchinson_samples (Optional[int | None]): The number of random
+          samples used in the Hutchinson estimator. If None, the Jacobian trace
+          is computed exactly. Defaults to 1.
         - **odeint_kwargs: Additional keyword arguments for the ODE solver.
     """
 
-    def __init__(self, func, t_span, num_samples=1, **odeint_kwargs):
+    def __init__(
+        self, func, t_span, num_hutchinson_samples=1, **odeint_kwargs
+    ):
 
         if hasattr(func, 'calc_logj_rate'):
             loss_rate = func.calc_logj_rate
         else:
             def loss_rate(t, var, *args):
                 return hutchinson_estimator(lambda x: func(t, x, *args),
-                                            var, num_samples)
+                                            var, num_hutchinson_samples)
 
         super().__init__(func, t_span, loss_rate=loss_rate, **odeint_kwargs)

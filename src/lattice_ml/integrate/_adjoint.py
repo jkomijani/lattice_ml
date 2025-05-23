@@ -1,7 +1,7 @@
 # Copyright (c) 2024-2025 Javad Komijani
 
 """
-Defines the AdjODEflow_ module for adjoint-based ODE integration with
+Defines the AdjODEFlow_ module for adjoint-based ODE integration with
 log-Jacobian tracking.
 """
 
@@ -15,14 +15,14 @@ from ._hutchinson_estimator import hutchinson_estimator
 
 
 # =============================================================================
-class AdjODEflow_(torch.nn.Module):  # pylint: disable=invalid-name
+class AdjODEFlow_(torch.nn.Module):  # pylint: disable=invalid-name
     """
     A module for solving ODEs with adjoint-based backprop and log-Jacobian
     tracking.
 
-    AdjODEflow_ is similar to `ODEflow_`, which extends `ODEflow` by also
-    returning the log-determinant of the Jacobian of the flow. While `ODEflow`
-    only evolves the state variable, `ODEflow_` and `AdjODEflow_` additionally
+    AdjODEFlow_ is similar to `ODEFlow_`, which extends `ODEFlow` by also
+    returning the log-determinant of the Jacobian of the flow. While `ODEFlow`
+    only evolves the state variable, `ODEFlow_` and `AdjODEFlow_` additionally
     compute the log-Jacobian of the transformation.
 
     This class uses the adjoint method to compute gradients during backward
@@ -32,8 +32,9 @@ class AdjODEflow_(torch.nn.Module):  # pylint: disable=invalid-name
     the log-Jacobian rate. Otherwise, the trace of the Jacobian is estimated
     using the Hutchinson estimator with a given number of random samples.
 
-    If `num_samples` is `None`, the Jacobian trace is computed exactly via
-    automatic differentiation, which may be slow in high-dimensional settings.
+    If `num_hutchinson_samples` is None, the Hutchinson estimator is not used.
+    Instead, the Jacobian trace is computed exactly via automatic
+    differentiation, which can be computationally expensive in high dimensions.
 
     If `func` is not an instance of `AdjModule`, it will automatically
     be wrapped with `AdjModuleWrapper`.
@@ -43,21 +44,23 @@ class AdjODEflow_(torch.nn.Module):  # pylint: disable=invalid-name
           derivative of the state variable `y` at time `t`.
         - t_span (Tuple[float, float]): A tuple specifying initial and final
           times.
-        - num_samples (Optional[int | None]): The number of random samples used
-          in the Hutchinson estimator. If `None`, the Jacobian trace is
-          computed exactly. Defaults to 1.
+        - num_hutchinson_samples (Optional[int | None]): The number of random
+          samples used in the Hutchinson estimator. If None, the Jacobian trace
+          is computed exactly. Defaults to 1.
         - **odeint_kwargs: Additional keyword arguments for the ODE solver.
     """
 
-    def __init__(self, func, t_span, num_samples=1, **odeint_kwargs):
-        """Initializes the AdjODEflow_ module."""
+    def __init__(
+        self, func, t_span, num_hutchinson_samples=1, **odeint_kwargs
+    ):
+        """Initializes the AdjODEFlow_ module."""
 
         super().__init__()
 
         if isinstance(func, AdjModule):
             self.func = func
         else:
-            self.func = AdjModuleWrapper(func, num_samples)
+            self.func = AdjModuleWrapper(func, num_hutchinson_samples)
 
         self.t_span = t_span
 
@@ -213,11 +216,11 @@ class AdjointWrapper_(torch.autograd.Function):  # pylint: disable=invalid-name
 class AdjModule(torch.nn.Module, ABC):
     """
     Abstract base class for ODE systems with adjoint backpropagation and
-    log-Jacobian tracking, useful for `AdjODEflow_`.
+    log-Jacobian tracking, useful for `AdjODEFlow_`.
 
     This class is a subclass of `torch.nn.Module` and provides the necessary
     structure for defining ODE systems that can be solved using adjoint-based
-    differentiation. It is used in conjunction with modules like `AdjODEflow_`
+    differentiation. It is used in conjunction with modules like `AdjODEFlow_`
     to compute gradients, perform augmented reverse integration, and calculate
     the log-Jacobian rate of the flow.
 
@@ -231,14 +234,14 @@ class AdjModule(torch.nn.Module, ABC):
         - `calc_grad_params_rate`: Computes the gradient of parameters.
 
     Args:
-        num_samples (int, optional): Number of samples used for the Hutchinson
-          estimator to approximate the Jacobian trace. If `None`, the Jacobian
-          trace is computed exactly. Defaults to 1.
+        - num_hutchinson_samples (Optional[int | None]): The number of random
+          samples used in the Hutchinson estimator. If None, the Jacobian trace
+          is computed exactly. Defaults to 1.
     """
 
-    def __init__(self, num_samples=1):
+    def __init__(self, num_hutchinson_samples=1):
         super().__init__()
-        self.num_samples = num_samples
+        self.num_hutchinson_samples = num_hutchinson_samples
 
     @abstractmethod
     def forward(self, t, var, *frozen_var):
@@ -263,7 +266,7 @@ class AdjModule(torch.nn.Module, ABC):
         logj_rate = hutchinson_estimator(
             lambda x: self.forward(t, x, *frozen_var),
             var,
-            self.num_samples
+            self.num_hutchinson_samples
         )
         return logj_rate
 
@@ -343,10 +346,11 @@ class AdjModuleWrapper(AdjModule):
     as `calc_logj_rate`, are inherited.
 
     Args:
-        func (Callable): A function `f(t, y, *args)` that computes the time
-            derivative of the state variable `y` at time `t`.
-        num_samples (int, optional): The number of samples for the Hutchinson
-            estimator when computing the Jacobian trace. Defaults to 1.
+        - func (Callable): A function `f(t, y, *args)` that computes the time
+          derivative of the state variable `y` at time `t`.
+        - num_hutchinson_samples (Optional[int | None]): The number of random
+          samples used in the Hutchinson estimator. If None, the Jacobian trace
+          is computed exactly. Defaults to 1.
 
     Methods:
         - `forward`: Directly uses the provided function to compute the time
@@ -356,8 +360,8 @@ class AdjModuleWrapper(AdjModule):
           has its own `calc_logj_rate`, that will be used.
     """
 
-    def __init__(self, func, num_samples=1):
-        super().__init__(num_samples)
+    def __init__(self, func, num_hutchinson_samples=1):
+        super().__init__(num_hutchinson_samples)
         self.func = func
 
         # If the function has its own `calc_logj_rate`, use it.

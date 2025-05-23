@@ -14,7 +14,7 @@ from ._odeint import odeint
 from ._hutchinson_estimator import hutchinson_estimator
 
 
-class ODEflow(torch.nn.Module):
+class ODEFlow(torch.nn.Module):
     """
     A PyTorch module for evolving state variables governed by ODEs.
 
@@ -73,9 +73,9 @@ class ODEflow(torch.nn.Module):
         return self.odeint(self.func, self.t_span[::-1], var, args=args)
 
 
-class ODEflow_(ODEflow):  # pylint: disable=invalid-name
+class ODEFlow_(ODEFlow):  # pylint: disable=invalid-name
     """
-    An extension of `ODEflow` that also returns the log-Jacobian of the flow.
+    An extension of `ODEFlow` that also returns the log-Jacobian of the flow.
 
     This class evolves a system of ODEs while also tracking the log-determinant
     of the Jacobian transformation. If `func` has a method `calc_logj_rate`, it
@@ -83,7 +83,7 @@ class ODEflow_(ODEflow):  # pylint: disable=invalid-name
     trace is estimated using the Hutchinson estimator with a specified number
     of samples.
 
-    If `num_samples` is `None`, the Hutchinson estimator is not actually used.
+    If `num_hutchinson_samples` is None, the Hutchinson estimator is not used.
     Instead, the Jacobian trace is computed exactly via automatic
     differentiation, which can be computationally expensive in high dimensions.
 
@@ -92,19 +92,21 @@ class ODEflow_(ODEflow):  # pylint: disable=invalid-name
           derivative of the state variable `y` at time `t`.
         - t_span (Tuple[float, float]): A tuple specifying initial and final
           times.
-        - num_samples (Optional[int | None]): The number of random samples used
-          in the Hutchinson estimator. If `None`, the Jacobian trace is
-          computed exactly. Defaults to 1.
+        - num_hutchinson_samples (Optional[int | None]): The number of random
+          samples used in the Hutchinson estimator. If None, the Jacobian trace
+          is computed exactly. Defaults to 1.
         - **odeint_kwargs: Additional keyword arguments for the ODE solver.
     """
 
-    def __init__(self, func, t_span, num_samples=1, **odeint_kwargs):
+    def __init__(
+        self, func, t_span, num_hutchinson_samples=1, **odeint_kwargs
+    ):
 
         if hasattr(func, 'calc_logj_rate'):
             loss_rate = func.calc_logj_rate
         else:
             def loss_rate(t, var, *args):
                 return hutchinson_estimator(lambda x: func(t, x, *args),
-                                            var, num_samples)
+                                            var, num_hutchinson_samples)
 
         super().__init__(func, t_span, loss_rate=loss_rate, **odeint_kwargs)

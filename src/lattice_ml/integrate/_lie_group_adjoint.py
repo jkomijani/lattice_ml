@@ -1,7 +1,7 @@
 # Copyright (c) 2024-2025 Javad Komijani
 
 """
-Defines the AdjLieODEflow_ module for adjoint-based ODE integration with
+Defines the AdjLieODEFlow_ module for adjoint-based ODE integration with
 log-Jacobian tracking.
 """
 
@@ -10,21 +10,21 @@ from functools import partial as ftpartial
 
 import torch
 
-from ._lie_group_odeint import lie_group_odeint
+from ._lie_group_odeint import lie_odeint
 from ._adjoint import TupleVar
 from ._adjoint import tie_adjoints
 from ._hutchinson_estimator import hutchinson_estimator
 
 
 # =============================================================================
-class AdjLieODEflow_(torch.nn.Module):  # pylint: disable=invalid-name
+class AdjLieODEFlow_(torch.nn.Module):  # pylint: disable=invalid-name
     """
     A module for solving ODEs with adjoint-based backprop and log-Jacobian
     tracking.
 
-    AdjODEflow_ is similar to `ODEflow_`, which extends `ODEflow` by also
-    returning the log-determinant of the Jacobian of the flow. While `ODEflow`
-    only evolves the state variable, `ODEflow_` and `AdjODEflow_` additionally
+    AdjODEFlow_ is similar to `ODEFlow_`, which extends `ODEFlow` by also
+    returning the log-determinant of the Jacobian of the flow. While `ODEFlow`
+    only evolves the state variable, `ODEFlow_` and `AdjODEFlow_` additionally
     compute the log-Jacobian of the transformation.
 
     This class uses the adjoint method to compute gradients during backward
@@ -34,8 +34,9 @@ class AdjLieODEflow_(torch.nn.Module):  # pylint: disable=invalid-name
     the log-Jacobian rate. Otherwise, the trace of the Jacobian is estimated
     using the Hutchinson estimator with a given number of random samples.
 
-    If `num_samples` is `None`, the Jacobian trace is computed exactly via
-    automatic differentiation, which may be slow in high-dimensional settings.
+    If `num_hutchinson_samples` is None, the Hutchinson estimator is not used.
+    Instead, the Jacobian trace is computed exactly via automatic
+    differentiation, which can be computationally expensive in high dimensions.
 
     If `func` is not an instance of `DynamicsAdjModule`, it will automatically
     be wrapped with `DynamicsAdjWrapper`.
@@ -45,31 +46,31 @@ class AdjLieODEflow_(torch.nn.Module):  # pylint: disable=invalid-name
           derivative of the state variable `y` at time `t`.
         - t_span (Tuple[float, float]): A tuple specifying initial and final
           times.
-        - num_samples (Optional[int | None]): The number of random samples used
-          in the Hutchinson estimator. If `None`, the Jacobian trace is
-          computed exactly. Defaults to 1.
+        - num_hutchinson_samples (Optional[int | None]): The number of random
+          samples used in the Hutchinson estimator. If None, the Jacobian trace
+          is computed exactly. Defaults to 1.
         - **odeint_kwargs: Additional keyword arguments for the ODE solver.
     """
 
     def __init__(
-        self, func, t_span, num_samples=1,
+        self, func, t_span, num_hutchinson_samples=1,
         methods=('RK4:SU(n)', 'RK4:SU(n):aug'),
         **odeint_kwargs
     ):
-        """Initializes the AdjLieODEflow_ module."""
+        """Initializes the AdjLieODEFlow_ module."""
 
         super().__init__()
 
         if isinstance(func, AdjLieModule):
             self.func = func
         else:
-            self.func = AdjLieModuleWrapper(func, num_samples)
+            self.func = AdjLieModuleWrapper(func, num_hutchinson_samples)
 
         self.t_span = t_span
 
         self.odeints = [
-            ftpartial(lie_group_odeint, method=methods[0], **odeint_kwargs),
-            ftpartial(lie_group_odeint, method=methods[1], **odeint_kwargs)
+            ftpartial(lie_odeint, method=methods[0], **odeint_kwargs),
+            ftpartial(lie_odeint, method=methods[1], **odeint_kwargs)
         ]
 
     def forward(self, var, args=None, log0=0):
@@ -233,12 +234,12 @@ def anti_hermitian(mtrx):
 class AdjLieModule(torch.nn.Module, ABC):
     """
     Abstract base class for ODE systems with adjoint backpropagation and
-    log-Jacobian tracking, useful for `AdjLieODEflow_`.
+    log-Jacobian tracking, useful for `AdjLieODEFlow_`.
 
     This class is a subclass of `torch.nn.Module` and provides the necessary
     structure for defining ODE systems that can be solved using adjoint-based
     differentiation. It is used in conjunction with modules like
-    `AdjLieODEflow_` to compute gradients, perform augmented reverse
+    `AdjLieODEFlow_` to compute gradients, perform augmented reverse
     integration, and calculate the log-Jacobian rate of the flow.
 
     Integrate a system of ODEs of the form::
@@ -263,14 +264,14 @@ class AdjLieModule(torch.nn.Module, ABC):
         - `calc_grad_params_rate`: Computes the gradient of parameters.
 
     Args:
-        num_samples (int, optional): Number of samples used for the Hutchinson
-          estimator to approximate the Jacobian trace. If `None`, the Jacobian
-          trace is computed exactly. Defaults to 1.
+        - num_hutchinson_samples (Optional[int | None]): The number of random
+          samples used in the Hutchinson estimator. If None, the Jacobian trace
+          is computed exactly. Defaults to 1.
     """
 
-    def __init__(self, num_samples=1):
+    def __init__(self, num_hutchinson_samples=1):
         super().__init__()
-        self.num_samples = num_samples
+        self.num_hutchinson_samples = num_hutchinson_samples
 
     def forward(self, t, var, *frozen_var):
         """The function defining the evolution of the state variable."""
@@ -297,7 +298,7 @@ class AdjLieModule(torch.nn.Module, ABC):
         logj_rate = hutchinson_estimator(
             lambda x: self.forward(t, x, *frozen_var),
             var,
-            self.num_samples
+            self.num_hutchinson_samples
         )
         return logj_rate
 
@@ -380,10 +381,11 @@ class AdjLieModuleWrapper(AdjLieModule):
     as `calc_logj_rate`, are inherited.
 
     Args:
-        func (Callable): A function `f(t, y, *args)` that computes the time
-            derivative of the state variable `y` at time `t`.
-        num_samples (int, optional): The number of samples for the Hutchinson
-            estimator when computing the Jacobian trace. Defaults to 1.
+        - func (Callable): A function `f(t, y, *args)` that computes the time
+          derivative of the state variable `y` at time `t`.
+        - num_hutchinson_samples (Optional[int | None]): The number of random
+          samples used in the Hutchinson estimator. If None, the Jacobian trace
+          is computed exactly. Defaults to 1.
 
     Methods:
         - `forward`: Directly uses the provided function to compute the time
@@ -393,8 +395,8 @@ class AdjLieModuleWrapper(AdjLieModule):
           has its own `calc_logj_rate`, that will be used.
     """
 
-    def __init__(self, func, num_samples=1):
-        super().__init__(num_samples)
+    def __init__(self, func, num_hutchinson_samples=1):
+        super().__init__(num_hutchinson_samples)
         self.func = func
 
         # If the function has its own `calc_logj_rate`, use it.
