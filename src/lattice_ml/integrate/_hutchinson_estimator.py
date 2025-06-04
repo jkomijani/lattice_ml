@@ -5,6 +5,7 @@
 from typing import Callable, Optional
 from types import SimpleNamespace
 import torch
+import numpy as np
 
 
 __all__ = ['hutchinson_estimator']
@@ -16,6 +17,7 @@ def hutchinson_estimator(
     x: torch.Tensor,
     num_samples: Optional[int | None] = 1,
     use_rademacher_noise: Optional[bool] = True,
+    noise_mask_ndim: Optional[int] = 0,
     requires_grad: Optional[bool] = True,
     return_stats: Optional[bool] = False
 ):
@@ -36,8 +38,11 @@ def hutchinson_estimator(
             - If `None`, the function does not use the Hutchinson estimator and
               instead calls `calc_jacobian_trace` to compute the Jacobian trace
               exactly via automatic differentiation.
-        use_rademacher_noise: Whether Radamacher or Gaussian noise is used.
+        use_rademacher_noise: Whether Rademacher or Gaussian noise is used.
             Default is True.
+        noise_mask_ndim: Whether to appliy a set of masks over generated noise.
+            Default is 0, indicating no mask is used. (It always used
+            Rademacher noise if applied.)
         requires_grad: Whether higher-order derivatives are needed.
             Defaults to True, indicating the output is differentiable.
         return_stats: Whether to return the mean and error as a namespace.
@@ -76,6 +81,8 @@ def hutchinson_estimator(
         else:
             x_ = torch.view_as_real(x)
             y_ = torch.view_as_real(func(torch.view_as_complex(x_)))
+            if noise_mask_ndim > 0:
+                noise_mask_ndim += 1
 
         # Note that x_ & y_ are always real.
 
@@ -95,7 +102,9 @@ def hutchinson_estimator(
     # Estimate the trace using multiple random samples
     for n in range(num_samples):
         # Generate a normalized random vector
-        if use_rademacher_noise:
+        if noise_mask_ndim > 0:
+            random_vector = generate_masked_noise(x_, noise_mask_ndim, n)
+        elif use_rademacher_noise:
             random_vector = 2 * torch.randint_like(x_, 2) - 1
         else:
             random_vector = torch.randn_like(x_)
@@ -179,6 +188,43 @@ def calc_jacobian_trace(func, x, requires_grad=True):
         jacobian_trace += grad_ind[:, ind]
 
     return jacobian_trace
+
+
+# =============================================================================
+def generate_masked_noise(
+    x: torch.Tensor, mask_ndim: int, ind: int
+) -> torch.Tensor:
+    """
+    Generates Rademacher noise over the shape of `x` and applies a mask over
+    the last `mask_ndim` dimensions.
+
+    The mask amplifies a single element (at flat index `ind`) by sqrt(n),
+    where n is the  number of elements in the masked subregion. This ensures
+    that the norm of the resulting vector remains constant.
+
+    Args:
+        x (torch.Tensor): Input tensor that defines the noise shape.
+        mask_ndim (int): Number of trailing dimensions to apply the mask.
+        ind (int): Flat index in the masked region to amplify.
+
+    Returns:
+        torch.Tensor: Masked Rademacher noise tensor with same shape as `x`.
+    """
+    # Generate full-shape Rademacher noise {-1, 1}
+    noise = 2 * torch.randint(0, 2, x.shape, device=x.device) - 1
+
+    # Define the shape of the masked subregion
+    mask_shape = x.shape[-mask_ndim:]
+    total_elements = np.prod(mask_shape)
+
+    # Create flat mask, amplify specified index with sqrt(n)
+    flat_mask = torch.zeros(total_elements, device=x.device)
+    flat_mask[ind % total_elements] = total_elements ** 0.5
+
+    # Reshape and expand mask to match x's shape
+    mask = flat_mask.reshape(mask_shape)
+
+    return noise * mask
 
 
 # =============================================================================

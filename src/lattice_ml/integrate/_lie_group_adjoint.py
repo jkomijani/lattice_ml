@@ -295,10 +295,18 @@ class AdjLieModule(torch.nn.Module, ABC):
         Returns:
             torch.Tensor: The estimated log-Jacobian rate of the flow.
         """
+        n_samples = self.num_hutchinson_samples
+        # Use a mask of shape (n, n, 2) where 2 is for complex numbers 
+        if n_samples is None or n_samples % (2 * var.shape[-1]**2) != 0:
+            noise_mask_ndim = 0
+        else:
+            noise_mask_ndim = 2
+
         logj_rate = hutchinson_estimator(
             lambda x: self.forward(t, x, *frozen_var),
             var,
-            self.num_hutchinson_samples
+            n_samples,
+            noise_mask_ndim=noise_mask_ndim
         )
         return logj_rate
 
