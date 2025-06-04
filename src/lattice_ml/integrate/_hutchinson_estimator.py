@@ -15,6 +15,7 @@ def hutchinson_estimator(
     func: Callable,
     x: torch.Tensor,
     num_samples: Optional[int | None] = 1,
+    use_rademacher_noise: Optional[bool] = True,
     requires_grad: Optional[bool] = True,
     return_stats: Optional[bool] = False
 ):
@@ -35,6 +36,8 @@ def hutchinson_estimator(
             - If `None`, the function does not use the Hutchinson estimator and
               instead calls `calc_jacobian_trace` to compute the Jacobian trace
               exactly via automatic differentiation.
+        use_rademacher_noise: Whether Radamacher or Gaussian noise is used.
+            Default is True.
         requires_grad: Whether higher-order derivatives are needed.
             Defaults to True, indicating the output is differentiable.
         return_stats: Whether to return the mean and error as a namespace.
@@ -91,15 +94,19 @@ def hutchinson_estimator(
 
     # Estimate the trace using multiple random samples
     for n in range(num_samples):
-        # Generate random vector
-        random_vector = torch.randn_like(x_)
-        norm_sq = (random_vector**2).mean(dim=dim)  # for vector narmalization
+        # Generate a normalized random vector
+        if use_rademacher_noise:
+            random_vector = 2 * torch.randint_like(x_, 2) - 1
+        else:
+            random_vector = torch.randn_like(x_)
+            norm_sq = (random_vector**2).mean(dim=dim, keepdim=True)
+            random_vector /= norm_sq**0.5
 
         # Compute the Jacobian-vector product
         vjp = torch.autograd.grad(y_, x_, random_vector, **grad_kwargs)[0]
 
         # Compute the trace estimate for this sample (element-wise product)
-        estimates[n] = (vjp * random_vector).sum(dim=dim) / norm_sq
+        estimates[n] = (vjp * random_vector).sum(dim=dim)
 
     # Return the mean of the trace estimates across all random samples
     if num_samples == 1:
@@ -175,38 +182,29 @@ def calc_jacobian_trace(func, x, requires_grad=True):
 
 
 # =============================================================================
-def _test_hutchinson(num_samples=100, complex_=True):
-    """
+def _test_hutchinson(num_samples=2, complex_=True):
+    r"""
     Tests the Hutchinson method for estimating the trace of a Jacobian.
 
     This function compares the Hutchinson estimation against the exact Jacobian
     trace for a given nonlinear function and verifies gradient computation.
 
     Steps performed:
-    1. Defines `func(x) = sin(x * params)`.
+    1. Defines :math:`f(x) = A \sin(\theta \odot x)`, where `x` and `theta` are
+       vectors, `A` is a matrix, and `\odot` is the elementwise product.
     2. Computes the trace of the Jacobian using the Hutchinson method.
     3. Computes the exact trace of the Jacobian.
     4. Compares the estimated trace against the exact trace.
     5. Computes gradient of the Jacobian trace w.r.t. parameters.
     """
+    # Define theta, the matrix A, and x, where x has four samples.
+
     if complex_:
         params = torch.tensor([0.55 + 0.82j, 0.73, 0.14], requires_grad=True)
     else:
         params = torch.tensor([0.55, 0.73, 0.14], requires_grad=True)
 
-    def func(x):
-        p = params[None, :]  # x has batch axis, but p does not have
-        return torch.sin(p * x)
-
-    def func_jacobian_trace(x):
-        """Returns the analytic value for the Jacobian trace of `func(x)`."""
-        p = params[None, :]  # x has batch axis, but p does not have
-        jacobian_diag = torch.cos(p * x) * p
-        if not torch.is_complex(x):
-            res = jacobian_diag.sum(dim=1)
-        else:
-            res = 2 * torch.real(jacobian_diag).sum(dim=1)
-        return res
+    matrix = torch.tensor([[1, -0.1, -0.1], [-0.1, 1, -0.1], [-0.1, -0.1, 1]])
 
     # x = torch.randn(4, 3)
     x = torch.tensor(
@@ -218,6 +216,24 @@ def _test_hutchinson(num_samples=100, complex_=True):
 
     if complex_:
         x = x + 1j
+        matrix = matrix + 0j
+
+    # Add batch axis to theta & matrix, and make x & theta column-vector like.
+    x = x[:, :, None]
+    theta = params[None, :, None]
+    matrix = matrix[None, :, :]
+
+    def func(x):
+        return matrix @ torch.sin(theta * x)
+
+    def func_jacobian_trace(x):
+        """Returns the analytic value for the Jacobian trace of `func(x)`."""
+        jacobian_diag = torch.cos(theta * x) * theta
+        if not torch.is_complex(x):
+            res = jacobian_diag.sum(dim=1)
+        else:
+            res = 2 * torch.real(jacobian_diag).sum(dim=1)
+        return res
 
     result = hutchinson_estimator(func, x, num_samples, return_stats=True)
     print("\nHutchinson estimate:")
