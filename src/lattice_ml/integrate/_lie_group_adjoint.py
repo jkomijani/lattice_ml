@@ -89,12 +89,19 @@ class AdjLieODEFlow_(torch.nn.Module):  # pylint: disable=invalid-name
             accumulated log-determinant of the Jacobian.
         """
 
+        # Normalize args to a tuple
+        if args is None:
+            args = ()
+        elif not isinstance(args, tuple):
+            args = (args,)
+
         frozen_var = args
 
         params = self.func.params_
 
         var, logj = LieAdjointWrapper_.apply(
-            self.odeints, self.func, self.t_span, var, frozen_var, *params
+            self.odeints, self.func, self.t_span, var,
+           len(frozen_var), *frozen_var, *params
         )
         return var, logj + log0
 
@@ -114,12 +121,19 @@ class AdjLieODEFlow_(torch.nn.Module):  # pylint: disable=invalid-name
             accumulated log-determinant of the Jacobian.
         """
 
+        # Normalize args to a tuple
+        if args is None:
+            args = ()
+        elif not isinstance(args, tuple):
+            args = (args,)
+
         frozen_var = args
 
         params = self.func.params_
 
         var, logj = LieAdjointWrapper_.apply(
-           self.odeints, self.func, self.t_span[::-1], var, frozen_var, *params
+           self.odeints, self.func, self.t_span[::-1], var,
+           len(frozen_var), *frozen_var, *params
         )
         return var, logj + log0
 
@@ -133,7 +147,7 @@ class LieAdjointWrapper_(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, odeints, func, t_span, var, frozen_var, *params):
+    def forward(ctx, odeints, func, t_span, var, n_frozen_var, *all_args):
         """
         Forward pass using the ODE solver.
 
@@ -158,6 +172,9 @@ class LieAdjointWrapper_(torch.autograd.Function):
         assert isinstance(func, AdjLieModule), \
             ("Expected `func` to be an instance of AdjLieModule")
 
+        frozen_var = all_args[:n_frozen_var]
+        params = all_args[n_frozen_var:]
+
         # Perform ODE integration
         var, logj = odeints[0](
             func.forward,
@@ -171,7 +188,8 @@ class LieAdjointWrapper_(torch.autograd.Function):
         ctx.odeints = odeints
         ctx.func = func
         ctx.t_span = t_span
-        ctx.save_for_backward(var, logj, frozen_var, *params)
+        ctx.n_frozen_var = n_frozen_var
+        ctx.save_for_backward(var, logj, *all_args)
 
         return var, logj
 
@@ -185,7 +203,10 @@ class LieAdjointWrapper_(torch.autograd.Function):
         func = ctx.func
         odeints = ctx.odeints
         t_span = ctx.t_span
-        var, logj, frozen_var, *params = ctx.saved_tensors
+        var, logj, *all_args = ctx.saved_tensors
+
+        frozen_var = all_args[:ctx.n_frozen_var]
+        params = all_args[ctx.n_frozen_var:]
 
         # Instead of calculating `grad_var`, for lie group, we first calculate
         # `grad_alg_var`, which is the `grad` for the algebra variable, and in
@@ -199,8 +220,10 @@ class LieAdjointWrapper_(torch.autograd.Function):
         # Define augmented frozen variable:
         aug_frozen_var = TupleVar(frozen_var, grad_logj, *params)
 
-        fzn = frozen_var
-        if len(params) == 0 and (fzn is None or not fzn.requires_grad):
+        # Get mask for frozen_var that require gradients
+        fzn_requiring_grad = [item.requires_grad for item in frozen_var]
+
+        if len(params) + sum(fzn_requiring_grad) == 0:
             aug_var = odeints[1](
                 func.aug_reverse, t_span[::-1], aug_var, args=aug_frozen_var
                 )
@@ -215,14 +238,22 @@ class LieAdjointWrapper_(torch.autograd.Function):
         # grad_alg_var must be already anti-hermitian, yet we project it again.
         grad_var = anti_hermitian(grad_alg_var) @ var
 
-        if aug_loss is None:
-            grad_frozen_var, grad_params = None, ()
-        elif (fzn is None or not fzn.requires_grad):
-            grad_frozen_var, grad_params = None, aug_loss.tuple
-        else:
-            grad_frozen_var, *grad_params = aug_loss.tuple
+        # Initialize all frozen gradients as None
+        grad_frozen_var = [None] * len(frozen_var)
+        grad_params = ()
 
-        return None, None, None, grad_var, grad_frozen_var, *grad_params
+        if aug_loss is not None:
+            # Extract gradient chunks
+            n = sum(fzn_requiring_grad)
+            grad_fzn = iter(aug_loss.tuple[:n])
+            grad_params = aug_loss.tuple[n:]
+
+            # Assign gradients to positions requiring grad
+            grad_frozen_var = [
+                next(grad_fzn) if req else None for req in fzn_requiring_grad
+            ]
+
+        return None, None, None, grad_var, None, *grad_frozen_var, *grad_params
 
 
 def anti_hermitian(mtrx):
@@ -322,12 +353,8 @@ class AdjLieModule(torch.nn.Module, ABC):
         with torch.enable_grad():
             var = var.detach().requires_grad_(True)
 
-            if frozen_var is None:
-                alg_var_dot = self.algebra_dynamics(t, var)
-                logj_dot = self.calc_logj_rate(t, var)
-            else:
-                alg_var_dot = self.algebra_dynamics(t, var, frozen_var)
-                logj_dot = self.calc_logj_rate(t, var, frozen_var)
+            alg_var_dot = self.algebra_dynamics(t, var, *frozen_var)
+            logj_dot = self.calc_logj_rate(t, var, *frozen_var)
 
             hamilton = torch.sum(
                 grad_logj * logj_dot + tie_adjoints(grad_alg_var, alg_var_dot)
@@ -347,19 +374,16 @@ class AdjLieModule(torch.nn.Module, ABC):
         var, grad_alg_var = aug_var.tuple
         frozen_var, grad_logj, *params = aug_frozen_var.tuple
 
-        if (frozen_var is not None) and frozen_var.requires_grad:
-            frozen_var = frozen_var.detach().requires_grad_(True)
-            params = (frozen_var, *params)
+        for fzn in frozen_var[::-1]:
+            if fzn.requires_grad:
+                fzn = fzn.detach().requires_grad_(True)
+                params = (fzn, *params)
 
         with torch.enable_grad():
             var = var.detach()
 
-            if frozen_var is None:
-                alg_var_dot = self.algebra_dynamics(t, var)
-                logj_dot = self.calc_logj_rate(t, var)
-            else:
-                alg_var_dot = self.algebra_dynamics(t, var, frozen_var)
-                logj_dot = self.calc_logj_rate(t, var, frozen_var)
+            alg_var_dot = self.algebra_dynamics(t, var, *frozen_var)
+            logj_dot = self.calc_logj_rate(t, var, *frozen_var)
 
             hamilton = torch.sum(
                 grad_logj * logj_dot + tie_adjoints(grad_alg_var, alg_var_dot)

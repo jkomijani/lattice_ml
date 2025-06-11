@@ -78,16 +78,21 @@ def lie_odeint(
 # =============================================================================
 def _get_lie_ode_step(method: str) -> Callable:
     """Return the appropriate Lie group ODE step function based on method."""
-    if method == 'RK4:SU(n)':
-        ode_step = special_unitary_rk4_step
-    elif method == 'RK4:SU(n):aug':
-        ode_step = augmented_special_unitary_rk4_step
-    elif method == 'RK3:auto':
-        ode_step = lie_autonomous_rk3_step
-    elif method == 'Euler':
-        ode_step = lie_euler_step
-    else:
-        raise ValueError(f"Lie group method '{method}' is not implemented.")
+    match method:
+        case 'RK4:SU(n)':
+            ode_step = special_unitary_rk4_step
+        case 'RK4:SU(n):aug':
+            ode_step = augmented_special_unitary_rk4_step
+        case 'Euler:SU(n)':
+            ode_step = lie_euler_step
+        case 'Euler:SU(n):aug':
+            ode_step = augmented_lie_euler_step
+        case 'RK3:su(n):auto':
+            ode_step = lie_autonomous_rk3_algebra_step
+        case 'Euler:su(n)':
+            ode_step = lie_euler_algebra_step
+        case _:
+            raise ValueError(f"Lie group method '{method}' is not supported.")
 
     return ode_step
 
@@ -228,7 +233,7 @@ def anti_hermitian_traceless(mtrx: torch.Tensor) -> torch.Tensor:
 
 
 # =============================================================================
-def lie_autonomous_rk3_step(algebra_func, t, var, dt, *args):
+def lie_autonomous_rk3_algbera_step(algebra_func, t, var, dt, *args):
     r"""
     Performs one step of a 3-stage exponential Lie group integrator.
 
@@ -279,6 +284,27 @@ def lie_autonomous_rk3_step(algebra_func, t, var, dt, *args):
 
 
 # =============================================================================
-def lie_euler_step(algebra_func, t, var, dt, *args):
+def lie_euler_algebra_step(algebra_func, t, var, dt, *args):
     """Perform a single Euler step for unitary matrices."""
     return torch.matrix_exp(algebra_func(t, var, *args) * dt) @ var
+
+
+def lie_euler_step(func, t, var, dt, *args):
+    """Perform a single Euler step for unitary matrices."""
+    return torch.matrix_exp(func(t, var, *args) @ var.adjoint() * dt) @ var
+
+
+def augmented_lie_euler_step(func, t, var, dt, *args):
+    """Perform a single Euler step for unitary matrices."""
+    delta, d_other = (dt * func(t, var, dt, *args)).tuple
+
+    # Unpack current SU(n) variable and auxiliary variable
+    var, other = var.tuple
+
+    # Update SU(n) variable with the Euler method
+    var = torch.matrix_exp(delta) @ var
+
+    # Update auxiliary variable via standard Euler increment
+    other = other + d_other
+
+    return TupleVar(var, other)
