@@ -19,8 +19,12 @@ Available integration methods include:
 from typing import Callable, Tuple, Union
 import torch
 
+from lattice_ml.linalg import eigh
+
 from ._odeint import odeint
 from ._adjoint import TupleVar
+
+
 
 __all__ = ["lie_odeint"]
 
@@ -157,8 +161,7 @@ def augmented_special_unitary_rk4_step(func, t, var, dt, *args):
 # =============================================================================
 def special_unitary_rk4_step(func, t, var, dt, *args):
     r"""
-    Perform a single Runge-Kutta-4 step while preserving the special unitary
-    property.
+    Performs one Runge-Kutta-4 step preserving the special unitary property.
 
     This method evolves `var` in time using the classical RK4 integration
     scheme, then projects the update back onto the special unitary group SU(n).
@@ -167,7 +170,8 @@ def special_unitary_rk4_step(func, t, var, dt, *args):
 
     .. math::
 
-         U_{t + dt} = U_t + {shift} + O(h^5) = (I + \delta + O(h^5)) U_t
+        U_{t + dt} = U_t + \text{shift} + O(h^5)
+                   = (I + \eps + O(h^5)) U_t
 
     We rewrite the coefficient of `U_t` as a special unitary matrix.
     Then, we multiply it to the current value `U(t)` to obtain `U(t + dt)`.
@@ -188,21 +192,169 @@ def special_unitary_rk4_step(func, t, var, dt, *args):
     Returns
     -------
     torch.Tensor
-        Updated special unitary matrix after a single RK4 step.
+        Updated special unitary matrix after one RK4 step.
     """
+    # Compute the eps term from the RK4 step (Lie algebra element)
     eps = delta_from_rk4_step(func, t, var, dt, *args) @ var.adjoint()
+
+    # Project eps back onto SU(n) and update var
     return construct_rk4_special_unitary(eps) @ var
 
 
-def construct_rk4_special_unitary(eps):
-    r"""Project `I + \epsilon + O(\epsilon^5)` to a special unitary matrix."""
+def construct_rk4_special_unitary(eps: torch.Tensor) -> torch.Tensor:
+    # Warning: in-place manipulation for 3x3 and 2x2 matrices.
+    r"""
+    Construct a special unitary matrix close to `I + eps`, using the most
+    efficient method depending on matrix size and device.
+
+    This is a high-level wrapper that dispatches to optimized routines:
+
+    - For 3×3 matrices (shape (..., 3, 3)), it uses `naive_project_su3`,
+      which is faster and sufficient for small matrices.
+
+    - For larger matrices:
+        * On CPU: uses `construct_rk4_special_unitary_type0`
+          (matrix exponentiation, fast on CPU).
+        * On CUDA: uses `construct_rk4_special_unitary_type1`
+          (avoids slow matrix exponentiation on GPU).
+
+    In all cases, the result is a special unitary matrix (SU(n)), accurate
+    to O(eps^5).
+
+    Parameters
+    ----------
+    eps : torch.Tensor
+        A small perturbation matrix of shape (..., n, n).
+
+    Returns
+    -------
+    torch.Tensor
+        Special unitary matrix of shape (..., n, n).
+
+    See also
+    --------
+    naive_project_su3
+    construct_rk4_special_unitary_type0
+    construct_rk4_special_unitary_type1
+    """
+    # Use naive_project_su3 for 3x3 matrices
+    if eps.shape[-1] == 3:
+
+        # in-place calculation
+        for i in range(3):
+            eps[..., i, i] += 1
+
+        return naive_project_su3(eps)
+
+    if eps.is_cuda:
+        func = construct_rk4_special_unitary_type1
+    else:
+        func = construct_rk4_special_unitary_type0
+
+    return func(eps)
+
+
+def construct_rk4_special_unitary_type0(eps: torch.Tensor) -> torch.Tensor:
+    r"""
+    Constructs a special unitary matrix close to `I + eps`.
+
+    This method is designed to address the following situation:
+    In RK4 methods applied to SU(n)-valued variables, the naive update
+    `I + eps` is only approximately special unitary.
+    This function corrects it to lie exactly in SU(n), with an error of O(h^5),
+    which matches the RK4 accuracy.
+
+    The method uses a truncated matrix logarithm expansion and a projection
+    onto the Lie algebra su(n), ensuring unitarity and det = 1 after
+    exponentiation.
+
+    Parameters
+    ----------
+    eps : torch.Tensor
+        A small matrix of shape (..., n, n), anti-Hermitian to leading order.
+
+    Returns
+    -------
+    torch.Tensor
+        Special unitary matrix of shape (..., n, n).
+    """
+    # Start with eps as the first term in the matrix logarithm expansion
     dummy = eps
     exponent = dummy
+
+    # Compute truncated series: eps - eps^2/2 + eps^3/3 - eps^4/4
+    # Powers of 5 and larger are not needed as error is O(eps^5)
     for power in range(2, 5):
-        # power of 5 and larger powers are not needed as error is O(eps^5)
         dummy = dummy @ (-eps)
         exponent = exponent + dummy / power
-    return torch.matrix_exp(anti_hermitian_traceless(exponent))
+
+    # Project the result to su(n): anti-Hermitian and traceless
+    projected_exponent = anti_hermitian_traceless(exponent)
+
+    # Exponentiate to get a special unitary matrix
+    return torch.matrix_exp(projected_exponent)
+
+
+def construct_rk4_special_unitary_type1(eps: torch.Tensor) -> torch.Tensor:
+    r"""
+    Constructs a special unitary matrix close to `I + eps`.
+
+    This method is designed to address the following situation:
+    In RK4 methods applied to SU(n)-valued variables, the naive update
+    `I + eps` is only approximately special unitary.
+    This function corrects it to lie exactly in SU(n), with an error of O(h^5),
+    which matches the RK4 accuracy.
+
+    Although we do not use this assumption fully here, we use the fact that:
+    - eps is small, eps ~ h.
+    - eps is anti-Hermitian to leading order: eps + eps^\dagger vanishes
+      at order h.
+
+    From this, we can recover angles of the eigenvalues (up to h^5)
+    and construct a matrix in SU(n) close to the target `(I + eps)`.
+
+    Parameters
+    ----------
+    eps : torch.Tensor
+        A small matrix of shape (..., n, n), anti-Hermitian to leading order.
+
+    Returns
+    -------
+    torch.Tensor
+        Special unitary matrix of shape (..., n, n).
+    """
+    # Note: if U = I + eps + O(h^5), and U is unitary to O(h^5), then:
+    # U^\dagger U = I + (eps + eps^\dagger) + ...
+    # So (eps + eps^\dagger) is 0 up to h^2, and thus eps is
+    # anti-Hermitian up to h^2.
+    #
+    # The exact U should have eigenvalues exp(i theta) and determinant 1.
+    # So: the eigenvalues of `I + eps` are
+    # `exp(i theta) ≈ I + i sin(theta) + (1 - cos(theta))
+    # The anti-Hermitian part of eps gives ~ sin(theta)
+    #
+    # Therefore, diagonalizing the anti-Hermitian part of eps allows
+    # us to approximately recover theta angles.
+
+    # Extract anti-Hermitian part of eps, and scale it to make it Hermitian
+    anti_herm = -1j * (eps - eps.adjoint())
+
+    # Eigen-decomposition: vals \approx 2 sin(theta), vecs are eigenvectors
+    vals, vecs = eigh(anti_herm)
+
+    # Recover theta angles from eigenvalues
+    theta = torch.asin(vals / 2)
+
+    # Enforce traceless condition: det = 1 for SU(n)
+    theta -= theta.mean(dim=-1, keepdim=True)
+
+    # Compute SU(n) eigenvalues: e^{i theta}
+    vals = torch.cos(theta) + 1j * torch.sin(theta)
+
+    # Reconstruct the special unitary matrix: U = V diag(e^{i theta}) V^\dagger
+    unitary_matrix = vecs @ (vals.unsqueeze(-1) * vecs.adjoint())
+
+    return unitary_matrix
 
 
 def delta_from_rk4_step(func, t, var, dt, *args):
@@ -296,7 +448,7 @@ def lie_euler_step(func, t, var, dt, *args):
 
 def augmented_lie_euler_step(func, t, var, dt, *args):
     """Perform a single Euler step for unitary matrices."""
-    delta, d_other = (dt * func(t, var, dt, *args)).tuple
+    delta, d_other = (dt * func(t, var, *args)).tuple
 
     # Unpack current SU(n) variable and auxiliary variable
     var, other = var.tuple
@@ -308,3 +460,102 @@ def augmented_lie_euler_step(func, t, var, dt, *args):
     other = other + d_other
 
     return TupleVar(var, other)
+
+
+# =============================================================================
+def naive_project_su3(y):
+    # in-place calculation
+    """
+    Naively projects a 3x3 complex matrix to SU(3) by orthonormalizing rows.
+
+    This method assumes the input matrix is close to the identity. It first
+    orthonormalizes the first two rows, then reconstructs the third row to
+    enforce unitarity and determinant = 1.
+    """
+    # Normalize matrix to ensure determinant is 1 (special unitary)
+    # Explicit calculation of determinant is faster than torch.linalg.det!
+    y_00, y_01, y_02 = torch.unbind(y[..., 0, :], dim=-1)
+    y_10, y_11, y_12 = torch.unbind(y[..., 1, :], dim=-1)
+    y_20, y_21, y_22 = torch.unbind(y[..., 2, :], dim=-1)
+    det = (
+        y_20 * (y_01 * y_12 - y_02 * y_11)
+        + y_21 * (y_02 * y_10 - y_00 * y_12)
+        + y_22 * (y_00 * y_11 - y_01 * y_10)
+    )
+
+    y /= det[..., None, None]**(1/3.)
+
+    # Normalize the first row
+    norm_sq = torch.sum(
+        y[..., 0, :] * y[..., 0, :].conj(), dim=-1, keepdim=True
+    )
+    y[..., 0, :] /= torch.sqrt(norm_sq)
+
+    # Compute inner product of first two rows
+    vdot = torch.sum(y[..., 0, :].conj() * y[..., 1, :], dim=-1)
+    # Orthogonalize second row against the first
+    y[..., 1, :] -= y[..., 0, :] * vdot.unsqueeze(-1)
+
+    # Normalize the second row
+    norm_sq = torch.sum(
+        y[..., 1, :] * y[..., 1, :].conj(), dim=-1, keepdim=True
+    )
+    y[..., 1, :] /= torch.sqrt(norm_sq)
+
+    # Extract components of the first two rows
+    y_00, y_01, y_02 = torch.unbind(y[..., 0, :], dim=-1)
+    y_10, y_11, y_12 = torch.unbind(y[..., 1, :], dim=-1)
+
+    # Reconstruct third row as complex conjugate of cross product of first two
+    y[..., 2, 0] = (y_01 * y_12 - y_02 * y_11).conj()
+    y[..., 2, 1] = (y_02 * y_10 - y_00 * y_12).conj()
+    y[..., 2, 2] = (y_00 * y_11 - y_01 * y_10).conj()
+
+    return y
+
+
+# =============================================================================
+def _benchmark_construct_rk4_special_unitary():
+    """
+    Benchmark for comparing different methods for constructing special unitary
+    matrices for RK4 method. For SU(3) matrices in general it is cheaper to use
+    `naive_project_su3` on GPU.
+    """
+
+    def run_timeit(command_str, x, n):
+        time = timeit.timeit(
+                command_str, number=4, globals={**globals(), **locals()}
+                ) / 4 / n
+        print(f"   {command_str}: \t Execution time: {time} seconds")
+
+
+    for n in [2**10, 2**15, 2**20]:
+        for device in ['cpu', 'cuda']:
+            try:
+                print(f"\n*** device is {device} ***\n")
+                torch.set_default_device(device)
+                x = torch.randn(n, 3, 3, dtype=torch.complex128)
+            except:
+                break
+
+            h = 0.01
+            eps = h * (x - x.adjoint())
+
+            eye = torch.zeros_like(x)
+            for i in range(3):
+                eye[:, i, i] += 1
+
+            u = torch.matrix_exp(eps)
+            x = u - eye + h**5 * torch.randn_like(x)
+
+            y = construct_rk4_special_unitary(x + 0.)
+            z = construct_rk4_special_unitary_type0(x)
+            w = construct_rk4_special_unitary_type1(x)
+            print("Difference bw/ type0 and type1:", (z - w).abs().mean())
+            print("Difference bw/ 3x3 case vs type1:", (y - w).abs().mean())
+
+            import timeit
+            m = n / (1024 * 1024)
+            run_timeit("construct_rk4_special_unitary(x)", x, m)
+            run_timeit("construct_rk4_special_unitary_type0(x)", x, m)
+            run_timeit("construct_rk4_special_unitary_type1(x)", x, m)
