@@ -101,7 +101,7 @@ class AdjLieODEFlow_(torch.nn.Module):  # pylint: disable=invalid-name
 
         var, logj = LieAdjointWrapper_.apply(
             self.odeints, self.func, self.t_span, var,
-           len(frozen_var), *frozen_var, *params
+            len(frozen_var), *frozen_var, *params
         )
         return var, logj + log0
 
@@ -139,6 +139,7 @@ class AdjLieODEFlow_(torch.nn.Module):  # pylint: disable=invalid-name
 
 
 # =============================================================================
+# pylint: disable=invalid-name
 class LieAdjointWrapper_(torch.autograd.Function):
     """
     A custom autograd Function to perform ODE integration using the adjoint
@@ -173,7 +174,7 @@ class LieAdjointWrapper_(torch.autograd.Function):
             ("Expected `func` to be an instance of AdjLieModule")
 
         frozen_var = all_args[:n_frozen_var]
-        params = all_args[n_frozen_var:]
+        params = all_args[n_frozen_var:]  # pylint: disable=unused-variable
 
         # Perform ODE integration
         var, logj = odeints[0](
@@ -203,6 +204,7 @@ class LieAdjointWrapper_(torch.autograd.Function):
         func = ctx.func
         odeints = ctx.odeints
         t_span = ctx.t_span
+        # pylint: disable=unused-variable  # for logj
         var, logj, *all_args = ctx.saved_tensors
 
         frozen_var = all_args[:ctx.n_frozen_var]
@@ -327,7 +329,7 @@ class AdjLieModule(torch.nn.Module, ABC):
             torch.Tensor: The estimated log-Jacobian rate of the flow.
         """
         n_samples = self.num_hutchinson_samples
-        # Use a mask of shape (n, n, 2) where 2 is for complex numbers 
+        # Use a mask of shape (n, n, 2) where 2 is for complex numbers
         if n_samples is None or n_samples % (2 * var.shape[-1]**2) != 0:
             noise_mask_ndim = 0
         else:
@@ -342,53 +344,105 @@ class AdjLieModule(torch.nn.Module, ABC):
         return logj_rate
 
     def aug_reverse(self, t, aug_var, aug_frozen_var):
-        """Here `aug_var` contains the state variable and the adjoint state
-        variable at time `t`. Similarly, `aug_frozen_var` contains the frozen
-        variables, `grad_logj`, defined as gradient of the loss function w.r.t.
-        `logj`, and the parameters of the model.
+        """
+        Computes the reverse-time dynamics for the augmented system
+        in the adjoint method.
+
+        This method calculates the time derivatives of both the original state
+        variable and its corresponding adjoint state variable.
+        For the state variable `self.algebra_dynamics` is called,
+        and for the adjoint state variable automatic differentiation is used.
+
+        Args:
+            t (torch.Tensor): Current time step (scalar tensor).
+            aug_var (TupleVar): Tuple of (state, adjoint of state) at time t.
+            aug_frozen_var (TupleVar): Tuple containing:
+                - frozen variables (constants during backward pass),
+                - grad_logj: gradient of the loss w.r.t. log-Jacobian,
+                - model parameters.
+
+        Returns:
+            TupleVar: A tuple of:
+                - Time derivative of the (group-valued) state variable
+                  (var_dot),
+                - Time derivative of the (algebra-valued) adjoint variable
+                  (grad_alg_var_dot).
         """
         var, grad_alg_var = aug_var.tuple
+        # pylint: disable=unused-variable  # for params
         frozen_var, grad_logj, *params = aug_frozen_var.tuple
 
         with torch.enable_grad():
+            # Ensure var can track gradients
             var = var.detach().requires_grad_(True)
 
+            # Forward-mode derivatives
             alg_var_dot = self.algebra_dynamics(t, var, *frozen_var)
             logj_dot = self.calc_logj_rate(t, var, *frozen_var)
 
+            # Hamiltonian combines contributions from log-Jacobian and state
             hamilton = torch.sum(
                 grad_logj * logj_dot + tie_adjoints(grad_alg_var, alg_var_dot)
             )
 
-            grad_var_dot, = \
-                torch.autograd.grad(-hamilton, (var,), retain_graph=False)
+            # Compute gradient of Hamiltonian w.r.t. state variable
+            grad_var_dot, = torch.autograd.grad(
+                -hamilton, (var,), retain_graph=False
+            )
 
-        # Note that:
-        #    `var_dot = alg_var_dot @ var`
-        #    `grad_alg_var_dot = grad_var_dot @ var.adjoint()`
+        # Compute time derivatives for group-valued state & algebra-valued
+        # adjoint state, using:
+        #   var_dot = alg_var_dot @ var
+        #   grad_alg_var_dot = grad_var_dot @ var.adjoint()
 
         return TupleVar(alg_var_dot @ var, grad_var_dot @ var.adjoint())
 
     def calc_grad_params_rate(self, t, aug_var, aug_frozen_var):
-        """Computes the rate of gradeint with respect to the parameters."""
+        """
+        Computes the rate of change of gradients with respect to parameters
+        and frozen variables if they require gradients.
+
+        Forms the Hamiltonian from the adjoint variables and system dynamics,
+        then computes the gradient of the negative Hamiltonian with respect
+        to model parameters.
+
+        Args:
+            t (torch.Tensor): Current time step (scalar tensor).
+            aug_var (TupleVar): Tuple containing state and adjoint variables.
+            aug_frozen_var (TupleVar): Tuple containing frozen variables,
+                adjoint of the log-Jacobian, and model parameters.
+
+        Returns:
+            TupleVar: Gradient of the Hamiltonian w.r.t. parameters and frozen
+            variables if they require gradients.
+        """
         var, grad_alg_var = aug_var.tuple
         frozen_var, grad_logj, *params = aug_frozen_var.tuple
 
+        def reenable_grad(x):
+            return x.detach().requires_grad_(True) if x.requires_grad else x
+
+        # Detach frozen vars but re-enable grad tracking if needed
+        frozen_var = [reenable_grad(fzn) for fzn in frozen_var]
+
+        # Include frozen vars requiring grad into parameter list; order matters
         for fzn in frozen_var[::-1]:
             if fzn.requires_grad:
-                fzn = fzn.detach().requires_grad_(True)
                 params = (fzn, *params)
 
         with torch.enable_grad():
             var = var.detach()
 
+            # Forward dynamics and log-Jacobian rate
             alg_var_dot = self.algebra_dynamics(t, var, *frozen_var)
             logj_dot = self.calc_logj_rate(t, var, *frozen_var)
 
+            # Compute Hamiltonian combining adjoints and dynamics
             hamilton = torch.sum(
                 grad_logj * logj_dot + tie_adjoints(grad_alg_var, alg_var_dot)
             )
 
+            # Gradient of negative Hamiltonian w.r.t. parameters
             grad_params_rate = torch.autograd.grad(
                 -hamilton, params, retain_graph=False, materialize_grads=True
             )
