@@ -10,10 +10,12 @@ a general-purpose ODE integrator (`odeint`) by selecting Lie-group-aware
 integration methods and passing them as custom step functions.
 
 Available integration methods include:
-- RK4:SU(n): Standard Runge-Kutta 4 on SU(n)
-- RK4:SU(n):aug: Augmented RK4 method
-- RK3:auto: Third-order autonomous RK on Lie groups
-- Euler: Basic Euler method adapted to Lie groups
+- "RK4:SU(n)", Standard Runge-Kutta 4 on SU(n)
+- "RK4:SU(n):aug", Augmented RK4 method
+- "RK3:su(n):auto", Third-order autonomous RK on Lie groups
+- "Euler:SU(n)", Basic Euler method adapted to Lie groups
+- "Euler:SU(n):aug", Augmentedc Euler method adapted to Lie groups
+- "Euler:su(n):aug", Augmentedc Euler method adapted to Lie groups
 """
 
 from typing import Callable, Tuple, Union
@@ -25,8 +27,10 @@ from ._odeint import odeint
 from ._adjoint import TupleVar
 
 
-
 __all__ = ["lie_odeint"]
+
+
+eye3x3 = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
 
 
 # =============================================================================
@@ -202,7 +206,6 @@ def special_unitary_rk4_step(func, t, var, dt, *args):
 
 
 def construct_rk4_special_unitary(eps: torch.Tensor) -> torch.Tensor:
-    # Warning: in-place manipulation for 3x3 and 2x2 matrices.
     r"""
     Construct a special unitary matrix close to `I + eps`, using the most
     efficient method depending on matrix size and device.
@@ -239,12 +242,8 @@ def construct_rk4_special_unitary(eps: torch.Tensor) -> torch.Tensor:
     """
     # Use naive_project_su3 for 3x3 matrices
     if eps.shape[-1] == 3:
-
-        # in-place calculation
-        for i in range(3):
-            eps[..., i, i] += 1
-
-        return naive_project_su3(eps)
+        eye = eye3x3.to(eps.device).reshape(*(1,) * (eps.ndim - 2), 3, 3)
+        return naive_project_su3(eps + eye)
 
     if eps.is_cuda:
         func = construct_rk4_special_unitary_type1
@@ -385,7 +384,7 @@ def anti_hermitian_traceless(mtrx: torch.Tensor) -> torch.Tensor:
 
 
 # =============================================================================
-def lie_autonomous_rk3_algbera_step(algebra_func, t, var, dt, *args):
+def lie_autonomous_rk3_algebra_step(algebra_func, t, var, dt, *args):
     r"""
     Performs one step of a 3-stage exponential Lie group integrator.
 
@@ -464,13 +463,18 @@ def augmented_lie_euler_step(func, t, var, dt, *args):
 
 # =============================================================================
 def naive_project_su3(y):
-    # in-place calculation
     """
     Naively projects a 3x3 complex matrix to SU(3) by orthonormalizing rows.
 
     This method assumes the input matrix is close to the identity. It first
     orthonormalizes the first two rows, then reconstructs the third row to
     enforce unitarity and determinant = 1.
+
+    Notes:
+    1. Although not necessary, the matrix is initially normalized to ensure
+       determinnat 1.
+    2. The changes are not in-place because PyTorch cannot handle
+       backpropagation of derivatives (if the adjointstate method is not used).
     """
     # Normalize matrix to ensure determinant is 1 (special unitary)
     # Explicit calculation of determinant is faster than torch.linalg.det!
@@ -483,33 +487,34 @@ def naive_project_su3(y):
         + y_22 * (y_00 * y_11 - y_01 * y_10)
     )
 
-    y /= det[..., None, None]**(1/3.)
+    y = y / det[..., None, None]**(1/3.)
+
+    # Unbind rows for further calculations
+    y_0, y_1, _ = torch.unbind(y, dim=-2)
 
     # Normalize the first row
-    norm_sq = torch.sum(
-        y[..., 0, :] * y[..., 0, :].conj(), dim=-1, keepdim=True
-    )
-    y[..., 0, :] /= torch.sqrt(norm_sq)
+    norm_sq = torch.sum(y_0.conj() * y_0, dim=-1, keepdim=True)
+    y_0 = y_0 / torch.sqrt(norm_sq)
 
     # Compute inner product of first two rows
-    vdot = torch.sum(y[..., 0, :].conj() * y[..., 1, :], dim=-1)
+    vdot = torch.sum(y_0.conj() * y_1, dim=-1, keepdim=True)
     # Orthogonalize second row against the first
-    y[..., 1, :] -= y[..., 0, :] * vdot.unsqueeze(-1)
+    y_1 = y_1 - y_0 * vdot
 
     # Normalize the second row
-    norm_sq = torch.sum(
-        y[..., 1, :] * y[..., 1, :].conj(), dim=-1, keepdim=True
-    )
-    y[..., 1, :] /= torch.sqrt(norm_sq)
-
-    # Extract components of the first two rows
-    y_00, y_01, y_02 = torch.unbind(y[..., 0, :], dim=-1)
-    y_10, y_11, y_12 = torch.unbind(y[..., 1, :], dim=-1)
+    norm_sq = torch.sum(y_1 * y_1.conj(), dim=-1, keepdim=True)
+    y_1 = y_1 / torch.sqrt(norm_sq)
 
     # Reconstruct third row as complex conjugate of cross product of first two
-    y[..., 2, 0] = (y_01 * y_12 - y_02 * y_11).conj()
-    y[..., 2, 1] = (y_02 * y_10 - y_00 * y_12).conj()
-    y[..., 2, 2] = (y_00 * y_11 - y_01 * y_10).conj()
+    y_2 = torch.stack(
+        ((y_0[..., 1] * y_1[..., 2] - y_0[..., 2] * y_1[..., 1]).conj(),
+         (y_0[..., 2] * y_1[..., 0] - y_0[..., 0] * y_1[..., 2]).conj(),
+         (y_0[..., 0] * y_1[..., 1] - y_0[..., 1] * y_1[..., 0]).conj()
+        ),
+        dim = -1
+    )
+
+    y = torch.stack((y_0, y_1, y_2), dim=-2)
 
     return y
 
@@ -548,7 +553,7 @@ def _benchmark_construct_rk4_special_unitary():
             u = torch.matrix_exp(eps)
             x = u - eye + h**5 * torch.randn_like(x)
 
-            y = construct_rk4_special_unitary(x + 0.)
+            y = construct_rk4_special_unitary(x + 0)  # calls naive_project_su3
             z = construct_rk4_special_unitary_type0(x)
             w = construct_rk4_special_unitary_type1(x)
             print("Difference bw/ type0 and type1:", (z - w).abs().mean())
