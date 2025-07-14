@@ -9,3 +9,5 @@ from ._autograd import svd_with_simplified_ad
 from ._autograd import reciprocal
 
 inverse_eig = inverse_eign  # for legacy
+
+from ._autograd import project_grad_sun

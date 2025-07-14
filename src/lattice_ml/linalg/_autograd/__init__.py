@@ -13,3 +13,5 @@ inverse_eign = eig_autograd.InverseEign.apply
 
 svd = svd_autograd.SVD.apply_wrapper
 svd_with_simplified_ad = svd_autograd.ADSimplifiedSVD.apply_wrapper
+
+from .project_grad_sun import project_grad_sun
