@@ -16,12 +16,17 @@ Available integration methods include:
 - "Euler:SU(n)", Basic Euler method adapted to Lie groups
 - "Euler:SU(n):aug", Augmentedc Euler method adapted to Lie groups
 - "Euler:su(n):aug", Augmentedc Euler method adapted to Lie groups
+
+The following methods are mainly for testing:
+- "RK4:SU(n):grad-projected", A version of "RK4:SU(n)" mainly for tests.
+- "Euler:SU(n):grad-projected", A version of "Euler:SU(n)" mainly for tests.
 """
 
 from typing import Callable, Tuple, Union
 import torch
 
 from lattice_ml.linalg import eigh
+from lattice_ml.linalg import project_grad_sun
 
 from ._odeint import odeint
 from ._adjoint import TupleVar
@@ -87,6 +92,7 @@ def lie_odeint(
 def _get_lie_ode_step(method: str) -> Callable:
     """Return the appropriate Lie group ODE step function based on method."""
     match method:
+        # SU(n):
         case 'RK4:SU(n)':
             ode_step = special_unitary_rk4_step
         case 'RK4:SU(n):aug':
@@ -95,10 +101,16 @@ def _get_lie_ode_step(method: str) -> Callable:
             ode_step = lie_euler_step
         case 'Euler:SU(n):aug':
             ode_step = augmented_lie_euler_step
+        # su(n):
         case 'RK3:su(n):auto':
             ode_step = lie_autonomous_rk3_algebra_step
         case 'Euler:su(n)':
             ode_step = lie_euler_algebra_step
+        # Mainly for tests:
+        case 'RK4:SU(n):grad-projected':
+            ode_step = grad_projected_special_unitary_rk4_step
+        case 'Euler:SU(n):grad-projected':
+            ode_step = grad_projected_lie_euler_step
         case _:
             raise ValueError(f"Lie group method '{method}' is not supported.")
 
@@ -459,6 +471,17 @@ def augmented_lie_euler_step(func, t, var, dt, *args):
     other = other + d_other
 
     return TupleVar(var, other)
+
+
+# =============================================================================
+def grad_projected_special_unitary_rk4_step(*args):
+    """RK4 step for SU(n) with corrected grad; mainly for tests."""
+    return project_grad_sun(special_unitary_rk4_step(*args))
+
+
+def grad_projected_lie_euler_step(*args):
+    """Euler step for SU(n) with corrected grad; mainly for tests."""
+    return project_grad_sun(lie_euler_step(*args))
 
 
 # =============================================================================
