@@ -50,6 +50,15 @@ class AdjLieODEFlow_(torch.nn.Module):  # pylint: disable=invalid-name
           samples used in the Hutchinson estimator. If None, the Jacobian trace
           is computed exactly. Defaults to 1.
         - **odeint_kwargs: Additional keyword arguments for the ODE solver.
+
+    Warning:
+        This implementation is currently tailored for flows on the Lie group
+        of special unitary matrices (SU(n)). It assumes that the dynamics are
+        defined using anti-Hermitian, traceless matrices.
+
+        For support with general unitary matrices (U(n)), refer to the
+        documentation of the `LieAdjointWrapper_` class used in this flow,
+        which outlines the required changes.
     """
 
     def __init__(
@@ -145,6 +154,16 @@ class LieAdjointWrapper_(torch.autograd.Function):
     A custom autograd Function to perform ODE integration using the adjoint
     method. This wraps around `odeint`, allowing gradients to flow through the
     integration.
+
+    Warning:
+        This implementation is currently tailored for flows on the Lie group
+        of special unitary matrices (SU(n)). It assumes that the dynamics are
+        defined using anti-Hermitian, traceless matrices.
+
+        To support general unitary matrices (U(n)), you will need to replace
+        the hardcoded use of `anti_hermitian_traceless` in the backward pass
+        with `anti_hermitian`. We plan to extend the implementation to support
+        both cases when needed.
     """
 
     @staticmethod
@@ -237,8 +256,14 @@ class LieAdjointWrapper_(torch.autograd.Function):
                 )
 
         var, grad_alg_var = aug_var.tuple
-        # grad_alg_var must be already anti-hermitian, yet we project it again.
-        grad_var = anti_hermitian(grad_alg_var) @ var
+        # Although grad_alg_var should ideally be anti-Hermitian, in practice
+        # it often isn't. We project it again to enforce anti-Hermitian
+        # structure, ensuring numerical stability and consistency.
+        #
+        # Warning: We use `anti_hermitian_traceless`, which is appropriate only
+        # for special unitary matrices (i.e., matrices with determinant 1).
+        # For general unitary matrices, use `anti_hermitian` instead.
+        grad_var = anti_hermitian_traceless(grad_alg_var) @ var
 
         # Initialize all frozen gradients as None
         grad_frozen_var = [None] * len(frozen_var)
@@ -261,6 +286,23 @@ class LieAdjointWrapper_(torch.autograd.Function):
 def anti_hermitian(mtrx):
     """Returns the anit-Hermitian part of the input matrix."""
     return (mtrx - mtrx.adjoint()) / 2.
+
+
+def anti_hermitian_traceless(mtrx: torch.Tensor) -> torch.Tensor:
+    """
+    Project a square matrix (or batch of matrices) onto the Lie algebra su(n).
+
+    This function returns an anti-Hermitian, traceless version of the input
+    matrix `mtrx`.
+    """
+    # Make anti-Hermitian
+    mtrx = (mtrx - mtrx.adjoint()) / 2.
+
+    # Compute average diagonal value (trace / n) over the last two axes
+    reduced_trace = mtrx.diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True)
+
+    # Subtract the average from the diagonal to make it traceless
+    return mtrx - torch.diag_embed(reduced_trace.expand(mtrx.shape[:-1]))
 
 
 # =============================================================================
