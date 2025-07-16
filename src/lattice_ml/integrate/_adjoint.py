@@ -299,7 +299,31 @@ class AdjModule(torch.nn.Module, ABC):
         return TupleVar(var_dot, grad_var_dot)
 
     def calc_grad_params_rate(self, t, aug_var, aug_frozen_var):
-        """Computes the rate of gradeint with respect to the parameters."""
+        """
+        Computes the rate of change of gradients with respect to parameters
+        and frozen variables if they require gradients.
+
+        Forms the Hamiltonian from the adjoint variables and system dynamics,
+        then computes the gradient of the negative Hamiltonian with respect
+        to model parameters.
+
+        Args:
+            t (torch.Tensor): Current time step (scalar tensor).
+            aug_var (TupleVar): Tuple containing state and adjoint variables.
+            aug_frozen_var (TupleVar): Tuple containing frozen variables,
+                adjoint of the log-Jacobian, and model parameters.
+
+        Returns:
+            TupleVar: Gradient of the negative Hamiltonian with respect to
+            model parameters and frozen variables (for they require gradients).
+
+        Note:
+            The returned value represents the **negative** rate of change of
+            the gradients with respect to the parameters. This sign convention
+            arises because we are integrating the adjoint equations backward
+            in time (from final time to initial time), which introduces a minus
+            sign in the adjoint dynamics.
+        """
         var, grad_var = aug_var.tuple
         frozen_var, grad_logj, *params = aug_frozen_var.tuple
 
@@ -321,6 +345,8 @@ class AdjModule(torch.nn.Module, ABC):
                 grad_logj * logj_dot + tie_adjoints(grad_var, var_dot)
             )
 
+            # Gradient of negative Hamiltonian w.r.t. parameters
+            # Negative sign introduced because we integrate backward in time.
             grad_params_rate = torch.autograd.grad(
                 -hamilton, params, retain_graph=False, materialize_grads=True
             )
