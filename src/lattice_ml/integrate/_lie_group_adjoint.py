@@ -420,7 +420,12 @@ class AdjLieModule(torch.nn.Module, ABC):
 
             # Forward-mode derivatives
             alg_var_dot = self.algebra_dynamics(t, var, *frozen_var)
-            logj_dot = self.calc_logj_rate(t, var, *frozen_var)
+
+            # Calculate log-Jacobian only if it is needed
+            if grad_logj.abs().sum() == 0:
+                logj_dot = 0
+            else:
+                logj_dot = self.calc_logj_rate(t, var, *frozen_var)
 
             # Hamiltonian combines contributions from log-Jacobian and state
             hamilton = torch.sum(
@@ -482,9 +487,16 @@ class AdjLieModule(torch.nn.Module, ABC):
         with torch.enable_grad():
             var = var.detach()
 
-            # Forward dynamics and log-Jacobian rate
+            # Note that grad_alg_var and grad_logj do not require gradients.
+
+            # Forward-mode derivatives
             alg_var_dot = self.algebra_dynamics(t, var, *frozen_var)
-            logj_dot = self.calc_logj_rate(t, var, *frozen_var)
+
+            # Calculate log-Jacobian only if it is needed
+            if grad_logj.abs().sum() == 0:
+                logj_dot = 0
+            else:
+                logj_dot = self.calc_logj_rate(t, var, *frozen_var)
 
             # Compute Hamiltonian combining adjoints and dynamics
             hamilton = torch.sum(
