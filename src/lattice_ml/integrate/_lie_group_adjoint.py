@@ -236,26 +236,53 @@ class LieAdjointWrapper_(torch.autograd.Function):
         # `\grad_alg_var` is $\Lambda = \lambda U^\dagger$
         grad_alg_var = grad_var @ var.adjoint()
 
-        # Define augmented variable, which will flow backward in time:
+        # Although grad_alg_var should ideally be anti-Hermitian, in practice
+        # it often isn't. We project it again to enforce anti-Hermitian
+        # structure, ensuring numerical stability and consistency.
+        #
+        # Warning: We use `anti_hermitian_traceless`, which is appropriate only
+        # for special unitary matrices (i.e., matrices with determinant 1).
+        # For general unitary matrices, use `anti_hermitian` instead.
+        grad_alg_var = anti_hermitian_traceless(grad_alg_var)
+
+        # Define the augmented variable that will flow backward in time. It
+        # includes:
+        # - var: the Lie group state
+        # - grad_alg_var: gradient w.r.t. the associated Lie algebra element
         aug_var = TupleVar(var, grad_alg_var)
-        # Define augmented frozen variable:
+
+        # Define the augmented frozen variable, passed as constant args during
+        # integration. It includes:
+        # - frozen_var: auxiliary inputs (may require gradients)
+        # - grad_logj: gradient of the log-Jacobian determinant
+        # - params: model parameters (may require gradients)
         aug_frozen_var = TupleVar(frozen_var, grad_logj, *params)
 
-        # Get mask for frozen_var that require gradients
+        # Create mask indicating which frozen variables require gradients
         fzn_requiring_grad = [item.requires_grad for item in frozen_var]
 
+        # Integrate the augmented ODE backward in time.
+        # If no parameters or frozen variables require gradients, skip
+        # computing `aug_loss` (i.e., no sensitivity tracking is needed)
         if len(params) + sum(fzn_requiring_grad) == 0:
             aug_var = odeints[1](
                 func.aug_reverse, t_span[::-1], aug_var, args=aug_frozen_var
                 )
             aug_loss = None
         else:
+            # If gradients are needed, compute:
+            # - aug_var: backward integrated augmented state
+            # - aug_loss: gradient contributions from parameters & frozen vars
             aug_var, aug_loss = odeints[1](
                 func.aug_reverse, t_span[::-1], aug_var, args=aug_frozen_var,
                 loss_rate=func.calc_grad_params_rate
                 )
 
+        # Unpack the final state from the backward integration:
+        # - var: recovered Lie group state at initial time
+        # - grad_alg_var: gradient w.r.t. the corresponding Lie algebra element
         var, grad_alg_var = aug_var.tuple
+
         # Although grad_alg_var should ideally be anti-Hermitian, in practice
         # it often isn't. We project it again to enforce anti-Hermitian
         # structure, ensuring numerical stability and consistency.
@@ -358,25 +385,38 @@ class AdjLieModule(torch.nn.Module, ABC):
 
     def calc_logj_rate(self, t, var, *frozen_var):
         """
-        Computes and returns the log-Jacobian rate of the system's flow using
-        the Hutchinson estimator to approximate the trace of `df/dx` for volume
-        scaling.
+        Estimates the log-Jacobian rate (i.e., divergence of the flow) using
+        the Hutchinson estimator to approximate the trace of the Jacobian
+        df/dx. This is used to compute how volume changes under the flow.
 
         Args:
             t (float): Current time.
             var (torch.Tensor): Current state variable.
-            *frozen_var: Additional frozen variables for the system's dynamics.
+            *frozen_var: Additional frozen variables used in the dynamics.
 
         Returns:
-            torch.Tensor: The estimated log-Jacobian rate of the flow.
+            torch.Tensor: Estimated log-Jacobian rate of the flow.
+
+        Note:
+            If the log-Jacobian can be computed analytically (e.g., in
+            Wilson flow), this method should be overridden with an exact
+            implementation.
         """
         n_samples = self.num_hutchinson_samples
-        # Use a mask of shape (n, n, 2) where 2 is for complex numbers
+
+        # For the Hutchinson estimator:
+        # - Use a noise mask shaped (n, n, 2), where (n, n) covers the Lie
+        #   group matrix size and 2 represents complex numbers via
+        #   torch.view_as_real.
+        # - Apply this mask only if n_samples is divisible by 2 * n^2.
+        # - If n_samples is None (indicating full-matrix trace estimation),
+        #   do not use any mask (noise_mask_ndim = 0).
         if n_samples is None or n_samples % (2 * var.shape[-1]**2) != 0:
             noise_mask_ndim = 0
         else:
             noise_mask_ndim = 2
 
+        # Estimate trace(df/dx) ~ E[v^T (df/dx) v] using Hutchinson's method
         logj_rate = hutchinson_estimator(
             lambda x: self.forward(t, x, *frozen_var),
             var,
@@ -418,31 +458,44 @@ class AdjLieModule(torch.nn.Module, ABC):
             # Ensure var can track gradients
             var = var.detach().requires_grad_(True)
 
-            # Forward-mode derivatives
+            # Compute algebra-valued time derivative of the state
             alg_var_dot = self.algebra_dynamics(t, var, *frozen_var)
 
-            # Calculate log-Jacobian only if it is needed
+            # Compute log-Jacobian only if it contributes to the "Hamiltonian".
             if grad_logj.abs().sum() == 0:
                 logj_dot = 0
             else:
                 logj_dot = self.calc_logj_rate(t, var, *frozen_var)
 
-            # Hamiltonian combines contributions from log-Jacobian and state
+            # Hamiltonian captures effect of loss on system dynamics:
+            # sum of log-Jacobian term and adjoint–dynamics contraction
             hamilton = torch.sum(
                 grad_logj * logj_dot + tie_adjoints(grad_alg_var, alg_var_dot)
             )
 
-            # Compute gradient of Hamiltonian w.r.t. state variable
+            # Differentiate Hamiltonian w.r.t. state to get adjoint dynamics
             grad_var_dot, = torch.autograd.grad(
                 -hamilton, (var,), retain_graph=False
             )
 
-        # Compute time derivatives for group-valued state & algebra-valued
-        # adjoint state, using:
-        #   var_dot = alg_var_dot @ var
-        #   grad_alg_var_dot = grad_var_dot @ var.adjoint()
+        # Compute state and adjoint dynamics using Lie group structure:
+        #
+        # - var (the group-valued state) evolves according to:
+        #       var_dot = alg_var_dot @ var
+        #   which maps gradients back to the Lie group.
+        #
+        # - grad_alg_var (the algebra-valued adjoint state) evolves via:
+        #       grad_alg_var_dot = grad_var_dot @ var.adjoint()
+        #   which maps gradients back to the Lie algebra.
+        #
+        # Note:
+        #   grad_alg_var_dot is projected to the Lie algebra using the
+        #   anti-Hermitian projection, ensuring it stays in the correct space.
 
-        return TupleVar(alg_var_dot @ var, grad_var_dot @ var.adjoint())
+        var_dot = alg_var_dot @ var
+        grad_alg_var_dot = anti_hermitian(grad_var_dot @ var.adjoint())
+
+        return TupleVar(var_dot, grad_alg_var_dot)
 
     def calc_grad_params_rate(self, t, aug_var, aug_frozen_var):
         """
