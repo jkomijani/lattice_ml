@@ -465,7 +465,7 @@ def augmented_lie_euler_step(func, t, var, dt, *args):
     var, other = var.tuple
 
     # Update SU(n) variable with the Euler method
-    var = torch.matrix_exp(delta) @ var
+    var = torch.matrix_exp(delta @ var.adjoint()) @ var
 
     # Update auxiliary variable via standard Euler increment
     other = other + d_other
