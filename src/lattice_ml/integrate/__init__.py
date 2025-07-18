@@ -5,6 +5,7 @@ from ._odeflow import ODEFlow  # a `Module` for evolution of state variables
 from ._odeflow import ODEFlow_  # as `ODEFlow`, but also returns log(J)
 from ._adjoint import AdjODEFlow_  # as `ODEFlow_`, but uses adjoint method
 from ._adjoint import AdjModule  # (optional) to be used with AdjODEFlow_
+from ._adjoint import TupleVar  # For overriding method of AdjModule
 
 # Following ones are as above, but specific for Lie group state variables
 from ._lie_group_odeint import lie_odeint
