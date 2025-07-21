@@ -371,17 +371,44 @@ class AdjLieModule(torch.nn.Module, ABC):
           is computed exactly. Defaults to 1.
     """
 
-    def __init__(self, num_hutchinson_samples=1):
+    def __init__(self, num_hutchinson_samples: int | None = 1):
         super().__init__()
         self.num_hutchinson_samples = num_hutchinson_samples
 
     def forward(self, t, var, *frozen_var):
-        """The function defining the evolution of the state variable."""
+        """
+        Defines the evolution of the state variable.
+
+        This method computes the vector field corresponding to the flow at time
+        t, based on the algebraic dynamics defined in `algebra_dynamics`.
+
+        Args:
+            t (float): Time parameter.
+            var (Tensor): The state variable (e.g, a unitary matrix).
+            *frozen_var: Additional parameters required by the dynamics.
+
+        Returns:
+            Tensor: Time derivative of the state variable.
+        """
         return self.algebra_dynamics(t, var, *frozen_var) @ var
 
     @abstractmethod
     def algebra_dynamics(self, t, var, *frozen_var):
-        """The function defining `F(t, U; p)`."""
+        """
+        Defines the algebra-valued vector field F(t, U; p) for the flow.
+
+        This method should return the Lie algebra element (e.g., an
+        anti-Hermitian matrix) corresponding to the instantaneous velocity of
+        the group-valued state `U` at time `t`, given frozen parameters `p`.
+
+        Args:
+            t (float): Time parameter.
+            var (Tensor): The state variable (e.g, a unitary matrix).
+            *frozen_var: Additional parameters required by the dynamics.
+
+        Returns:
+            Tensor: Time derivative of the algebra-valued state variable.
+        """
 
     def calc_logj_rate(self, t, var, *frozen_var):
         """
