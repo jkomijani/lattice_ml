@@ -137,6 +137,28 @@ class Eigh(torch.autograd.Function):
         return grad_matrix
 
 
+class InverseEigh(torch.autograd.Function):
+    """Similar to `InverseEign`, but specialized for Hermitian matrices."""
+
+    @staticmethod
+    def forward(ctx, vals, vecs):
+        matrix = vecs @ (vals.unsqueeze(-1) * vecs.adjoint())
+        ctx.save_for_backward(vals, vecs)
+        return matrix
+
+    @staticmethod
+    def backward(ctx, grad_matrix):
+        # grad_{u & v} are $\bar u$ and $\bar v$ in the terminology of AD
+        vals, vecs = ctx.saved_tensors
+
+        grad_matrix = vecs.adjoint() @ grad_matrix @ vecs
+
+        grad_vals = torch.linalg.diagonal(grad_matrix).real
+        grad_vecs = vecs @ (calc_eig_delta(vals).conj() * grad_matrix)
+
+        return grad_vals, grad_vecs
+
+
 # =============================================================================
 class Eigu(torch.autograd.Function):
     """Similar to `NormalMatrixEig`, but specialized for unitary matrices."""
