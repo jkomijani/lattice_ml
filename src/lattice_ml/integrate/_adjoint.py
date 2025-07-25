@@ -473,6 +473,7 @@ class TupleVar:
     def __add__(self, other):
         """
         Elementwise addition with another TupleVar.
+        If 'other' is longer, extra elements are ignored.
         """
         x = [var1 + var2 for var1, var2 in zip(self.tuple, other.tuple)]
         return TupleVar(*x)
@@ -480,6 +481,7 @@ class TupleVar:
     def __sub__(self, other):
         """
         Elementwise subtraction with another TupleVar.
+        If 'other' is longer, extra elements are ignored.
         """
         x = [var1 - var2 for var1, var2 in zip(self.tuple, other.tuple)]
         return TupleVar(*x)

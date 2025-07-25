@@ -10,23 +10,18 @@ for:
 - Standard integration methods such as Runge-Kutta 4 (RK4) and Euler
 - Custom ODE step functions via `ode_step` override
 - Fixed step sizes or a specified number of integration steps
-- Loss accumulation over time using Simpson's or trapezoidal rule
+- Optional integration of a quantity (e.g., Jacobian) along the ODE trajectory
 - Compatibility with both PyTorch tensors and NumPy arrays
 
 Main Interface
 --------------
 - `odeint`: Solves dy/dt = f(t, y; args) over a time interval.
-  Optionally integrates a loss term over time.
-
-Internal Utilities
-------------------
-- `_integrate_with_loss`: Helper for time-integrating a loss function
-  alongside state evolution.
+  Optionally accumulates a loss function along the ODE trajectory.
 
 See the `odeint` function docstring for usage details & parameter definitions.
 """
 
-from typing import Callable, Tuple, Union
+from typing import Callable, Tuple, Union, Any
 import torch
 import numpy as np
 
@@ -46,8 +41,8 @@ def odeint(
     num_steps: int | None = None,
     method: str = "RK4",
     ode_step: Callable | None = None,
-    loss_rate: Callable | None = None,
-) -> Union[TensorOrArray, Tuple[TensorOrArray, TensorOrArray]]:
+    loss_rate: Callable | None = None
+) -> Union[TensorOrArray, Tuple[TensorOrArray, Any]]:
     """
     Solve an initial value problem for a system of ODEs.
 
@@ -85,16 +80,24 @@ def odeint(
     ode_step : callable, optional
         If provided, overrides `method` and is used as the ODE step function.
     loss_rate : callable, optional
-        Optional integrand for loss accumulation. If provided, will compute
-        and return the loss using Simpson's rule (if applicable).
+        A function that computes an instantaneous quantity to be integrated
+        along the ODE trajectory. If provided, it is called at each integration
+        step with the signature: `loss_rate(t, y, *args)`. The function should
+        return a scalar or a summable object, which is accumulated over time.
+        The total loss is then computed using Simpson's rule (if applicable),
+        or the trapezoidal rule as a fallback.
+
+        Typical uses include log-Jacobian terms in KL divergence losses or
+        gradient accumulation terms in adjoint sensitivity analysis.
 
     Returns
     -------
     final_state : same type as y0
         Final state after integration.
-    loss :  torch.Tensor or numpy.ndarray (if loss_rate is given)
+    loss : torch.Tensor or numpy.ndarray (if loss_rate is given)
         Accumulated loss over the integration time.
     """
+    # Determine ode_step if not explicitly given
     if ode_step is None:
         ode_step = _get_ode_step_function(method)
     else:
@@ -106,12 +109,13 @@ def odeint(
     elif not isinstance(args, tuple):
         args = (args,)
 
-    # Determine number of steps and time_grid
     t0, t1 = t_span
 
+    # Determine number of steps from step size if not explicitly given
     if num_steps is None:
         num_steps = max(1, int(abs((t1 - t0) / step_size)))
 
+    # Use the appropriate time grid depending on tensor type
     if isinstance(y0, np.ndarray):
         time_grid = np.linspace(t0, t1, 1 + num_steps)
     else:
@@ -140,7 +144,7 @@ def _integrate_with_loss(
     y: TensorOrArray,
     step_size: float,
     args: tuple,
-) -> Tuple[TensorOrArray, TensorOrArray]:
+) -> Tuple[TensorOrArray, Any]:
     """
     Helper for odeint that integrates with a loss_rate term.
 
