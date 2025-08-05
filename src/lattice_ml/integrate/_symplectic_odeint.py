@@ -14,37 +14,31 @@ because it is time-reversible and preserves the symplectic geometry of the
 system. This leads to stable long-term behavior and approximate energy
 conservation.
 
-Features:
-- Symplectic integration with fixed step size
-- Supports PyTorch tensors and NumPy arrays
-
 Main Interface
 --------------
-- `symplectic_odeint`: Integrates Hamiltonian system from (p0, q0).
-- `symplectic_odeint_safe`: non-in-place, autograd-safe implementation.
+- `symplectic_odeint`: Integrates symplectic systems from (p0, q0).
+- `lie_symplectic_odeint`: Integrates symplectic systems on a Lie group.
 """
 
-from typing import Callable, Tuple, Union
+from typing import Callable, Tuple, Any
 import torch
 import numpy as np
 
-TensorOrArray = Union[torch.Tensor, np.ndarray]
 
-
-__all__ = ["symplectic_odeint", "symplectic_odeint_safe"]
+__all__ = ["symplectic_odeint", "lie_symplectic_odeint"]
 
 
 # =============================================================================
 def symplectic_odeint(
     force_fn: Callable,
     t_span: Tuple[float, float],
-    p0: TensorOrArray,
-    q0: TensorOrArray,
-    args: any = None,
+    p0: torch.Tensor,
+    q0: torch.Tensor,
+    args: Any = None,
     step_size: float = 1e-3,
     num_steps: int | None = None,
     method: str = "leapfrog"
-) -> Tuple[TensorOrArray, TensorOrArray]:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Solve an initial value problem for a system of symplectic ODEs.
 
@@ -61,37 +55,35 @@ def symplectic_odeint(
     Parameters
     ----------
     force_fn : callable
-        Function modeling the momentum dynamics, typically -∂H/∂q.
-        Signature: force_fn(t, q, *args), where t is time, q is position, and
-        args are optional frozen arguments.
+        Function modeling momentum dynamics. Signature: force_fn(t, q, *args).
 
     t_span : tuple of float
-        The time interval (t0, t1) over which to integrate.
+        Time interval (t0, t1) for integration.
 
-    p0 : TensorOrArray
+    p0 : torch.Tensor
         Initial mementum.
 
-    q0 : TensorOrArray
+    q0 : torch.Tensor
         Initial position.
 
     args : tuple or any or None, optional
         Additional arguments passed to force_fn.
 
     step_size : float, optional
-        Time step size.
+        Time step size. Ignored if `num_steps` is provided.
 
     num_steps : int, optional
-        If provided, overrides step_size with fixed number of steps.
+        Number of integration steps. If given, overrides `step_size`.
 
     method : str
-        Integration method ("leapfrog" supported).
+        Integration method. Only "leapfrog" is supported.
 
     Returns
     -------
-    final_p : TensorOrArray
+    final_p : torch.Tensor
         Final momentum after integration.
 
-    final_q : TensorOrArray
+    final_q : torch.Tensor
         Final position after integration.
     """
 
@@ -110,11 +102,7 @@ def symplectic_odeint(
     if num_steps is None:
         num_steps = max(1, int(abs((t1 - t0) / step_size)))
 
-    # Use the appropriate time grid depending on tensor type
-    if isinstance(q0, np.ndarray):
-        time_grid = np.linspace(t0, t1, 1 + num_steps)
-    else:
-        time_grid = torch.linspace(t0, t1, 1 + num_steps, device=q0.device)
+    time_grid = torch.linspace(t0, t1, 1 + num_steps, device=q0.device)
 
     step_size = float(time_grid[1] - time_grid[0])  # Actual step size
 
@@ -124,34 +112,81 @@ def symplectic_odeint(
 
     # Intermediate, full leapfrog steps
     for t in time_grid[1:-1]:
-        p += step_size * force_fn(t, q, *args)
-        q += step_size * p
+        p = p + step_size * force_fn(t, q, *args)
+        q = q + step_size * p
 
     # Final half-step momentum update
-    p += 0.5 * step_size * force_fn(time_grid[-1], q, *args)
+    p = p + 0.5 * step_size * force_fn(time_grid[-1], q, *args)
 
     return p, q
 
 
 # =============================================================================
-def symplectic_odeint_safe(
+def lie_symplectic_odeint(
     force_fn: Callable,
     t_span: Tuple[float, float],
-    p0: TensorOrArray,
-    q0: TensorOrArray,
-    args: any = None,
+    p0: torch.Tensor,
+    u0: torch.Tensor,
+    args: Any = None,
     step_size: float = 1e-3,
     num_steps: int | None = None,
-    method: str = "leapfrog",
-    return_trajectory: bool = False
-) -> Tuple[TensorOrArray, TensorOrArray]:
+    method: str = "leapfrog"
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    A non-in-place, autograd-safe implementation of `symplectic_odeint`.
+    Solve an initial value problem for a symplectic system on a Lie group.
 
-    This variant is intended for testing, debugging, and analysis, and
-    optionally supports trajectory recording.
+    This function is a Lie-aware variant of `symplectic_odeint`, specialized
+    for systems whose positions lie in a matrix Lie group (e.g., SO(n), SU(n)),
+    and whose momenta lie in the associated Lie algebra.
 
-    See `symplectic_odeint` for full usage details.
+    Unlike `symplectic_odeint`, this function:
+      - Uses the matrix exponential for position updates:
+          u ← exp(Δt·p) @ u
+      - Assumes dynamics are separable and compatible with Lie group structure.
+
+    The system evolves according to:
+
+        du/dt = ∂H/∂p u,
+        dp/dt = -u⁻¹ ∂H/∂u = force_fn(t, u, *args)
+
+    Parameters
+    ----------
+    force_fn : callable
+        Function modeling momentum dynamics.
+        Signature: force_fn(t, u, *args) → tensor in Lie algebra.
+
+    t_span : tuple of float
+        Time interval (t0, t1) for integration.
+
+    p0 : torch.Tensor
+        Initial momentum (Lie algebra element).
+
+    u0 : torch.Tensor
+        Initial position (Lie group element).
+
+    args : any, optional
+        Additional arguments passed to `force_fn`.
+
+    step_size : float, optional
+        Time step size. Ignored if `num_steps` is provided.
+
+    num_steps : int, optional
+        Number of integration steps. If given, overrides `step_size`.
+
+    method : str, optional
+        Integration method. Only "leapfrog" is supported.
+
+    Returns
+    -------
+    final_p : torch.Tensor
+        Final momentum (Lie algebra element) after integration.
+
+    final_u : torch.Tensor
+        Final position (Lie group element) after integration.
+
+    See Also
+    --------
+    symplectic_odeint : Symplectic integrator for vector-space phase spaces.
     """
 
     assert method == "leapfrog", "Other methods are not supported yet."
@@ -169,39 +204,20 @@ def symplectic_odeint_safe(
     if num_steps is None:
         num_steps = max(1, int(abs((t1 - t0) / step_size)))
 
-    # Use the appropriate time grid depending on tensor type
-    if isinstance(q0, np.ndarray):
-        time_grid = np.linspace(t0, t1, 1 + num_steps)
-    else:
-        time_grid = torch.linspace(t0, t1, 1 + num_steps, device=q0.device)
+    time_grid = torch.linspace(t0, t1, 1 + num_steps, device=p0.device)
 
     step_size = float(time_grid[1] - time_grid[0])  # Actual step size
 
-    # Initialize state
-    p, q = p0, q0
+    # Initial half-step momentum update & full-step position update
+    p = p0 + 0.5 * step_size * force_fn(time_grid[0], u0, *args)
+    u = torch.matrix_exp(step_size * p) @ u0
 
-    # Optional trajectory tracking
-    if return_trajectory:
-        p_list = [None] * (num_steps + 2)
-        q_list = [None] * (num_steps + 1)
-        p_list[0] = p
-        q_list[0] = q
+    # Intermediate, full leapfrog steps
+    for t in time_grid[1:-1]:
+        p = p + step_size * force_fn(t, u, *args)
+        u = torch.matrix_exp(step_size * p) @ u
 
-    # Main Leapfrog integration loop
-    for i, t in enumerate(time_grid[:-1]):
-        # Kick: update p by half-step on the first step, full-step afterward
-        p = p + (1 if i > 0 else 0.5) * step_size * force_fn(t, q, *args)
-        q = q + step_size * p
+    # Final half-step momentum update
+    p = p + 0.5 * step_size * force_fn(time_grid[-1], u, *args)
 
-        if return_trajectory:
-            p_list[i + 1] = p
-            q_list[i + 1] = q
-
-    # Final half-step for momentum
-    p = p + 0.5 * step_size * force_fn(time_grid[-1], q, *args)
-
-    if return_trajectory:
-        p_list[-1] = p
-        return p_list, q_list
-
-    return p, q
+    return p, u

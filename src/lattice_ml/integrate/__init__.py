@@ -26,6 +26,8 @@ from ._lie_group_adjoint import AdjLieModule
 # ==========================
 # Symplectic ODE solvers
 from ._symplectic_odeint import symplectic_odeint
+from ._symplectic_odeint import lie_symplectic_odeint
+
 from ._symplectic_adjoint import adjoint_symplectic_odeint
 
 from ._symplectic_odeflow import SymplecticODEFlow

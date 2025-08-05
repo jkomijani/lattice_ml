@@ -21,7 +21,7 @@ Classes
 from functools import partial as ftpartial
 import torch
 
-from ._symplectic_odeint import symplectic_odeint_safe  # autograd-safe
+from ._symplectic_odeint import symplectic_odeint
 from ._symplectic_adjoint import adjoint_symplectic_odeint
 
 
@@ -82,7 +82,7 @@ class SymplecticODEFlow(torch.nn.Module):
         if adjoint_method:
             self.odeint = ftpartial(adjoint_symplectic_odeint, **odeint_kwargs)
         else:
-            self.odeint = ftpartial(symplectic_odeint_safe, **odeint_kwargs)
+            self.odeint = ftpartial(symplectic_odeint, **odeint_kwargs)
 
     def forward(self, p, q, args=None):
         """
