@@ -1,5 +1,6 @@
 To install:
-    python3 -m pip install . --user
+    pip install .
+    pip install --no-build-isolation .  # If internet is not available
 
 To uninstall:
-    python3 -m pip uninstall lattice_ml
+    pip uninstall lattice_ml

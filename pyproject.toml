@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lattice_ml"
+version = "0.1.0"
+description = "A PyTorch-based library for lattice field theory"
+readme = "README.md"
+authors = [{name = "Javad Komijani", email = "jkomijani@gmail.com"}]
+license = {text = "MIT"}
+
+[project.urls]
+Homepage = "https://github.com/jkomijani/lattice_ml"
+
+[tool.setuptools.packages.find]
+where = ["src"]
