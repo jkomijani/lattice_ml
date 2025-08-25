@@ -24,9 +24,6 @@ import torch
 
 from ._symplectic_odeint import symplectic_odeint
 from ._adjoint import TupleVar
-from ._symplectic_adjoint_velocity import (
-    adjoint_symplectic_odeint as generalized_adjoint_symplectic_odeint
-)
 
 
 __all__ = ["adjoint_symplectic_odeint"]
@@ -110,32 +107,36 @@ def adjoint_symplectic_odeint(
 
     final_q : torch.Tensor
         Final position after integration.
-    """
 
-    if velocity_fn is not None:
-        return generalized_adjoint_symplectic_odeint(
-                force_fn, t_span, p0, q0, args=args, velocity_fn=velocity_fn,
-                **odeint_kwargs
-                )
+    Note:
+        This implementation is intentionally simple and not optimized.
+        In principle, efficiency could be improved by separating the parameters
+        of `force_fn` and `velocity_fn`, and using only the relevant subsets
+        when computing derivatives. Currently, all parameters are treated
+        together, leading to unnecessary computations.
+    """
 
     # Ensure force_fn supports adjoint-based differentiation
     if not isinstance(force_fn, AdjSymplecticModule):
         force_fn = AdjSymplecticModuleWrapper(force_fn)
+
+    if velocity_fn is not None:
+        velocity_fn = VelocityAdjSymplecticModuleWrapper(velocity_fn)
 
     # Bind integration options
     odeint = ftpartial(symplectic_odeint, **odeint_kwargs)
 
     # Use custom autograd-enabled symplectic integrator
     p, q = SymplecticAdjointWrapper.apply(
-        odeint, force_fn, t_span, p0, q0,
-        *get_all_frozen_and_differentiable_items(args, force_fn)
+        odeint, force_fn, velocity_fn, t_span, p0, q0,
+        *get_all_frozen_and_differentiable_items(args, force_fn, velocity_fn)
     )
 
     # Return position and momentum at the terminal time
     return p, q
 
 
-def get_all_frozen_and_differentiable_items(args, force_fn):
+def get_all_frozen_and_differentiable_items(args, force_fn, velocity_fn):
     """
     Internal helper to unpack frozen arguments and trainable parameters.
 
@@ -152,7 +153,10 @@ def get_all_frozen_and_differentiable_items(args, force_fn):
 
     frozen_args = args
     trainable_params = [p for p in force_fn.parameters() if p.requires_grad]
-    return len(frozen_args), *frozen_args, *trainable_params
+    if velocity_fn is not None:
+        vel_params = [p for p in velocity_fn.parameters() if p.requires_grad]
+        trainable_params.extend(vel_params)
+    return (len(frozen_args), *frozen_args, *trainable_params)
 
 
 # =============================================================================
@@ -180,35 +184,42 @@ class SymplecticAdjointWrapper(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, odeint, func, t_span, p, q, n_frozen_args, *all_args):
+    def forward(
+        ctx,
+        odeint, force_fn, velocity_fn, t_span, p, q, n_frozen_args, *all_args
+    ):
         """
         Performs the forward pass by integrating the symplectic ODE system.
 
         Args:
             ctx: Autograd context for saving information for backward pass.
             odeint (Callable): Symplectic ODE integrator (e.g., Verlet).
-            func (AdjSymplecticModule): Module defining the system dynamics.
+            force_fn (AdjSymplecticModule): Module defining the dynamics.
             t_span (Tuple[float, float]): Time interval for integration.
             p (Tensor): Initial momentum.
             q (Tensor): Initial position.
             n_frozen_args (int): Number of frozen arguments in all_args.
-            *all_args: Tuple of frozen arguments and parameters for func.
+            *all_args: Tuple of frozen arguments and parameters for force_fn.
 
         Returns:
             Tuple[Tensor, Tensor]: Final momentum and position.
         """
-        assert isinstance(func, AdjSymplecticModule), (
-            "Expected `func` to be an instance of AdjSymplecticModule"
+        assert isinstance(force_fn, AdjSymplecticModule), (
+            "Expected `force_fn` to be an instance of AdjSymplecticModule"
         )
 
         frozen_args = all_args[:n_frozen_args]
 
         # Perform ODE integration
-        p, q = odeint(func.forward, t_span, p, q, args=frozen_args)
+        p, q = odeint(
+            force_fn.forward, t_span, p, q,
+            velocity_fn=velocity_fn and velocity_fn.forward, args=frozen_args
+        )
 
         # Save tensors and meta info needed for backward pass
         ctx.odeint = odeint
-        ctx.func = func
+        ctx.force_fn = force_fn
+        ctx.velocity_fn = velocity_fn
         ctx.t_span = t_span
         ctx.n_frozen_args = n_frozen_args
         ctx.save_for_backward(p, q, *all_args)
@@ -231,11 +242,20 @@ class SymplecticAdjointWrapper(torch.autograd.Function):
 
         Returns:
             Tuple[None, None, None, grad_p0, grad_q0, None, *grad_args]
+
+        Note:
+            This implementation is intentionally simple and not optimized.
+            In principle, efficiency could be improved by separating the
+            parameters of `force_fn` and `velocity_fn`, and using only
+            the relevant subsets when computing derivatives. Currently,
+            all parameters are treated together, leading to unnecessary
+            computations.
         """
         # grad_{p,q} ≡ adjoint variables (λ_p, λ_q) at terminal time
         # In AD: grad_p = \bar p = ∂Loss/∂p
 
-        func = ctx.func
+        force_fn = ctx.force_fn
+        velocity_fn = ctx.velocity_fn
         odeint = ctx.odeint
         t_span = ctx.t_span
         p, q, *all_args = ctx.saved_tensors
@@ -247,9 +267,10 @@ class SymplecticAdjointWrapper(torch.autograd.Function):
         grad_theta = [torch.zeros_like(arg) for arg in theta]
 
         # Construct augmented initial conditions for adjoint system
-        # aug_p = (p, λ_q, ∂Loss/∂θ); aug_q = (q, -λ_p)
+        # aug_p = (p, λ_q, ∂Loss/∂θ); aug_q = (q, -λ_p, ∂Loss/∂θ)
+        # We could pass only θ of force_fn/velocity_fn to aug_p/aug_q
         aug_p = TupleVar(p, grad_q, *grad_theta)
-        aug_q = TupleVar(q, -grad_p)
+        aug_q = TupleVar(q, -grad_p, *grad_theta)
 
         # Pack frozen arguments and theta parameters for augmented reverse call
         frozen_args = all_args[:ctx.n_frozen_args]
@@ -257,18 +278,23 @@ class SymplecticAdjointWrapper(torch.autograd.Function):
 
         # Integrate the augmented system backward in time to compute gradients
         aug_p, aug_q = odeint(
-            func.aug_reverse, t_span[::-1], aug_p, aug_q, args=aug_frozen_args
+            force_fn.aug_reverse, t_span[::-1], aug_p, aug_q,
+            velocity_fn=velocity_fn and velocity_fn.aug_reverse,
+            args=aug_frozen_args
         )
 
         # Unpack gradients from the augmented output
         _, grad_q0, *grad_theta = aug_p.tuple
         _, grad_p0 = aug_q.tuple[0], -aug_q.tuple[1]  # Reverse sign
 
+        if len(aug_q.tuple) > 2:
+            grad_theta = [a + b for a, b in zip(grad_theta, aug_q.tuple[2:])]
+
         # Match computed gradients with original inputs
         grad_all_args = align_grads_with_inputs(all_args, grad_theta)
 
         # Return gradients in order matching input signature
-        return None, None, None, grad_p0, grad_q0, None, *grad_all_args
+        return None, None, None, None, grad_p0, grad_q0, None, *grad_all_args
 
 
 def align_grads_with_inputs(all_args, grad_theta):
@@ -385,7 +411,7 @@ class AdjSymplecticModule(torch.nn.Module, ABC):
                `q` and parameters, which gives the adjoint system dynamics.
             4. Return the augmented derivatives wrapped in `TupleVar`.
         """
-        q, minus_grad_p = aug_q.tuple
+        q, minus_grad_p = aug_q.tuple[:2]
 
         # Separate frozen arguments and all differentiable parameters
         frozen_args, theta = aug_frozen_args.tuple
@@ -402,7 +428,10 @@ class AdjSymplecticModule(torch.nn.Module, ABC):
 
             # Compute gradients (adjoint dynamics) w.r.t. q and parameters
             grad_q_dot, *grad_theta_dot = torch.autograd.grad(
-                -hamilton, (q, *theta), retain_graph=False
+                -hamilton,
+                (q, *theta),
+                retain_graph=False,
+                materialize_grads=True
             )
 
         # Return augmented derivatives: forward dynamics and adjoint dynamics
@@ -438,3 +467,75 @@ class AdjSymplecticModuleWrapper(AdjSymplecticModule):
             torch.Tensor: The time derivative of the momentum `p` at time t.
         """
         return self.func(t, q, *frozen_args)
+
+
+class VelocityAdjSymplecticModuleWrapper(AdjSymplecticModuleWrapper):
+    """A wrapper class suitable for `velocity_fn`."""
+
+    def aug_reverse(self, t, aug_p, aug_frozen_args):
+        r"""
+        Computes the time derivative of the augmented position at time t
+        used in backward integration for the adjoint method.
+
+        This method takes in augmented momentum, containing the momentum p,
+        the adjoint of the position q, and also the adjoint of all parameters
+        and frozen arguments that require gradients as a TupleVar.
+
+        Additional frozen arguments and parameters requiring gradients can be
+        passed too as a TupleVar. This method returns the time derivatives of
+        the augmented position, containing the position q and the negative of
+        the ajdoint of the momentum p.
+
+        Note:
+            `TupleVar` is a lightweight container for elementwise algebraic
+            operations on a tuple of variables.
+
+        Args:
+            t (float or torch.Tensor): Current time.
+            aug_p (TupleVar): The augmented momentum, containing the momentum
+                p, the adjoint of the position q, and also the adjoint of all
+                parameters and frozen arguments that require gradients as
+                `TupleVar(p, grad_q, grad_theta)`.
+            aug_frozen_args (TupleVar): The augmented frozen arguments,
+                containing all frozen arguments and all parameters that require
+                gradients.
+
+        Returns:
+            TupleVar: Time derivatives of the augmented position, containing
+            the position q and the negative of the ajdoint of the momentum p.
+            It is the time derivative of `TupleVar(q, -grad_p)`.
+
+        Process:
+            1. Compute forward dynamics `\dot q = forward(t, p, *frozen_args)`.
+            2. Form the adjoint Hamiltonian coupling `grad_q` with `\dot q`.
+            3. Compute gradients of the adjoint Hamiltonian with respect to
+               `q` and parameters, which gives the adjoint system dynamics.
+            4. Return the augmented derivatives wrapped in `TupleVar`.
+        """
+        p, grad_q = aug_p.tuple[:2]
+
+        # Separate frozen arguments and all differentiable parameters
+        frozen_args, theta = aug_frozen_args.tuple
+
+        with torch.enable_grad():
+            # Enable gradient tracking on q for adjoint computation
+            p = p.detach().requires_grad_(True)
+
+            # Compute momentum dynamics
+            q_dot = self.forward(t, p, *frozen_args)
+
+            # Construct adjoint Hamiltonian for sensitivity analysis
+            hamilton = torch.sum(grad_q.conj() * q_dot)
+
+            # Compute gradients (adjoint dynamics) w.r.t. p and parameters
+            grad_p_dot, *grad_theta_dot = torch.autograd.grad(
+                -hamilton,
+                (p, *theta),
+                retain_graph=False,
+                materialize_grads=True
+            )
+
+        # Return augmented derivatives: forward dynamics and adjoint dynamics
+        aug_q_dot = TupleVar(q_dot, -grad_p_dot, *grad_theta_dot)
+
+        return aug_q_dot
