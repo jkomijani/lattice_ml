@@ -20,9 +20,10 @@ Main Interface
 - `lie_symplectic_odeint`: Integrates symplectic systems on a Lie group.
 """
 
+# pylint: disable=too-many-arguments, too-many-positional-arguments
+
 from typing import Callable, Tuple, Any
 import torch
-import numpy as np
 
 
 __all__ = ["symplectic_odeint", "lie_symplectic_odeint"]
@@ -35,6 +36,7 @@ def symplectic_odeint(
     p0: torch.Tensor,
     q0: torch.Tensor,
     args: Any = None,
+    velocity_fn: Callable | None = None,
     step_size: float = 1e-3,
     num_steps: int | None = None,
     method: str = "leapfrog"
@@ -52,6 +54,13 @@ def symplectic_odeint(
     it may not explicitly derive from a Hamiltonian, we adopt canonical
     notation for consistency with the symplectic integration literature.
 
+    Optionally, one can override the standard velocity–momentum relation by
+    supplying a custom `velocity_fn`. This allows modeling systems where
+    velocity is not simply equal to momentum, e.g. in non-canonical coordinates
+    or generalized mechanical systems. In this case, the position dynamics are:
+
+        dq/dt = velocity_fn(t, p, *args)
+
     Parameters
     ----------
     force_fn : callable
@@ -68,6 +77,11 @@ def symplectic_odeint(
 
     args : tuple or any or None, optional
         Additional arguments passed to force_fn.
+
+    velocity_fn: callable, optional
+        Function modeling the position dynamics.
+        Signature: velocity_fn(t, p, *args).
+        If not provided, defaults to the canonical choice dq/dt = p.
 
     step_size : float, optional
         Time step size. Ignored if `num_steps` is provided.
@@ -106,19 +120,27 @@ def symplectic_odeint(
 
     step_size = float(time_grid[1] - time_grid[0])  # Actual step size
 
+    if velocity_fn is None:
+        velocity_fn = default_velocity_fn
+
     # Initial half-step momentum update & full-step position update
     p = p0 + 0.5 * step_size * force_fn(time_grid[0], q0, *args)
-    q = q0 + step_size * p
+    q = q0 + step_size * velocity_fn(time_grid[0] + step_size / 2, p, *args)
 
     # Intermediate, full leapfrog steps
     for t in time_grid[1:-1]:
         p = p + step_size * force_fn(t, q, *args)
-        q = q + step_size * p
+        q = q + step_size * velocity_fn(t + step_size / 2, p, *args)
 
     # Final half-step momentum update
     p = p + 0.5 * step_size * force_fn(time_grid[-1], q, *args)
 
     return p, q
+
+
+def default_velocity_fn(t, p, *args):  # pylint: disable=unused-argument
+    """Return the standard velocity–momentum relation."""
+    return p
 
 
 # =============================================================================
