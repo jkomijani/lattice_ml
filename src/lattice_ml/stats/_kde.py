@@ -30,7 +30,7 @@ Usage
 >>> kde_values = kde.evaluate(points)
 """
 
-# pylint: disable=invalid-name
+# pylint: disable=invalid-name, too-many-locals
 
 import torch
 import numpy as np
@@ -93,12 +93,12 @@ class GaussianKDE:
             raise ValueError("bw_method must be scott, silverman, or float")
 
         # Scale covariance to obtain bandwidth matrix
+        bandwidth = cov_data * factor**2
+        self.bandwidth = bandwidth
         if self.d == 1:
-            bandwidth = cov_data * factor**2  # scalar
             self.inv_bandwidth = 1.0 / bandwidth  # scalar inverse
             self.det_bandwidth = bandwidth  # scalar determinant
         else:
-            bandwidth = cov_data * factor**2  # (d, d) matrix
             self.inv_bandwidth = torch.inverse(bandwidth)  # matrix inverse
             self.det_bandwidth = torch.det(bandwidth)  # determinant
 
@@ -140,10 +140,62 @@ class GaussianKDE:
             kde_values = torch.exp(exponent).sum(dim=1) / norm_factor
         else:
             # Multivariate case: use einsum for quadratic form
-            sigma = self.inv_bandwidth
-            det = self.det_bandwidth
-            exponent = -0.5 * torch.einsum('mnd,de,mne->mn', diff, sigma, diff)
-            norm_factor = self.n * torch.sqrt((2 * np.pi)**self.d * det)
+            inv_b = self.inv_bandwidth
+            det_b = self.det_bandwidth
+            exponent = -0.5 * torch.einsum('mnd,de,mne->mn', diff, inv_b, diff)
+            norm_factor = self.n * torch.sqrt((2 * np.pi)**self.d * det_b)
+            kde_values = torch.exp(exponent).sum(dim=1) / norm_factor
+
+        return kde_values
+
+    def marginal_evaluate(self, points, dims):
+        """
+        Evaluate the marginal KDE on a subset of dimensions.
+
+        Parameters
+        ----------
+        points : torch.Tensor or np.ndarray, shape (m, len(dims))
+            Points in the marginal space
+        dims : int or array-like
+            Indices of dimensions to keep (marginalized over the others)
+
+        Returns
+        -------
+        kde_values : torch.Tensor, shape (m,)
+        """
+        if not isinstance(points, torch.Tensor):
+            points = torch.from_numpy(np.asarray(points)).float()
+        if isinstance(dims, int):
+            dims = (dims,)
+
+        _, d_check = points.shape
+        if d_check != len(dims):
+            raise ValueError(
+                f"Dimensionality mismatch: points have {d_check}, "
+                f"expected {len(dims)}"
+            )
+
+        if self.d == d_check:
+            # Marginal is the KDE itself
+            return self.evaluate(points)
+
+        dataset_marg = self.dataset[:, dims]
+        diff = points.unsqueeze(1) - dataset_marg.unsqueeze(0)
+
+        if len(dims) == 1:
+            # 1D marginal from multivariate
+            diff = diff.squeeze(-1)
+            inv_b = 1.0 / self.bandwidth[dims[0], dims[0]]
+            det_b = self.bandwidth[dims[0], dims[0]]
+            exponent = -0.5 * diff**2 * inv_b
+            norm_factor = self.n * torch.sqrt(2 * np.pi * det_b)
+            kde_values = torch.exp(exponent).sum(dim=1) / norm_factor
+        else:
+            # Multivariate marginal
+            inv_b = torch.inverse(self.bandwidth[np.ix_(dims, dims)])
+            det_b = torch.det(self.bandwidth[np.ix_(dims, dims)])
+            exponent = -0.5 * torch.einsum('mnd,de,mne->mn', diff, inv_b, diff)
+            norm_factor = self.n * torch.sqrt((2 * np.pi)**len(dims) * det_b)
             kde_values = torch.exp(exponent).sum(dim=1) / norm_factor
 
         return kde_values
