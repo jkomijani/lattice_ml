@@ -52,8 +52,8 @@ def adjoint_symplectic_odeint(
         dq/dt = ∂H/∂p = p
         dp/dt = -∂H/∂q = force_fn(t, q, *args)
 
-    where `force_fn` models the generalized force acting on the system. While
-    it may not explicitly derive from a Hamiltonian, we adopt canonical
+    where `force_fn` models the generalized force acting on the system.
+    While the force may not be derived from a Hamiltonian, we adopt canonical
     notation for consistency with the symplectic integration literature.
 
     Optionally, one can override the standard velocity–momentum relation by

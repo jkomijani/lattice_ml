@@ -39,8 +39,8 @@ class SymplecticODEFlow(torch.nn.Module):
         dq/dt = ∂H/∂p = p
         dp/dt = -∂H/∂q = force_fn(t, q, *args)
 
-    where `force_fn` models the generalized force acting on the system. While
-    it may not explicitly derive from a Hamiltonian, we adopt canonical
+    where `force_fn` models the generalized force acting on the system.
+    While the force may not be derived from a Hamiltonian, we adopt canonical
     notation for consistency with the symplectic integration literature.
 
     Parameters
@@ -62,6 +62,8 @@ class SymplecticODEFlow(torch.nn.Module):
             - step_size: float, time step size (default: 1e-3).
             - num_steps: int, if given, overrides step_size.
             - method: str, integration method such as leapfrog.
+            - velocity_fn: callable, function modeling the position dynamics.
+              If not provided, defaults to the canonical choice dq/dt = p.
 
     Methods
     -------
