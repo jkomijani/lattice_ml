@@ -3,14 +3,12 @@
 """
 Batched Molecular Dynamics (MD) integrator using a symplectic solver.
 
-This module implements a class `HamiltonianMD` to perform batched MD
-trajectories for lattice field theories or any system with a force function.
+This module implements the class `HamiltonianMD`, which is also alised to
+`HMD`, to perform batched MD trajectories for lattice field theories or any
+system with a force function.
 Each trajectory is integrated with a user-supplied symplectic ODE solver,
 returning the final positions and a kinetic-energy related intermediate
 quantity that can be used in Metropolis accept/reject steps (e.g., in HMC).
-
-The `HamiltonianMD` class expects a force function implementing:
-  - force_fn(q): returns the force ``-∂S/∂q`` given positions ``q``.
 
 The term "MD" (Molecular Dynamics) is kept for historical reasons: in HMC
 literature, integrating Hamilton's equations with Gaussian momenta is
@@ -18,8 +16,8 @@ traditionally called an MD trajectory. Conceptually, this is simply
 Hamiltonian dynamics with random initial momenta.
 
 Example usage:
-    force_fn = lambda q: -grad_action(q)
-    hmd = HamiltonianMD(force_fn, eps=0.25, num_steps=4)
+    force_fn = lambda t, q: -grad_action(q)
+    hmd = HamiltonianMD(force_fn, t_span=(0, 1), num_steps=4)
     q_batch = torch.zeros((batch_size, *lattice_shape))
     q_final, delta_log_prob_momenta = hmd.step(q_batch)
 """
@@ -30,7 +28,7 @@ import torch
 from lattice_ml.integrate import symplectic_odeint
 
 
-__all__ = ["HamiltonianMD"]
+__all__ = ["HamiltonianMD", "HMD"]
 
 
 class HamiltonianMD:
@@ -46,12 +44,17 @@ class HamiltonianMD:
     momenta is traditionally called an MD trajectory. Conceptually, this
     is simply Hamiltonian dynamics with random initial momenta.
 
+    The dynamics follow a canonical symplectic form:
+
+        dq/dt = ∂H/∂p = p
+        dp/dt = -∂H/∂q = force_fn(t, q, *args)
+
+    where `force_fn` models the generalized force acting on the system.
+    Note that the position dynamics can be changed from the canonical form by
+    supplying a custom `velocity_fn` to the symplectic solver.
+
     Attributes
     ----------
-    eps : float
-        Step size of the symplectic integrator.
-    num_steps : int
-        Number of integration steps per trajectory.
     symplectic_odeint : Callable
         Partially applied symplectic ODE solver for the given force function.
 
@@ -63,27 +66,29 @@ class HamiltonianMD:
         in kinetic energy, which can be used in Metropolis accept/reject.
     """
 
-    def __init__(self, force_fn, eps, num_steps, **solver_kwargs):
+    def __init__(self, force_fn, t_span, num_steps, **solver_kwargs):
         """
         Parameters
         ----------
         force_fn : Callable
-            Function computing ``-∂S/∂q`` given ``q``.
-        eps : float
-            Step size of the symplectic integrator.
-        num_steps : int
-            Number of integration steps per trajectory.
-        solver_kwargs : dict
-            Additional arguments for the symplectic integrator.
+            Defines the dynamics of the momentum, typically representing
+            the force as -∂H/∂q. It takes the form `force_fn(t, q, *args)`,
+            where t is time, q is position, and args are optional arguments.
+        t_span : tuple of float
+            Time interval (t0, t1) for integration.
+        num_steps: int
+            Number of steps to span the time interval.
+        **solver_kwargs : dict
+            Extra keyword arguments passed to the symplectic integrator.
+            - method: str, integration method such as leapfrog.
+            - velocity_fn: callable, function modeling the position dynamics.
+              If not provided, defaults to the canonical choice dq/dt = p.
         """
-        self.eps = eps
-        self.num_steps = num_steps
-
         # Partially applied symplectic ODE solver
         self.symplectic_odeint = ftpartial(
             symplectic_odeint,
             force_fn=force_fn,
-            t_span=(0.0, eps * num_steps),
+            t_span=t_span,
             num_steps=num_steps,
             **solver_kwargs
         )
@@ -132,3 +137,7 @@ class HamiltonianMD:
     def __call__(self, q0: torch.Tensor):
         """Shorthand for :meth:`step`."""
         return self.step(q0)
+
+
+# Short alias for convenience
+HMD = HamiltonianMD

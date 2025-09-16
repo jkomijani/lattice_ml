@@ -3,20 +3,16 @@
 """
 Batched Hybrid Monte Carlo (HMC) sampler using a symplectic integrator.
 
-This module implements a class `HMC` to perform batched HMC updates for
+This module implements the class `HMC` to perform batched HMC updates for
 lattice field theories or any system with a differentiable action. Each
 trajectory is integrated with a user-supplied symplectic solver and
 accepted/rejected independently per batch element using the Metropolis
 criterion.
 
-The `HMC` class expects an action object implementing:
-  - __call__(q): returns the action S(q) as a batch of scalars.
-  - force(q) or algebra_force(q): returns the force -∂S/∂q or its algebraic
-    correspondence for Lie groups.
-
 Example usage:
     action = ScalarAction(...)
-    hmc = HMC(action, eps=0.25, num_steps=4)
+    force_fn = lambda t, q: action.force(q)
+    hmc = HMC(force_fn, t_span=(0, 1), num_steps=4, action=action)
     q_batch = torch.zeros((batch_size, *lattice_shape))
     q_new, accepted = hmc.step(q_batch)
 """
@@ -44,16 +40,13 @@ class HMC:
         T(p) = 1/2 * sum(p^2)   is the kinetic energy,
         S(q) = action(q)        is the potential energy (user-supplied).
 
+    Note that the kinetic term can be changed from the canonical form by
+    supplying a custom `velocity_fn` to the symplectic solver.
+
     Attributes
     ----------
-    action : object
-        User-supplied action implementing:
-          - __call__(q): returns S(q) as shape (batch_size,)
-          - force(t, q): returns the force -∂S/∂q with same shape as q
-    eps : float
-        Step size of the symplectic integrator.
-    num_steps : int
-        Number of integration steps per trajectory.
+    action : Callable
+        User-supplied action, returning S(q) as shape (batch_size,)
     symplectic_odeint : Callable
         Partially applied symplectic ODE solver for the given action.
 
@@ -64,16 +57,34 @@ class HMC:
         Returns updated configurations and a mask of accepted proposals.
     """
 
-    def __init__(self, action, eps, num_steps, **solver_kwargs):
-
+    def __init__(self, force_fn, t_span, num_steps, action, **solver_kwargs):
+        """
+        Parameters
+        ----------
+        force_fn : Callable
+            Defines the dynamics of the momentum, i.e., ``-∂H/∂q``.
+            To remain consistent with the underlying symplectic integrator,
+            it takes the form `force_fn(t, q, *args)`, where t is time, q is
+            generalized position, and args are optional arguments.
+        t_span : tuple of float
+            Time interval (t0, t1) for integration.
+        num_steps: int
+            Number of steps to span the time interval.
+        action : Callable
+            Defines the action and returns S(q) as shape (batch_size,)
+        **solver_kwargs : dict
+            Extra keyword arguments passed to the symplectic integrator.
+            - method: str, integration method such as leapfrog.
+            - velocity_fn: callable, function modeling the position dynamics.
+              If not provided, defaults to the canonical choice dq/dt = p.
+        """
         self.action = action
-        self.eps = eps
-        self.num_steps = num_steps
 
+        # Partially applied symplectic ODE solver
         self.symplectic_odeint = ftpartial(
             symplectic_odeint,
-            force_fn=lambda t, q: action.force(q),
-            t_span=(0.0, eps * num_steps),
+            force_fn=force_fn,
+            t_span=t_span,
             num_steps=num_steps,
             **solver_kwargs
         )
