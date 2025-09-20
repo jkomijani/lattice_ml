@@ -3,3 +3,5 @@
 from . import functions
 from . import integrate
 from . import linalg
+from . import stats
+from . import diffusion
