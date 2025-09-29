@@ -148,7 +148,7 @@ def lie_symplectic_odeint(
     force_fn: Callable,
     t_span: Tuple[float, float],
     p0: torch.Tensor,
-    u0: torch.Tensor,
+    q0: torch.Tensor,
     args: Any = None,
     step_size: float = 1e-3,
     num_steps: int | None = None,
@@ -183,7 +183,7 @@ def lie_symplectic_odeint(
     p0 : torch.Tensor
         Initial momentum (Lie algebra element).
 
-    u0 : torch.Tensor
+    q0 : torch.Tensor
         Initial position (Lie group element).
 
     args : any, optional
@@ -231,15 +231,15 @@ def lie_symplectic_odeint(
     step_size = float(time_grid[1] - time_grid[0])  # Actual step size
 
     # Initial half-step momentum update & full-step position update
-    p = p0 + 0.5 * step_size * force_fn(time_grid[0], u0, *args)
-    u = torch.matrix_exp(step_size * p) @ u0
+    p = p0 + 0.5 * step_size * force_fn(time_grid[0], q0, *args)
+    q = torch.matrix_exp(step_size * p) @ q0
 
     # Intermediate, full leapfrog steps
     for t in time_grid[1:-1]:
-        p = p + step_size * force_fn(t, u, *args)
-        u = torch.matrix_exp(step_size * p) @ u
+        p = p + step_size * force_fn(t, q, *args)
+        q = torch.matrix_exp(step_size * p) @ q
 
     # Final half-step momentum update
-    p = p + 0.5 * step_size * force_fn(time_grid[-1], u, *args)
+    p = p + 0.5 * step_size * force_fn(time_grid[-1], q, *args)
 
-    return p, u
+    return p, q
