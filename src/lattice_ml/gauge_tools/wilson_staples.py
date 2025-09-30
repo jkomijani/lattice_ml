@@ -1,0 +1,153 @@
+# Copyright (c) 2025 Javad Komijani
+
+"""
+Staples calculations for Lattice Gauge Theory.
+
+This module provides functions to compute planar staples and sums of staples
+for links in specified directions, as used in Wilson gauge action computations.
+"""
+
+from typing import Tuple
+import torch
+
+
+__all__ = ['compute_staples_sum', 'compute_planar_staples']
+
+matmul = torch.matmul
+
+
+def compute_staples_sum(
+    x: torch.Tensor,
+    mu: int,
+    nu_list: Tuple[int, ...],
+    prefix_dims: int = 1,
+    sites_before_link: bool = True,
+):
+    """
+    Compute the sum of staples in the mu-nu planes for a given link direction
+    `mu` as used in the Wilson gauge action.
+
+    Staples are 3-link paths forming a 'staple' shape adjacent to a central
+    link, used in the Wilson gauge action in lattice gauge theory. The upper
+    and lower staples on the mu-nu plane can be visualized as:
+
+        >>>     --b--
+        >>>    c|   |a
+        >>>     @ U @    +   @ U @
+        >>>                 f|   |d
+        >>>                  --e--
+
+    where `@ U @` represents the central link whose staples are being computed.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Tensor containing the gauge links. After any batch and channel axes,
+        the spatial lattice axes come first (if sites_before_link=True),
+        followed by the link direction axis, and then the matrix components.
+    mu : int
+        The index of the link direction along which the staples are computed.
+    nu_list : list of int
+        List of perpendicular directions `nu` over which to sum the staples.
+    prefix_dims : int, default=1
+        Number of leading batch and channel dimensions in the tensor.
+        For example, if x.shape = (batch, channel, Lx, Ly, Lz, Lt, mu, Nc, Nc),
+        then prefix_dims=2. If only a single batch dimension, prefix_dims=1.
+    sites_before_link : bool, default=True
+        Whether the spatial lattice axes come before the link axis.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor containing the sum of staples for links in direction `mu`.
+        Shape is the same as `x`, except the link-direction axis is removed.
+    """
+    kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
+    return sum(compute_planar_staples(x, mu, nu, **kws) for nu in nu_list)
+
+
+def compute_planar_staples(
+    x: torch.Tensor,
+    mu: int,
+    nu: int,
+    prefix_dims: int = 1,
+    sites_before_link: bool = True,
+    return_sum: bool = True
+):
+    r"""
+    Compute the staples in the mu-nu plane for a given link direction `mu` as
+    used in the Wilson gauge action.
+
+    Staples are 3-link paths forming a 'staple' shape adjacent to a central
+    link, used in the Wilson gauge action in lattice gauge theory. The upper
+    and lower staples on the mu-nu plane can be visualized as:
+
+        >>>     --b--
+        >>>    c|   |a
+        >>>     @ U @    +   @ U @
+        >>>                 f|   |d
+        >>>                  --e--
+
+    where `@ U @` represents the central link whose staples are being computed.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Tensor containing the gauge links. After any batch and channel axes,
+        the spatial lattice axes come first (if sites_before_link=True),
+        followed by the link direction axis, and then the matrix components.
+    mu : int
+        The index of the link direction along which the staples are computed.
+    nu : int
+        Orthogonal direction in the mu-nu plane.
+    prefix_dims : int, default=1
+        Number of leading batch and channel dimensions in the tensor.
+        For example, if x.shape = (batch, channel, Lx, Ly, Lz, Lt, mu, Nc, Nc),
+        then prefix_dims=2. If only a single batch dimension, prefix_dims=1.
+    sites_before_link : bool, default=True
+        Whether the spatial lattice axes come before the link axis.
+    return_sum : bool
+        If False, return both the upper and lower staples as a tuple.
+        If True, return their sum. Default is True.
+
+    Returns
+    -------
+    torch.Tensor or Tuple[torch.Tensor, torch.Tensor]
+        If `return_sum` is True (default), returns the sum of the upper and
+        lower staples. If `return_sum` is False, returns a tuple containing
+        the upper and lower staples separately.
+
+        In either case, each staple tensor has the same shape as `x`, except
+        that the link-direction axis is removed.
+    """
+
+    # Extract the central and nu-direction links using unbind
+    link_axis = -3 if sites_before_link else prefix_dims
+    links = torch.unbind(x, dim=link_axis)
+
+    u = links[mu]  # Central link (U in the cartoon)
+    c = links[nu]  # Link in nu direction from the same site
+
+    # Calculate links needed to form staples
+    a = torch.roll(c, -1, dims=prefix_dims + mu)
+    b = torch.roll(u, -1, dims=prefix_dims + nu)
+    e = torch.roll(u, +1, dims=prefix_dims + nu)
+    f = torch.roll(c, +1, dims=prefix_dims + nu)
+    d = torch.roll(f, -1, dims=prefix_dims + mu)
+
+    # Upper staple: a b^\dagger c^\dagger
+    #   --b--
+    #  c|   |a
+    #   @ U @
+    staple_upper = matmul(a, matmul(c, b).adjoint())
+
+    # Lower staple: d^\dagger e^\dagger f
+    #   @ U @
+    #  f|   |d
+    #   --e--
+    staple_lower = matmul(matmul(e, d).adjoint(), f)
+
+    # Return the staples
+    if return_sum:
+        return staple_upper + staple_lower
+    return staple_upper, staple_lower
