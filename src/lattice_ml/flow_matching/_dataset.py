@@ -1,94 +1,125 @@
 # Created by Javad Komijani, 2025
 
 """
-Random SU(n) Dataset and DataLoader utilities for flow-matching training.
-
-Classes
--------
-SUnRandomDataset
-    Generates batches of random SU(n) matrices on-the-fly.
-
-Functions
----------
-make_uniform_sun_dataloader
-    Returns a DataLoader yielding batches from SUnRandomDataset.
+Dataset and DataLoader utilities for flow-matching training.
 """
 
-from torch.utils.data import Dataset, DataLoader
-from normflow.prior import SUnPrior
+from torch.utils.data import DataLoader, IterableDataset
 
 
-__all__ = ["make_uniform_sun_dataloader"]
+__all__ = ['make_random_dataloader', 'make_hmc_dataloader']
 
 
-# -----------------------------------------------------------------------------
-# Random SU(n) Dataset (batch-wise)
-# -----------------------------------------------------------------------------
-class SUnRandomDataset(Dataset):
+class IIDPriorDataset(IterableDataset):
     """
-    Dataset that generates batches of random SU(n) matrices on-the-fly.
-
-    The SU(n) matrices are drawn uniformly using `SUnPrior` class.
-
-    Each __getitem__ returns a batch of size `batch_size`.
+    IterableDataset that generates batches of i.i.d. samples from a prior
+    distribution.
 
     Parameters
     ----------
-    n : int
-        Dimension of the SU(n) matrices.
-    sample_shape : tuple of ints
-        Shape of a single sample (excluding batch dimension). Each sample
-        will have shape (*sample_shape, n, n).
-    num_samples : int
-        Total number of samples in the dataset.
+    prior : object
+        Distribution-like object with a `.sample(batch_size)` method that
+        returns a batch of random samples (e.g., SU(n) matrices).
     batch_size : int
         Number of samples per batch.
+    num_batches : int, optional (default=1)
+        Total number of batches to generate when iterating over the dataset.
+
+    Yields
+    ------
+    tuple of torch.Tensor
+        A tuple containing one batch of random samples.
     """
-    def __init__(self, n, sample_shape, num_samples, batch_size):
-        self.prior = SUnPrior(n, sample_shape)
-        self.num_samples = num_samples
-        self.sample_shape = sample_shape
+    def __init__(self, prior, batch_size: int, num_batches: int = 1):
+        self.prior = prior
         self.batch_size = batch_size
-        self.num_batches = 1 + (num_samples - 1) // batch_size
+        self.num_batches = num_batches
 
-    def __len__(self):
-        return self.num_batches
-
-    def __getitem__(self, idx):
-        # Compute batch size for last batch
-        bsize = min(self.batch_size, self.num_samples - idx * self.batch_size)
-        batch = self.prior.sample(bsize)  # shape: (bsize, *sample_shape, n, n)
-        return (batch,)
-
-    def to(self, *args, **kwargs):
-        """Move the prior distribution to a device."""
-        self.prior.to(*args, **kwargs)
-        return self
+    def __iter__(self):
+        # Generate num_batches independent sample batches
+        for _ in range(self.num_batches):
+            samples = self.prior.sample(self.batch_size)
+            yield (samples,)  # wrap in tuple to match DataLoader conventions
 
 
-# -----------------------------------------------------------------------------
-# Function to make a DataLoader
-# -----------------------------------------------------------------------------
-def make_uniform_sun_dataloader(n, sample_shape, num_samples, batch_size):
+class HMCDataset(IterableDataset):
     """
-    Create a DataLoader yielding random SU(n) batches each epoch.
+    IterableDataset that generates a Markov chain via HMC updates.
+
+    Each iteration applies one HMC step and yields the updated batch.
 
     Parameters
     ----------
-    n : int
-        Dimension of the SU(n) matrices.
-    sample_shape : tuple of ints
-        Shape of a single sample (excluding batch dimension).
-    num_samples : int
-        Total number of samples per epoch.
+    hmc : object
+        HMC sampler instance with a `.step(x)` method returning (new_x, info).
+    initial_cfgs : torch.Tensor
+        Initial batch of configurations to start the Markov chain.
+    num_batches : int, optional (default=1)
+        Total number of batches to generate when iterating over the dataset.
+
+    Yields
+    ------
+    tuple of torch.Tensor
+        A tuple containing the current batch of updated configurations.
+    """
+    def __init__(self, hmc, initial_cfgs, num_batches: int = 1):
+        self.hmc = hmc
+        self.cfgs = initial_cfgs  # current state of the Markov chain
+        self.num_batches = num_batches
+
+    def __iter__(self):
+        # Advance the chain num_batches times
+        for _ in range(self.num_batches):
+            self.cfgs, _ = self.hmc.step(self.cfgs)
+            yield (self.cfgs,)  # yield current state as one batch
+
+
+def make_random_dataloader(prior, batch_size, num_batches):
+    """
+    Create a DataLoader yielding independent batches from a prior distribution.
+
+    Parameters
+    ----------
+    prior : object
+        Distribution-like object with a `.sample(batch_size)` method that
+        returns a batch of random samples (e.g., SU(n) matrices).
     batch_size : int
         Number of samples per batch.
+    num_batches : int, optional (default=1)
+        Total number of batches to generate when iterating over the dataset.
 
     Returns
     -------
     DataLoader
-        A DataLoader instance yielding batches of random SU(n) samples.
+        A DataLoader instance yielding batches of random samples.
     """
-    dataset = SUnRandomDataset(n, sample_shape, num_samples, batch_size)
-    # We set `batch_size=None` so that dataset items are returned directly.
+    dataset = IIDPriorDataset(prior, batch_size, num_batches)
+
+    # Note: `batch_size=None` means dataset items are returned directly.
+    return DataLoader(dataset, batch_size=None, shuffle=False)
+
+
+def make_hmc_dataloader(hmc, initial_cfgs, num_batches):
+    """
+    Create a DataLoader yielding batches of configurations generated via HMC.
+
+    Each iteration applies one HMC step and yields the updated batch.
+
+    Parameters
+    ----------
+    hmc : object
+        HMC sampler instance with a `.step(x)` method returning (new_x, info).
+    initial_cfgs : torch.Tensor
+        Initial batch of configurations to start the Markov chain.
+    num_batches : int
+        Total number of batches to generate when iterating over the dataset.
+
+    Returns
+    -------
+    DataLoader
+        A DataLoader instance yielding batches of updated configurations.
+    """
+    dataset = HMCDataset(hmc, initial_cfgs, num_batches)
+
+    # Note: `batch_size=None` means dataset items are returned directly.
     return DataLoader(dataset, batch_size=None, shuffle=False)
