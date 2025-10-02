@@ -37,12 +37,17 @@ class GaugeLinkConv(torch.nn.Module):
         Tensors are expected by default to have spatial lattice axes before
         the link direction axis (sites_before_link=True). Set to False if your
         tensor uses link axis before lattice sites.
+
+        It is possible to set the input and ouput channels to None. If set to
+        None, a singleton channel axis is automatically added to inputs before
+        processing and/or removed afterwards. This allows layers to operate in
+        both channel-free and channel-based architectures.
     """
 
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
+        in_channels: int | None,
+        out_channels: int | None,
         ndim: int,
         sites_before_link: bool = True
     ):
@@ -51,10 +56,12 @@ class GaugeLinkConv(torch.nn.Module):
 
         Parameters
         ----------
-        in_channels : int
-            Number of input feature channels per link.
-        out_channels : int
-            Number of output feature channels per link.
+        in_channels : int | None
+            Number of input feature channels per link. If None, a singleton
+            channel axis is automatically added to the input.
+        out_channels : int | None
+            Number of output feature channels per link. If None, a singleton
+            channel axis of output is automatically removed.
         ndim : int
             Number of spacetime dimensions of the lattice.
         sites_before_link : bool, default=True
@@ -72,9 +79,9 @@ class GaugeLinkConv(torch.nn.Module):
         self._link_axis = -3 if sites_before_link else 2  # 2: batch & channel
 
         # Learnable weight tensor for each valid (mu, nu) pair
-        self.weight = torch.nn.Parameter(
-            torch.randn(ndim, 3*ndim - 3, self.out_channels, self.in_channels)
-        )
+        shape = (ndim, 3*ndim - 3, self.out_channels, self.in_channels)
+        scale = 0.01
+        self.weight = torch.nn.Parameter(torch.randn(*shape) * scale)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -106,7 +113,7 @@ class GaugeLinkConv(torch.nn.Module):
             # Average over input channels for this link direction
             x_mu = torch.unbind(x, dim=link_axis)[mu].mean(dim=1, keepdim=True)
 
-            shape = (1, 3 * self.out_channels, *x_mu.shape[2:])
+            shape = (x_mu.shape[0], 3 * self.out_channels, *x_mu.shape[2:])
             staples = torch.zeros(shape, dtype=x.dtype, device=x.device)
 
             ind = 0  # index for weight slices (ind+=3 for each valid nu != mu)
@@ -148,6 +155,14 @@ class GaugeLinkConv(torch.nn.Module):
 
         return x_updated
 
+    def set_param2zero(self):
+        """Set all trainable parameters to zero."""
+        torch.nn.init.zeros_(self.weight)
+
+    def set_param2normal(self, mean: float = 0.0, std: float = 1.0):
+        """Set all trainable parameters to Gaussian with given mean and std."""
+        torch.nn.init.normal_(self.weight, mean=mean, std=std)
+
 
 # =============================================================================
 def einsum(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
@@ -180,7 +195,7 @@ def _test_gauge_equivaraince():
     # Define `x` and transform it with instances of GaugeLinkConv
     gauge_link_conv1 = GaugeLinkConv(None, 5, ndim=4)
     gauge_link_conv2 = GaugeLinkConv(5, None, ndim=4)
-    x = prior.sample(1)
+    x = prior.sample(2)
     y = gauge_link_conv2(gauge_link_conv1(x))
 
     # Now gauge transform `x`; only the links connected to the origin
