@@ -26,8 +26,8 @@ class GaugeLinkConv(torch.nn.Module):
     GaugeLinkConv updates gauge links using gauge-covariant combinations of
     short Wilson lines (paths along links) starting at the tail of each link
     and ending at the head. The layer maintains gauge covariance by combining
-    contributions from all allowed paths of length <= 5, weighted by learnable
-    parameters.
+    contributions from allowed paths containing the staples and of length <= 5,
+    weighted by learnable parameters.
 
     Unlike the original gauge link variables, the output of this layer is not
     necessarily unitary, but it transforms under gauge transformations in the
@@ -79,7 +79,7 @@ class GaugeLinkConv(torch.nn.Module):
         self._link_axis = -3 if sites_before_link else 2  # 2: batch & channel
 
         # Learnable weight tensor for each valid (mu, nu) pair
-        shape = (ndim, 3*ndim - 3, self.out_channels, self.in_channels)
+        shape = (ndim, 2*(ndim-1), self.out_channels, self.in_channels, 2)
         scale = 0.01
         self.weight = torch.nn.Parameter(torch.randn(*shape) * scale)
 
@@ -105,24 +105,21 @@ class GaugeLinkConv(torch.nn.Module):
         ndim = self.ndim
         link_axis = self._link_axis
 
+        x_unbound = torch.unbind(x, dim=link_axis)
+
         output_stack: List[torch.Tensor] = [None] * ndim
 
         # Loop over lattice directions
         for mu in range(ndim):
+            x_mu = x_unbound[mu]
 
-            # Average over input channels for this link direction
-            x_mu = torch.unbind(x, dim=link_axis)[mu].mean(dim=1, keepdim=True)
-
-            shape = (x_mu.shape[0], 3 * self.out_channels, *x_mu.shape[2:])
+            shape = (x_mu.shape[0], 2 * self.out_channels, *x_mu.shape[2:])
             staples = torch.zeros(shape, dtype=x.dtype, device=x.device)
 
-            ind = 0  # index for weight slices (ind+=3 for each valid nu != mu)
+            ind = 0  # index for weight slices (ind+=2 for each valid nu != mu)
             for nu in range(ndim):
                 if nu == mu:
                     continue
-
-                # Learnable weights for this mu-nu pair
-                w = self.weight[mu, ind: ind + 3].reshape(-1, self.in_channels)
 
                 # Compute planar staples (upper + lower) along mu-nu plane
                 planar_staples = compute_planar_staples(
@@ -132,20 +129,22 @@ class GaugeLinkConv(torch.nn.Module):
                     return_sum=True
                 )
 
+                # Learnable weights for this mu-nu pair, reshape, & complexify
+                w = self.weight[mu, ind:ind+2].reshape(-1, self.in_channels, 2)
+                w = torch.view_as_complex(w)
+
                 # Sum contributions from weighted staples
-                staples += einsum(planar_staples, w.to(torch.complex128))
-                ind += 3
+                staples += einsum(planar_staples, w)
+                ind += 2
 
-            # We create three plaq operators attached to front, middle & back
-            # & shift front & back contributions along mu before combining
-            s_f, s_m, s_b = torch.tensor_split(staples, 3, dim=1)
+            # Average over input channels for this link direction if needed
+            if self.in_channels > 1:
+                x_mu = x_mu.mean(dim=1, keepdim=True)
 
-            plaq_m = s_m @ x_mu
-            plaq_f = torch.roll(x_mu @ s_f, -1, dims=2 + mu)
-            plaq_b = torch.roll(s_b @ x_mu, +1, dims=2 + mu)
+            s_1, s_2 = torch.tensor_split(staples, 2, dim=1)
 
-            # Covariant update of the link (the last 2 axes are matrix axes)
-            output_stack[mu] = x_mu + x_mu @ (plaq_m + plaq_f) + plaq_b @ x_mu
+            # Covariant update of the link
+            output_stack[mu] = x_mu + s_1.adjoint() + x_mu @ s_2 @ x_mu
 
         x_updated = torch.stack(output_stack, dim=link_axis)
 
