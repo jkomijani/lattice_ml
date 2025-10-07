@@ -4,4 +4,6 @@ from .gauge_action import WilsonGaugeAction
 
 from .gauge_link_conv import GaugeLinkConv
 
+from .gauge_unet import UNet, UNetEncoderLayer, UNetBottleneck, UNetDecoderLayer
+
 from .wilson_loops import *
