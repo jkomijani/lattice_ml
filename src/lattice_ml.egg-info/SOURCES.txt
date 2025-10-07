@@ -24,7 +24,12 @@ src/lattice_ml/functions/_matrix_func_and_jacobian.py
 src/lattice_ml/functions/_spectral_split_cat.py
 src/lattice_ml/gauge_tools/__init__.py
 src/lattice_ml/gauge_tools/gauge_action.py
+src/lattice_ml/gauge_tools/gauge_downsampler_debug.py
+src/lattice_ml/gauge_tools/gauge_downsampler_debug2.py.py
 src/lattice_ml/gauge_tools/gauge_link_conv.py
+src/lattice_ml/gauge_tools/gauge_unet.py
+src/lattice_ml/gauge_tools/gauge_upsampler_debug.py
+src/lattice_ml/gauge_tools/loop_debug.py
 src/lattice_ml/gauge_tools/wilson_loops.py
 src/lattice_ml/gauge_tools/wilson_staples.py
 src/lattice_ml/integrate/__init__.py

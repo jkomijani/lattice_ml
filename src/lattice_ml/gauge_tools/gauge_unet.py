@@ -121,27 +121,74 @@ def gauge_downsampler(
     x_coarse = torch.stack(coarse_links, dim=stack_dim)
     return x_coarse
 
-def _dagger(x: torch.Tensor) -> torch.Tensor:
-    # (..., Nc, Nc) -> (..., Nc, Nc)
-    return x.conj().transpose(-1, -2)
+def _polar_unitary(X: torch.Tensor) -> torch.Tensor:
+    """
+    Unitary factor of the polar decomposition via SVD:
+      X = U Σ Vᴴ  =>  polar_unitary(X) = U Vᴴ
+    Works batched and on CUDA. Preserves gradients.
+    """
+    # For real X you still want complex-safe det adjustment later; keep dtype as is here.
+    U, S, Vh = torch.linalg.svd(X, full_matrices=False)  # (..., n, n), (..., n), (..., n, n)
+    Uh = Vh.conj().transpose(-1, -2)
+    return U @ Uh  # (..., n, n)
 
-def _sqrtm_unitary(Q: torch.Tensor, *, project_back: bool = True) -> torch.Tensor:
+def _project_to_suN(U: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
     """
-    Matrix square root for (near-)unitary Q using torch.linalg.sqrtm,
-    with optional projection back to unitary/SU(N) to control drift.
+    Renormalize a unitary-ish matrix to SU(N): det -> 1.
+    Uses complex dtype for phase handling, then casts back to input dtype.
     """
-    Sq = torch.linalg.sqrtm(Q)  # (..., Nc, Nc)
+    n = U.shape[-1]
+    # Work in complex for robust phase; upcast if needed
+    Uc = U if torch.is_complex(U) else U.to(torch.complex64 if U.dtype==torch.float32 else torch.complex128)
+    detU = torch.det(Uc)  # (...,)
+
+    # Avoid division by ~0: push magnitude away from 0
+    mag = detU.abs().clamp_min(eps)
+    detU_safe = detU / mag
+
+    factor = detU_safe.pow(-1.0 / n).reshape(*detU.shape, 1, 1)
+    U_su = (Uc * factor).to(dtype=U.dtype)
+    return U_su
+
+def _sqrtm_unitary(Q: torch.Tensor, *, project_back: bool = True, herm_tol: float = 1e-7) -> torch.Tensor:
+    """
+    Batched matrix square root using eig/eigh, then optional projection to SU(N).
+    Shapes: (..., n, n) -> (..., n, n)
+    """
+    assert Q.shape[-1] == Q.shape[-2], "Q must be square"
+    *batch, n, _ = Q.shape
+
+    # Ensure complex for general eig (real inputs can have complex eigenpairs)
+    if torch.is_complex(Q):
+        Qc = Q
+    else:
+        Qc = Q.to(torch.complex64 if Q.dtype==torch.float32 else torch.complex128)
+
+    # Heuristic: if nearly Hermitian, prefer eigh
+    near_herm = False
+    if herm_tol is not None:
+        resid = torch.linalg.matrix_norm(Qc - Qc.mH)
+        near_herm = (resid.item() < herm_tol) if resid.numel()==1 else False
+
+    if near_herm:
+        w, V = torch.linalg.eigh(Qc)                  # (..., n), (..., n, n)
+        w_clamped = torch.clamp(w.real, min=0.0).to(w.dtype)
+        sqrt_w = torch.sqrt(w_clamped).to(Qc.dtype)   # (..., n)
+        Sq = V @ torch.diag_embed(sqrt_w) @ V.mH      # (..., n, n)
+    else:
+        w, V = torch.linalg.eig(Qc)                   # (..., n), (..., n, n)
+        sqrt_w = torch.sqrt(w)                        # principal branch
+        Vinv = torch.linalg.inv(V)
+        Sq = V @ torch.diag_embed(sqrt_w) @ Vinv
+
     if project_back:
-        # Polar projection of Sq to unitary, then adjust det to be in SU(N)
-        U, P = torch.linalg.polar(Sq)  # Sq = U P, U unitary, P Hermitian PSD
-        # Normalize det to 1 (SU(N)): det(U)^(-1/N) * U
-        detU = torch.det(U)
-        Nc = U.shape[-1]
-        # Avoid divide-by-zero in pathological cases:
-        det_factor = torch.pow(detU, -1.0 / Nc).unsqueeze(-1).unsqueeze(-1)
-        U = U * det_factor
-        return U
-    return Sq
+        # Replace torch.linalg.polar with SVD-based polar
+        U_polar = _polar_unitary(Sq)
+        U_su = _project_to_suN(U_polar)
+        return U_su.to(dtype=Q.dtype)
+
+    return Sq.to(dtype=Q.dtype)
+
 
 def gauge_upsampler(
     x_fine_pre: torch.Tensor,          # fine lattice BEFORE transform (contains a,b,...)
@@ -223,15 +270,15 @@ def gauge_upsampler(
         A_pre = matmul(a, b)
 
         # Q = A A'^† A
-        Q = matmul(matmul(A_pre, _dagger(A_post)), A_pre)
+        Q = matmul(matmul(A_pre, A_post.adjoint()), A_pre)
 
         # sqrt(Q) with optional projection back to SU(N)
         Sq = _sqrtm_unitary(Q, project_back=project_back_to_suN)
 
         # a' = A' b^† sqrt(Q)
-        a_post = matmul(matmul(A_post, _dagger(b)), Sq)
+        a_post = matmul(matmul(A_post, b.adjoint()), Sq)
         # b' = sqrt(Q) a^† A'
-        b_post = matmul(matmul(Sq, _dagger(a)), A_post)
+        b_post = matmul(matmul(Sq, a.adjoint()), A_post)
 
         # Scatter a' back to even-tail positions and b' back to the “+1 along μ” positions
         out_mu = fine_links_post[mu]
@@ -495,23 +542,18 @@ class UNetEncoderLayer(Module):
 
         super().__init__()
 
-        self.conv_block1 = GaugeLinkConv(in_channels=channels[0], out_channels=channels[0], ndim= spatial_ndim)
+        self.conv_block1 = GaugeLinkConv(in_channels=channels[0], out_channels=channels[1], ndim= spatial_ndim)
 
+        '''
         if time_embedding:
             self.time_encoder = SinusoidalTimeEncoder(
                 channels[1], trainable_freq=True, trainable_ampl=True
             )
         else:
             self.time_encoder = None
+        '''
 
         self.spatial_ndim = spatial_ndim  # to be used in time_encoder.forward
-
-        # Build the down-sampling block
-        match downsampler:
-            case 'gauge':
-                self.downsampler = gauge_downsampler()
-            case _:
-                self.downsampler = torch.nn.Identity()
 
     def forward(self, data, time=None):
         """
@@ -525,12 +567,17 @@ class UNetEncoderLayer(Module):
             Tensor: The result after processing through the down-sampler.
             Tensor: The intermediate result before the down-sampler.
         """
+    
+        data = data.unsqueeze(1)
         data = self.conv_block1(data)
 
+
+        '''
         if self.time_encoder is not None:
             data += self.time_encoder(time, self.spatial_ndim)
+        '''
 
-        return self.downsampler(data), data
+        return gauge_downsampler(data, prefix_dims=2), data
 
 
 # =============================================================================
@@ -578,20 +625,24 @@ class UNetDecoderLayer(Module):
         super().__init__()
 
         # Build the up-sampling block
+        '''
         match upsampler:
             case 'Upsample':
                 self.upsampler = gauge_upsampler()
             case _:
                 self.upsampler = torch.nn.Identity()
+        '''
 
         self.conv_block1 = GaugeLinkConv(in_channels=channels[0], out_channels=channels[1], ndim=spatial_ndim)
 
+        '''
         if time_embedding:
             self.time_encoder = SinusoidalTimeEncoder(
                 channels[0], trainable_freq=True, trainable_ampl=True
             )
         else:
             self.time_encoder = None
+        '''
 
         self.spatial_ndim = spatial_ndim  # to be used in time_encoder.forward
 
@@ -608,12 +659,16 @@ class UNetDecoderLayer(Module):
             Tensor: The output tensor after processing through all sub-layers.
         """
         # Upsample `data` and concatenate the ouput with `skip_connection`
-        data = self.upsampler(skip_connection, data)
+
+        data = gauge_upsampler(skip_connection, data, prefix_dims=2)
 
         data = self.conv_block1(data)
 
+        data = data.squeeze(1)
+        '''
         if self.time_encoder is not None:
-            data += self.time_encoder(time, self.spatial_ndim)
+            data += self.time_encoder(time, self.spatial_ndim),
+        '''
 
         return data
 
@@ -657,8 +712,10 @@ class UNetBottleneck(UNetEncoderLayer):
         """
         data = self.conv_block1(data)
 
+        '''
         if self.time_encoder is not None:
             data += self.time_encoder(time, self.spatial_ndim)
+        '''
 
         return data
 
