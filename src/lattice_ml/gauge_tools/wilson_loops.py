@@ -1,6 +1,12 @@
+# Copyright (c) 2025 Javad Komijani
 
 """
 Wilson loop and path calculations for Lattice Gauge Theory.
+
+This module provides functions to compute standard 1×1 Wilson loops and their
+linear responses to Lie-algebra-valued inputs. It also includes utilities for
+parallel transport and the averaged trace of rectangular Wilson loops of size
+m×n across all lattice planes.
 """
 
 from typing import Tuple
@@ -10,6 +16,7 @@ import torch
 __all__ = [
     'compute_avg_trace_wilson_mxn_loop',
     'compute_wilson_1x1_loop',
+    'compute_wilson_1x1_loop_response',
     'parallel_transport'
 ]
 
@@ -133,6 +140,82 @@ def compute_wilson_1x1_loop(
     w_11 = matmul(matmul(x_mu, y_nu), matmul(x_nu, z_mu).adjoint())
 
     return w_11
+
+
+def compute_wilson_1x1_loop_response(
+    x: torch.Tensor,
+    w: torch.Tensor,
+    mu: int,
+    nu: int,
+    prefix_dims: int = 1,
+    sites_before_link: bool = True
+):
+    """
+    Compute the response of a 1×1 Wilson loop to a Lie-algebra input `w`.
+
+    The tensor `w` specifies Lie-algebra directions (tangent to the gauge
+    group) along which the derivative of the Wilson loop in the (mu, nu)
+    plane is evaluated. The output is matrix-valued, representing the linear
+    effect of `w` on the Wilson loop.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Tensor containing the gauge links. After any batch and channel axes,
+        the spatial lattice axes come first (if sites_before_link=True),
+        followed by the link direction axis, and then the matrix components.
+    w : torch.Tensor
+        Lie-algebra-valued tensor specifying the derivative directions of the
+        Wilson loop. Each element lies in the tangent space of the gauge group
+        (e.g., su(N) for SU(N)).
+    mu : int
+        Index of the first link direction.
+    nu : int
+        Index of the second link direction.
+    prefix_dims : int, default=1
+        Number of leading batch and channel dimensions in the tensor.
+        For example, if x.shape = (batch, channel, Lx, Ly, Lz, Lt, mu, Nc, Nc),
+        then prefix_dims=2. If only a single batch dimension, prefix_dims=1.
+    sites_before_link : bool, default=True
+        Whether the spatial lattice axes come before the link axis.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of the response of 1×1 Wilson loops in the mu-nu plane.
+        Shape is the same as `x`, except the link-direction axis is removed.
+    """
+
+    # Determine which axis corresponds to the link directions
+    link_axis = -3 if sites_before_link else prefix_dims
+
+    # Separate link matrices and their corresponding weight/insertions
+    links = torch.unbind(x, dim=link_axis)
+    weights = torch.unbind(w, dim=link_axis)
+
+    # Extract links for the mu and nu directions
+    x_mu = links[mu]
+    x_nu = links[nu]
+
+    # Shift links to form the closed plaquette
+    y_nu = torch.roll(x_nu, -1, dims=prefix_dims + mu)
+    z_mu = torch.roll(x_mu, -1, dims=prefix_dims + nu)
+
+    # Extract and roll the corresponding Lie-algebra insertions
+    w_x_mu = weights[mu]
+    w_x_nu = weights[nu]
+    w_y_nu = torch.roll(w_x_nu, -1, dims=prefix_dims + mu)
+    w_z_mu = torch.roll(w_x_mu, -1, dims=prefix_dims + nu)
+
+    # Compute four weighted contributions, inserting w at each link:
+    # insertion acts as δU = w @ U at that link position
+    part1 = matmul(matmul(w_x_mu @ x_mu, y_nu), matmul(x_nu, z_mu).adjoint())
+    part2 = matmul(matmul(x_mu, w_y_nu @ y_nu), matmul(x_nu, z_mu).adjoint())
+    part3 = matmul(matmul(x_mu, y_nu), matmul(w_x_nu @ x_nu, z_mu).adjoint())
+    part4 = matmul(matmul(x_mu, y_nu), matmul(x_nu, w_z_mu @ z_mu).adjoint())
+
+    # Sum the four Lie-algebra-weighted response contributions
+    return part1 + part2 + part3 + part4
 
 
 def parallel_transport(
