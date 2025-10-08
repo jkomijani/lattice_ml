@@ -80,7 +80,7 @@ def gauge_downsampler(
     """
     if sites_before_link:
         # axes: (*prefix, L1...Ld, D, Nc, Nc)
-        link_axis_in_x = -3
+        link_axis_ = -3
         spatial_start = prefix_dims
         spatial_end   = x.ndim - 3  # up to (but not incl.) link axis
         d = spatial_end - spatial_start # actually D = d but I keep them separate in case we downsample only in some directions.
@@ -90,7 +90,7 @@ def gauge_downsampler(
         def roll_dim(mu): return prefix_dims + mu
     else:
         # axes: (*prefix, D, L1...Ld, Nc, Nc)
-        link_axis_in_x = prefix_dims
+        link_axis_ = prefix_dims
         spatial_start = prefix_dims + 1
         spatial_end   = x.ndim - 2
         d = spatial_end - spatial_start
@@ -98,7 +98,7 @@ def gauge_downsampler(
         def roll_dim(mu): return prefix_dims + 1 + mu
 
     # Unbind the link-direction axis: list of tensors, one per direction μ
-    links = torch.unbind(x, dim=link_axis_in_x)  # length D
+    links = torch.unbind(x, dim=link_axis_)  # length D
 
     # Build an index that selects even sites (stride 2) on all lattice axes
     # for the per-μ tensors (which have the link axis removed).
@@ -121,72 +121,26 @@ def gauge_downsampler(
     x_coarse = torch.stack(coarse_links, dim=stack_dim)
     return x_coarse
 
-def _polar_unitary(X: torch.Tensor) -> torch.Tensor:
+def matsqrt(Q: torch.Tensor) -> torch.Tensor:
     """
-    Unitary factor of the polar decomposition via SVD:
-      X = U Σ Vᴴ  =>  polar_unitary(X) = U Vᴴ
-    Works batched and on CUDA. Preserves gradients.
-    """
-    # For real X you still want complex-safe det adjustment later; keep dtype as is here.
-    U, S, Vh = torch.linalg.svd(X, full_matrices=False)  # (..., n, n), (..., n), (..., n, n)
-    Uh = Vh.conj().transpose(-1, -2)
-    return U @ Uh  # (..., n, n)
-
-def _project_to_suN(U: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
-    """
-    Renormalize a unitary-ish matrix to SU(N): det -> 1.
-    Uses complex dtype for phase handling, then casts back to input dtype.
-    """
-    n = U.shape[-1]
-    # Work in complex for robust phase; upcast if needed
-    Uc = U if torch.is_complex(U) else U.to(torch.complex64 if U.dtype==torch.float32 else torch.complex128)
-    detU = torch.det(Uc)  # (...,)
-
-    # Avoid division by ~0: push magnitude away from 0
-    mag = detU.abs().clamp_min(eps)
-    detU_safe = detU / mag
-
-    factor = detU_safe.pow(-1.0 / n).reshape(*detU.shape, 1, 1)
-    U_su = (Uc * factor).to(dtype=U.dtype)
-    return U_su
-
-def _sqrtm_unitary(Q: torch.Tensor, *, project_back: bool = True, herm_tol: float = 1e-7) -> torch.Tensor:
-    """
-    Batched matrix square root using eig/eigh, then optional projection to SU(N).
+    Principal (batched) matrix square root for general normal/Unitary Q.
     Shapes: (..., n, n) -> (..., n, n)
+
+    Notes:
+      - Uses eig: Q = V diag(w) V^{-1}, sqrt(Q) = V diag(sqrt(w)) V^{-1}.
+      - For unitary Q, w are on the unit circle; principal sqrt maps e^{iθ} -> e^{iθ/2}.
     """
     assert Q.shape[-1] == Q.shape[-2], "Q must be square"
-    *batch, n, _ = Q.shape
+    # ensure complex dtype for eig of general matrices
+    Qc = Q if torch.is_complex(Q) else Q.to(torch.complex64 if Q.dtype == torch.float32 else torch.complex128)
 
-    # Ensure complex for general eig (real inputs can have complex eigenpairs)
-    if torch.is_complex(Q):
-        Qc = Q
-    else:
-        Qc = Q.to(torch.complex64 if Q.dtype==torch.float32 else torch.complex128)
-
-    # Heuristic: if nearly Hermitian, prefer eigh
-    near_herm = False
-    if herm_tol is not None:
-        resid = torch.linalg.matrix_norm(Qc - Qc.mH)
-        near_herm = (resid.item() < herm_tol) if resid.numel()==1 else False
-
-    if near_herm:
-        w, V = torch.linalg.eigh(Qc)                  # (..., n), (..., n, n)
-        w_clamped = torch.clamp(w.real, min=0.0).to(w.dtype)
-        sqrt_w = torch.sqrt(w_clamped).to(Qc.dtype)   # (..., n)
-        Sq = V @ torch.diag_embed(sqrt_w) @ V.mH      # (..., n, n)
-    else:
-        w, V = torch.linalg.eig(Qc)                   # (..., n), (..., n, n)
-        sqrt_w = torch.sqrt(w)                        # principal branch
-        Vinv = torch.linalg.inv(V)
-        Sq = V @ torch.diag_embed(sqrt_w) @ Vinv
-
-    if project_back:
-        # Replace torch.linalg.polar with SVD-based polar
-        U_polar = _polar_unitary(Sq)
-        U_su = _project_to_suN(U_polar)
-        return U_su.to(dtype=Q.dtype)
-
+    # eig decomposition
+    with torch.no_grad():
+        w, V = torch.linalg.eig(Qc)
+                  # (..., n), (..., n, n)
+    sqrt_w = torch.sqrt(w)                        # principal branch
+    Vinv = torch.linalg.inv(V)
+    Sq = V @ torch.diag_embed(sqrt_w) @ Vinv
     return Sq.to(dtype=Q.dtype)
 
 
@@ -195,7 +149,6 @@ def gauge_upsampler(
     x_coarse_post: torch.Tensor,       # coarse lattice AFTER transform (contains A')
     prefix_dims: int = 1,
     sites_before_link: bool = True,
-    project_back_to_suN: bool = True,
 ) -> torch.Tensor:
     """
     Upsample a transformed coarse lattice A' back to fine links (a', b')
@@ -218,24 +171,22 @@ def gauge_upsampler(
     x = x_fine_pre
     if sites_before_link:
         # axes: (*prefix, L1...Ld, D, Nc, Nc)
-        link_axis_in_x = -3
+        link_axis_= -3
         spatial_start = prefix_dims
         spatial_end   = x.ndim - 3
         d = spatial_end - spatial_start
-        stack_dim = prefix_dims + d
         def roll_dim(mu): return prefix_dims + mu
     else:
         # axes: (*prefix, D, L1...Ld, Nc, Nc)
-        link_axis_in_x = prefix_dims
+        link_axis_ = prefix_dims
         spatial_start = prefix_dims + 1
         spatial_end   = x.ndim - 2
         d = spatial_end - spatial_start
-        stack_dim = prefix_dims
         def roll_dim(mu): return prefix_dims + 1 + mu
 
     # Unbind directions for the fine PRE lattice and coarse POST lattice
-    fine_links_pre = list(torch.unbind(x, dim=link_axis_in_x))       # D tensors of shape (*prefix, L..., Nc, Nc)
-    coarse_links_post = list(torch.unbind(x_coarse_post, dim=stack_dim))  # D tensors of shape (*prefix, L/2..., Nc, Nc)
+    fine_links_pre = list(torch.unbind(x, dim=link_axis_))       # D tensors of shape (*prefix, L..., Nc, Nc)
+    coarse_links_post = list(torch.unbind(x_coarse_post, dim=link_axis_))  # D tensors of shape (*prefix, L/2..., Nc, Nc)
 
     # Build the even-site index tuple (stride-2) on spatial axes
     sample = fine_links_pre[0]
@@ -273,7 +224,7 @@ def gauge_upsampler(
         Q = matmul(matmul(A_pre, A_post.adjoint()), A_pre)
 
         # sqrt(Q) with optional projection back to SU(N)
-        Sq = _sqrtm_unitary(Q, project_back=project_back_to_suN)
+        Sq = matsqrt(Q)
 
         # a' = A' b^† sqrt(Q)
         a_post = matmul(matmul(A_post, b.adjoint()), Sq)
@@ -287,7 +238,7 @@ def gauge_upsampler(
         fine_links_post[mu] = out_mu
 
     # Stack directions back into a link axis at the proper place
-    x_fine_post = torch.stack(fine_links_post, dim=link_axis_in_x)
+    x_fine_post = torch.stack(fine_links_post, dim=link_axis_)
     return x_fine_post
 
 

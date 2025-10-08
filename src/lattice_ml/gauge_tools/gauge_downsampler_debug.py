@@ -1,46 +1,44 @@
+# By convention in this test:
+#   - First site axis is x (rows, vertical).
+#   - Second site axis is y (columns, horizontal).
+# Therefore:
+#   - Ux(x,y) goes VERTICALLY (downwards) from (x,y) to (x+1,y).
+#   - Uy(x,y) goes HORIZONTALLY (right) from (x,y) to (x,y+1).
+#
+# We print BOTH the fine lattice and the coarse lattice with this convention.
+
 import torch
 matmul = torch.matmul
+
+# Test field
+B, Lx, Ly, D, Nc = 1, 4, 4, 2, 1
+x = torch.zeros((B, Lx, Ly, D, Nc, Nc))
+for i in range(Lx):
+    for j in range(Ly):
+        x[0, i, j, 0, 0, 0] = 10*i + j      # Ux (vertical)
+        x[0, i, j, 1, 0, 0] = 100*i + 10*j  # Uy (horizontal)
 
 def gauge_downsampler(
     x: torch.Tensor,
     prefix_dims: int = 1,
     sites_before_link: bool = True,
 ) -> torch.Tensor:
-    """
-    Downsample gauge links by factor 2 along all lattice axes.
-    Assumes:
-      - sites_before_link=True:  x.shape = (*prefix, L1,...,Ld, D, Nc, Nc)
-      - sites_before_link=False: x.shape = (*prefix, D, L1,...,Ld, Nc, Nc)
-
-    For each direction μ, keeps only links whose tails lie on even sites and
-    constructs coarse links by multiplying adjacent fine links along μ:
-        U_coarseμ(x_even) = U_fineμ(x_even) @ U_fineμ(x_even + μ)
-    Returns a tensor with the same axis order as the input but each Lk halved.
-    """
     if sites_before_link:
-        # axes: (*prefix, L1...Ld, D, Nc, Nc)
-        link_axis_in_x = -3
+        link_axis_ = -3
         spatial_start = prefix_dims
-        spatial_end   = x.ndim - 3  # up to (but not incl.) link axis
-        d = spatial_end - spatial_start # actually D = d but I keep them separate in case we downsample only in some directions.
-        # After removing link axis, stack back at boundary between sites and matrices
+        spatial_end   = x.ndim - 3
+        d = spatial_end - spatial_start
         stack_dim = prefix_dims + d
-        # dims used for torch.roll
         def roll_dim(mu): return prefix_dims + mu
     else:
-        # axes: (*prefix, D, L1...Ld, Nc, Nc)
-        link_axis_in_x = prefix_dims
+        link_axis_ = prefix_dims
         spatial_start = prefix_dims + 1
         spatial_end   = x.ndim - 2
         d = spatial_end - spatial_start
-        stack_dim = prefix_dims  # insert link axis right after *prefix
+        stack_dim = prefix_dims
         def roll_dim(mu): return prefix_dims + 1 + mu
 
-    # Unbind the link-direction axis: list of tensors, one per direction μ
-    links = torch.unbind(x, dim=link_axis_in_x)  # length D
-
-    # Build an index that selects even sites (stride 2) on all lattice axes
-    # for the per-μ tensors (which have the link axis removed).
+    links = torch.unbind(x, dim=link_axis_)
     sample_link = links[0]
     even_idx = [slice(None)] * sample_link.ndim
     for ax in range(spatial_start, spatial_start + d):
@@ -49,36 +47,114 @@ def gauge_downsampler(
 
     coarse_links = []
     for mu, u in enumerate(links):
-        # u has shape (*prefix, L1,...,Ld, Nc, Nc) regardless of sites_before_link
         u_even = u[even_idx]
         u_shift = torch.roll(u, shifts=-1, dims=roll_dim(mu))
         u_shift_even = u_shift[even_idx]
         u_coarse = matmul(u_even, u_shift_even)
         coarse_links.append(u_coarse)
 
-    # Stack coarse directions back into a link axis at the proper place
     x_coarse = torch.stack(coarse_links, dim=stack_dim)
     return x_coarse
 
-# Simple 2D test lattice
-B, Lx, Ly, D, Nc = 1, 4, 4, 2, 1
-x = torch.zeros((B, Lx, Ly, D, Nc, Nc))
+def extract_Ux_Uy_from_x(x, prefix_dims=1, sites_before_link=True, batch_index=0):
+    idx = [slice(None)] * x.ndim
+    if prefix_dims >= 1:
+        idx[0] = batch_index
+    xs = x[tuple(idx)]
+    if sites_before_link:
+        Ux = xs[..., 0, 0, 0]  # scalar Nc=1
+        Uy = xs[..., 1, 0, 0]
+    else:
+        Ux = xs[0, ..., 0, 0]
+        Uy = xs[1, ..., 0, 0]
+    return Ux, Uy
 
-# Fill it with easily distinguishable numbers
-for i in range(Lx):
-    for j in range(Ly):
-        x[0, i, j, 0, 0, 0] = 10*i + j      # Ux(x)
-        x[0, i, j, 1, 0, 0] = 100*i + 10*j  # Uy(x)
+def print_lattice_ascii_vertical_Ux_horizontal_Uy(Ux: torch.Tensor, Uy: torch.Tensor, title: str, show_wrap=False):
+    """
+    Print sites (x,y). Vertical edges labeled by Ux(x,y) (since Ux goes along +x),
+    horizontal edges labeled by Uy(x,y) (since Uy goes along +y).
+    """
+    Lx, Ly = Ux.shape
+    print(f"\n=== {title} ===\n")
+    w = max(3, len(str(int(torch.max(torch.abs(Ux)).item()))),
+               len(str(int(torch.max(torch.abs(Uy)).item()))))
 
-print("Fine lattice Ux:")
-print(x[0, :, :, 0, 0, 0])
-print("Fine lattice Uy:")
-print(x[0, :, :, 1, 0, 0])
+    for x_idx in range(Lx):
+        # Row of sites with horizontal Uy to the right
+        line = []
+        for y_idx in range(Ly):
+            line.append(f"({x_idx},{y_idx})")
+            if y_idx < Ly - 1:
+                line.append(f"--{int(Uy[x_idx,y_idx]):>{w}}--> ")
+            elif show_wrap:
+                line.append(f"--{int(Uy[x_idx,y_idx]):>{w}}↷ ")
+        print("".join(line))
 
+        # Vertical Ux down arrows to next row
+        if x_idx < Lx - 1:
+            vline = []
+            for y_idx in range(Ly):
+                pad = " " * (len(f"({x_idx},{y_idx})")//2)
+                vline.append(pad + f"|{int(Ux[x_idx,y_idx]):>{w}}" + pad)
+                if y_idx < Ly - 1:
+                    vline.append(" " * (6 + w))
+                elif show_wrap:
+                    vline.append(" " * (3 + w))
+            print(vline[0] + "".join(vline[1:]))
+        elif show_wrap:
+            # bottom wrap vertical
+            vwrap = []
+            for y_idx in range(Ly):
+                pad = " " * (len(f"({x_idx},{y_idx})")//2)
+                vwrap.append(pad + f"v{int(Ux[x_idx,y_idx]):>{w}}" + pad)
+                if y_idx < Ly - 1:
+                    vwrap.append(" " * (6 + w))
+                else:
+                    vwrap.append(" " * (3 + w))
+            print(vwrap[0] + "".join(vwrap[1:]))
+
+# ---- Print FINE lattice with corrected orientation ----
+Ux_fine, Uy_fine = extract_Ux_Uy_from_x(x, prefix_dims=1, sites_before_link=True)
+print_lattice_ascii_vertical_Ux_horizontal_Uy(Ux_fine, Uy_fine, "FINE lattice (Ux vertical, Uy horizontal)", show_wrap=True)
+
+# ---- Downsample and print COARSE lattice ----
 x_coarse = gauge_downsampler(x, prefix_dims=1, sites_before_link=True)
+Ux_c, Uy_c = extract_Ux_Uy_from_x(x_coarse, prefix_dims=1, sites_before_link=True)
+print_lattice_ascii_vertical_Ux_horizontal_Uy(Ux_c, Uy_c, "COARSE lattice (even sites; Ux vertical, Uy horizontal)", show_wrap=True)
 
-print("\nCoarse lattice shape:", x_coarse.shape)
-print("Coarse Ux:")
-print(x_coarse[0, :, :, 0, 0, 0])
-print("Coarse Uy:")
-print(x_coarse[0, :, :, 1, 0, 0])
+
+def _test_gauge_equivaraince():
+    """Shows the gauge equivariance of the transformation in gauge_downsampler."""
+
+    import normflow  # pylint: disable=import-outside-toplevel
+    shape = (2, 2, 2, 2, 4)  # 2^4 lattice; the last axis is the "mu" axis.
+    prior = normflow.prior.SUnPrior(3, shape=shape)
+
+    # Define `x` and transform it with instances of GaugeLinkConv
+
+    x = prior.sample(2)
+    y = gauge_downsampler(x)
+
+    # Now gauge transform `x`; only the links connected to the origin
+    q = prior.sample(1)[0, 0, 0, 0, 0, 0]
+    for i in range(4):
+        x[0, 0, 0, 0, 0, i] = q @ x[0, 0, 0, 0, 0, i]
+    x[0, -1, 0, 0, 0, 0] = x[0, -1, 0, 0, 0, 0] @ q.adjoint()
+    x[0, 0, -1, 0, 0, 1] = x[0, 0, -1, 0, 0, 1] @ q.adjoint()
+    x[0, 0, 0, -1, 0, 2] = x[0, 0, 0, -1, 0, 2] @ q.adjoint()
+    x[0, 0, 0, 0, -1, 3] = x[0, 0, 0, 0, -1, 3] @ q.adjoint()
+
+    # Use the gauge transformed x & transform it w/ instances of GaugeLinkConv
+    z = gauge_downsampler(x)
+
+    # Undo the gauge transformation on `z` to check the gauge equivarience.
+    for i in range(4):
+        z[0, 0, 0, 0, 0, i] = q.adjoint() @ z[0, 0, 0, 0, 0, i]
+    z[0, -1, 0, 0, 0, 0] = z[0, -1, 0, 0, 0, 0] @ q
+    z[0, 0, -1, 0, 0, 1] = z[0, 0, -1, 0, 0, 1] @ q
+    z[0, 0, 0, -1, 0, 2] = z[0, 0, 0, -1, 0, 2] @ q
+    z[0, 0, 0, 0, -1, 3] = z[0, 0, 0, 0, -1, 3] @ q
+
+    print(f"Gauge Equivariant if {(z - y).abs().mean()} is approximately 0")
+
+_test_gauge_equivaraince()

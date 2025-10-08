@@ -31,8 +31,6 @@ def compute_wilson_1x1_loop(
 
 def print_lattice_ascii_Ux_vertical_Uy_horizontal(Ux: torch.Tensor, Uy: torch.Tensor, title: str):
     """Show sites (x,y); **Ux is vertical**, **Uy is horizontal**."""
-    print('Ux', Ux)
-    print('Uy', Uy)
     Lx, Ly = Ux.shape
     print(f"\n=== {title} ===\n")
     def maxlen_num(t):
@@ -69,9 +67,14 @@ def demo_integer_links():
         for j in range(Ly):
             x[0, i, j, 0, 0, 0] = 10*i + j      # Ux
             x[0, i, j, 1, 0, 0] = 100*i + 10*j  # Uy
-
+    
     Ux = x[0, :, :, 0, 0, 0]
     Uy = x[0, :, :, 1, 0, 0]
+
+    x_ = x[0, :, :, :, 0, 0]
+    print('x', x_)
+    print('Ux', Ux)
+    print('Uy', Uy)
 
     print_lattice_ascii_Ux_vertical_Uy_horizontal(
         Ux, Uy, "FINE lattice (Ux vertical, Uy horizontal)"
