@@ -17,6 +17,62 @@ __all__ = ["GaugeLinkConv"]
 
 matmul = torch.matmul
 
+# =============================================================================
+def naive_project_su3(y):
+    """
+    Naively projects a 3x3 complex matrix to SU(3) by orthonormalizing rows.
+
+    This method assumes the input matrix is close to the identity. It first
+    orthonormalizes the first two rows, then reconstructs the third row to
+    enforce unitarity and determinant = 1.
+
+    Notes:
+    1. Although not necessary, the matrix is initially normalized to ensure
+       determinnat 1.
+    2. The changes are not in-place because PyTorch cannot handle
+       backpropagation of derivatives (if the adjointstate method is not used).
+    """
+    # Normalize matrix to ensure determinant is 1 (special unitary)
+    # Explicit calculation of determinant is faster than torch.linalg.det!
+    y_00, y_01, y_02 = torch.unbind(y[..., 0, :], dim=-1)
+    y_10, y_11, y_12 = torch.unbind(y[..., 1, :], dim=-1)
+    y_20, y_21, y_22 = torch.unbind(y[..., 2, :], dim=-1)
+    det = (
+        y_20 * (y_01 * y_12 - y_02 * y_11)
+        + y_21 * (y_02 * y_10 - y_00 * y_12)
+        + y_22 * (y_00 * y_11 - y_01 * y_10)
+    )
+
+    y = y / det[..., None, None]**(1/3.)
+
+    # Unbind rows for further calculations
+    y_0, y_1, _ = torch.unbind(y, dim=-2)
+
+    # Normalize the first row
+    norm_sq = torch.sum(y_0.conj() * y_0, dim=-1, keepdim=True)
+    y_0 = y_0 / torch.sqrt(norm_sq)
+
+    # Compute inner product of first two rows
+    vdot = torch.sum(y_0.conj() * y_1, dim=-1, keepdim=True)
+    # Orthogonalize second row against the first
+    y_1 = y_1 - y_0 * vdot
+
+    # Normalize the second row
+    norm_sq = torch.sum(y_1 * y_1.conj(), dim=-1, keepdim=True)
+    y_1 = y_1 / torch.sqrt(norm_sq)
+
+    # Reconstruct third row as complex conjugate of cross product of first two
+    y_2 = torch.stack(
+        ((y_0[..., 1] * y_1[..., 2] - y_0[..., 2] * y_1[..., 1]).conj(),
+         (y_0[..., 2] * y_1[..., 0] - y_0[..., 0] * y_1[..., 2]).conj(),
+         (y_0[..., 0] * y_1[..., 1] - y_0[..., 1] * y_1[..., 0]).conj()
+        ),
+        dim = -1
+    )
+
+    y = torch.stack((y_0, y_1, y_2), dim=-2)
+
+    return y
 
 # =============================================================================
 class GaugeLinkConv(torch.nn.Module):
@@ -49,7 +105,8 @@ class GaugeLinkConv(torch.nn.Module):
         in_channels: int | None,
         out_channels: int | None,
         ndim: int,
-        sites_before_link: bool = True
+        sites_before_link: bool = True,
+        project: bool = True
     ):
         """
         Initialize the GaugeLinkConv module.
@@ -77,6 +134,8 @@ class GaugeLinkConv(torch.nn.Module):
 
         self.sites_before_link = sites_before_link
         self._link_axis = -3 if sites_before_link else 2  # 2: batch & channel
+
+        self.project = project
 
         # Learnable weight tensor for each valid (mu, nu) pair
         shape = (ndim, 3*ndim - 3, self.out_channels, self.in_channels)
@@ -152,6 +211,9 @@ class GaugeLinkConv(torch.nn.Module):
         # Remove the added channel dimension if necessary
         if self.true_out_channels is None:
             x_updated = x_updated.squeeze(1)
+
+        if self.project: 
+            x_updated = naive_project_su3(x_updated)
 
         return x_updated
 

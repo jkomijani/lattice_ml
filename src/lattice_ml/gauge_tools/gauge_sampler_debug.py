@@ -222,3 +222,112 @@ def _test_gauge_equivaraince():
     print(f"Gauge Equivariant if {(z - y).abs().mean()} is approximately 0")
 
 _test_gauge_equivaraince()
+
+def _test_gauge_equivaraince_all_even():
+    """
+    Gauge-equivariance test for gauge_downsampler / gauge_upsampler
+    where we apply independent local gauge transforms G(s) at ALL even sites.
+    
+    Assumes:
+      - x shape: (B, Lx, Ly, Lz, Lt, D, Nc, Nc)  with sites_before_link=True
+      - prefix_dims = 1 (batch first)
+      - periodic boundary conditions
+    """
+    import torch
+    import normflow  # pylint: disable=import-outside-toplevel
+
+    # --- Helpers ---
+    matmul = torch.matmul
+
+    def is_even_site(idx_tuple):
+        # parity even if sum of coordinates is even
+        return (sum(idx_tuple) % 2) == 0
+
+    # --- Build a tiny 2^4 lattice (you can change this to any even extents) ---
+    shape = (2, 2, 2, 2, 4)  # (Lx, Ly, Lz, Lt, D)
+    D = shape[-1]
+    Lx, Ly, Lz, Lt = shape[:4]
+    Nc = 3
+
+    prior = normflow.prior.SUnPrior(Nc, shape=shape)
+
+    # Sample a batch of gauge fields
+    x = prior.sample(2)  # (B=2, Lx, Ly, Lz, Lt, D, Nc, Nc)
+    x = x.clone()  # keep it writable
+    B = x.shape[0]
+
+    # Original transform (reference)
+    x0 = x.clone()
+    x_coarse = gauge_downsampler(x0, prefix_dims=1, sites_before_link=True)
+    y = gauge_upsampler(x0, x_coarse, prefix_dims=1, sites_before_link=True)
+
+    # --- Build a per-site gauge field G(s) for ALL sites; we’ll use G(s) only on even sites ---
+    # Use a fresh prior sample and take mu=0 slice as the site-local matrix (unitary, ~SU(N))
+    gfield = prior.sample(1)[0]  # (Lx, Ly, Lz, Lt, D, Nc, Nc)
+
+    # Apply local gauge transform on *all even* sites to x (in-place)
+    # Convention:
+    #   Outgoing links from s along mu: U_mu(s) -> G(s) U_mu(s)
+    #   Incoming link to s from s - e_mu: U_mu(s - e_mu) -> U_mu(s - e_mu) G(s)^†
+    for b in range(B):
+        for x1 in range(Lx):
+            for y1 in range(Ly):
+                for z1 in range(Lz):
+                    for t1 in range(Lt):
+                        if not is_even_site((x1, y1, z1, t1)):
+                            continue
+                        G = gfield[x1, y1, z1, t1, 0]  # (Nc, Nc)
+                        Gh = G.adjoint()
+
+                        # Left-multiply all outgoing links from the even site
+                        for mu in range(D):
+                            x[b, x1, y1, z1, t1, mu] = matmul(G, x[b, x1, y1, z1, t1, mu])
+
+                        # Right-multiply incoming links from each neighbor (s - e_mu)
+                        # with periodic wrap-around
+                        xm = (x1 - 1) % Lx
+                        ym = (y1 - 1) % Ly
+                        zm = (z1 - 1) % Lz
+                        tm = (t1 - 1) % Lt
+                        # incoming along each mu comes from the neighbor in -mu direction
+                        x[b, xm, y1, z1, t1, 0] = matmul(x[b, xm, y1, z1, t1, 0], Gh)  # from (x-1,y,z,t) along mu=0
+                        x[b, x1, ym, z1, t1, 1] = matmul(x[b, x1, ym, z1, t1, 1], Gh)  # from (x,y-1,z,t) mu=1
+                        x[b, x1, y1, zm, t1, 2] = matmul(x[b, x1, y1, zm, t1, 2], Gh)  # from (x,y,z-1,t) mu=2
+                        x[b, x1, y1, z1, tm, 3] = matmul(x[b, x1, y1, z1, tm, 3], Gh)  # from (x,y,z,t-1) mu=3
+
+    # Transform the gauge-transformed lattice
+    z = gauge_upsampler(x, gauge_downsampler(x, prefix_dims=1, sites_before_link=True),
+                        prefix_dims=1, sites_before_link=True)
+
+    # Undo the local gauge transforms at all even sites in z
+    # (inverse of what we did above; i.e., apply G(s)^† on outgoing, and G(s) on incoming)
+    for b in range(B):
+        for x1 in range(Lx):
+            for y1 in range(Ly):
+                for z1_ in range(Lz):
+                    for t1 in range(Lt):
+                        if not is_even_site((x1, y1, z1_, t1)):
+                            continue
+                        G = gfield[x1, y1, z1_, t1, 0]
+                        Gh = G.adjoint()
+
+                        # Undo on outgoing links
+                        for mu in range(D):
+                            z[b, x1, y1, z1_, t1, mu] = matmul(Gh, z[b, x1, y1, z1_, t1, mu])
+
+                        # Undo on incoming links from neighbors (apply G on the right)
+                        xm = (x1 - 1) % Lx
+                        ym = (y1 - 1) % Ly
+                        zm = (z1_ - 1) % Lz
+                        tm = (t1 - 1) % Lt
+                        z[b, xm, y1, z1_, t1, 0] = matmul(z[b, xm, y1, z1_, t1, 0], G)
+                        z[b, x1, ym, z1_, t1, 1] = matmul(z[b, x1, ym, z1_, t1, 1], G)
+                        z[b, x1, y1, zm, t1, 2] = matmul(z[b, x1, y1, zm, t1, 2], G)
+                        z[b, x1, y1, z1_, tm, 3] = matmul(z[b, x1, y1, z1_, tm, 3], G)
+
+    # Compare against the reference y
+    diff = (z - y).abs().mean()
+    print(f"Gauge Equivariant (all even sites) if {diff} is ≈ 0")
+
+_test_gauge_equivaraince_all_even()
+
