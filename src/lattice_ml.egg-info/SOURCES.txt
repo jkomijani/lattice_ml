@@ -26,6 +26,7 @@ src/lattice_ml/gauge_tools/__init__.py
 src/lattice_ml/gauge_tools/gauge_action.py
 src/lattice_ml/gauge_tools/gauge_downsampler_debug.py
 src/lattice_ml/gauge_tools/gauge_link_conv.py
+src/lattice_ml/gauge_tools/gauge_sampler_debug.py
 src/lattice_ml/gauge_tools/gauge_unet.py
 src/lattice_ml/gauge_tools/gauge_upsampler_debug.py
 src/lattice_ml/gauge_tools/wilson_loops.py

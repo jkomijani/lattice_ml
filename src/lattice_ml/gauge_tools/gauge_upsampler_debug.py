@@ -171,7 +171,6 @@ def _test_gauge_equivaraince(fine, coarse):
     print(coarse.shape)
     y = gauge_upsampler(x, coarse)
 
-
     # Now gauge transform `x`; only the links connected to the origin
     q = prior.sample(1)[0, 0, 0, 0, 0, 0]
     for i in range(4):

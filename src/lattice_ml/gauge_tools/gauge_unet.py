@@ -31,6 +31,7 @@ from torch.nn import Module
 from torch.nn import ModuleList
 
 from lattice_ml.gauge_tools import GaugeLinkConv
+from lattice_ml.functions import pow_special_unitary_group
 
 
 __all__ = [
@@ -121,28 +122,6 @@ def gauge_downsampler(
     x_coarse = torch.stack(coarse_links, dim=stack_dim)
     return x_coarse
 
-def matsqrt(Q: torch.Tensor) -> torch.Tensor:
-    """
-    Principal (batched) matrix square root for general normal/Unitary Q.
-    Shapes: (..., n, n) -> (..., n, n)
-
-    Notes:
-      - Uses eig: Q = V diag(w) V^{-1}, sqrt(Q) = V diag(sqrt(w)) V^{-1}.
-      - For unitary Q, w are on the unit circle; principal sqrt maps e^{iθ} -> e^{iθ/2}.
-    """
-    assert Q.shape[-1] == Q.shape[-2], "Q must be square"
-    # ensure complex dtype for eig of general matrices
-    Qc = Q if torch.is_complex(Q) else Q.to(torch.complex64 if Q.dtype == torch.float32 else torch.complex128)
-
-    # eig decomposition
-    with torch.no_grad():
-        w, V = torch.linalg.eig(Qc)
-                  # (..., n), (..., n, n)
-    sqrt_w = torch.sqrt(w)                        # principal branch
-    Vinv = torch.linalg.inv(V)
-    Sq = V @ torch.diag_embed(sqrt_w) @ Vinv
-    return Sq.to(dtype=Q.dtype)
-
 
 def gauge_upsampler(
     x_fine_pre: torch.Tensor,          # fine lattice BEFORE transform (contains a,b,...)
@@ -156,7 +135,7 @@ def gauge_upsampler(
 
     For each direction μ and for links whose tails lie on even sites:
         A  = a @ b               (from x_fine_pre)
-        Q  = A @ A'^† @ A
+        Q  = a† @ A @ A'^† @ A @ b† (set to I for now)
         a' = A' @ b^† @ sqrt(Q)
         b' = sqrt(Q) @ a^† @ A'
 
@@ -220,11 +199,29 @@ def gauge_upsampler(
         # A from fine PRE
         A_pre = matmul(a, b)
 
-        # Q = A A'^† A
-        Q = matmul(matmul(A_pre, A_post.adjoint()), A_pre)
+        set_id = False
 
-        # sqrt(Q) with optional projection back to SU(N)
-        Sq = matsqrt(Q)
+        if not set_id:
+            # Q = a† @ A @ A'^† @ A @ b†
+            Q = matmul(
+                    matmul(
+                        matmul(
+                            matmul(a.adjoint(), A_pre),
+                            A_post.adjoint()
+                        ),
+                        A_pre
+                    ),
+                    b.adjoint()
+            )
+
+            Sq = pow_special_unitary_group(Q, 0.5)
+        else:
+            Nc = A_pre.size(-1)
+            # Identity with correct shape/dtype/device, broadcast over batch/lattice dims
+            Sq = torch.eye(Nc, dtype=A_pre.dtype, device=A_pre.device).expand(
+                A_pre.shape[:-2] + (Nc, Nc)
+            )
+            
 
         # a' = A' b^† sqrt(Q)
         a_post = matmul(matmul(A_post, b.adjoint()), Sq)
