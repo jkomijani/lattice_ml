@@ -8,6 +8,7 @@ from ._spectral_split_cat import splitted_fftn
 from ._spectral_split_cat import splitted_ifftn
 
 from ._matrix_func import *
+from ._project import *
 
 from ._matrix_func_and_jacobian import commutator_and_jacobian
 from ._matrix_func_and_jacobian import inverse_eign_and_jacobian
