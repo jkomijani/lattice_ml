@@ -166,11 +166,11 @@ class Trainer:
             # Sample a random diffusion time per example, uniformly in [0, 1].
             # Shape: (batch_size,), reshaped for broadcasting
             t = torch.rand((bsize,), device=x_0.device)
-            t_ = t.reshape((-1, *(1,) * (x_0.ndim - 2)))
+            t_ = t.reshape((-1, *(1,) * (x_0.ndim - 1)))
 
             # Flow the data to time t
             # Compute the "true" flow from x_0 → x_1 at intermediate time t
-            x_t = x_0 * (1 - t) + x_1 * t
+            x_t = x_0 * (1 - t_) + x_1 * t_
             x_dot = x_1 - x_0
 
             # Predict flow using the learned (algebra) dynamics at (t, x_t)
