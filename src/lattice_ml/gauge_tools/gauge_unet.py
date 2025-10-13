@@ -517,7 +517,7 @@ class UNetEncoderLayer(Module):
         """
     
         data = data.unsqueeze(1)
-        data = self.conv_block1(data)
+        data = self.conv_block1(data, t=time)
 
 
         '''
@@ -610,7 +610,7 @@ class UNetDecoderLayer(Module):
 
         data = gauge_upsampler(skip_connection, data, prefix_dims=2)
 
-        data = self.conv_block1(data)
+        data = self.conv_block1(data, t=time)
 
         data = data.squeeze(1)
         '''
@@ -658,7 +658,7 @@ class UNetBottleneck(UNetEncoderLayer):
             Tensor: The result after processing through the down-sampler.
             Tensor: The intermediate result before the down-sampler.
         """
-        data = self.conv_block1(data)
+        data = self.conv_block1(data, t = time)
 
         '''
         if self.time_encoder is not None:
