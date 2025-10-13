@@ -10,11 +10,7 @@ using short Wilson lines starting at the tail of a link and ending at its head.
 from typing import List
 import torch
 
-#from .wilson_staples import compute_planar_staples
-from lattice_ml.gauge_tools.wilson_staples import compute_planar_staples
-
-
-from torch.nn import Module
+from .wilson_staples import compute_planar_staples
 
 
 __all__ = ["GaugeLinkConv"]
@@ -83,73 +79,11 @@ class GaugeLinkConv(torch.nn.Module):
         self._link_axis = -3 if sites_before_link else 2  # 2: batch & channel
 
         # Learnable weight tensor for each valid (mu, nu) pair
-        """
         shape = (ndim, 2*(ndim-1), self.out_channels, self.in_channels, 2)
-
+        scale = 0.01
         self.weight = torch.nn.Parameter(torch.randn(*shape) * scale)
-        """
 
-        self.poly_order = 4  # e.g., degree-4 polynomial
-        shape = (self.poly_order + 1, ndim, 2*(ndim-1), self.out_channels, self.in_channels, 2)
-        scale = 0.0001 #it was 0.01
-        self.weight_poly = torch.nn.Parameter(torch.rand(*shape) * scale)
-    
-    def time_dependent_weight(self, t: torch.Tensor | float) -> torch.Tensor:
-        """
-        Evaluate the time-dependent weight tensor
-            W(t) = \sum_{k=0}^{K} A_k \, t^{k}
-        where each coefficient A_k has shape (D, 2*(D-1), C_out, C_in, 2)
-        and the last axis packs (real, imag) parts for later conversion to complex.
-
-        Parameters
-        ----------
-        t : float or Tensor
-            Time value(s) at which to evaluate W(t).
-            - If scalar (float or 0-D tensor), returns a shared weight for the whole batch.
-        -    If shape (B,), returns per-sample weights.
-
-        Returns
-        -------
-        Tensor
-            Real-packed polynomial evaluation of W(t).
-            Shapes:
-            - If t is scalar: (D, 2*(D-1), C_out, C_in, 2)
-            - If t is (B,):  (B, D, 2*(D-1), C_out, C_in, 2)
-        """
-    
-        # Shapes:
-        # self.weight_poly: (K+1, ndim, 2*(ndim-1), C_out, C_in, 2)
-        Kp1, *_ = self.weight_poly.shape
-
-        # Make t a tensor on the same device/dtype
-        t = torch.as_tensor(t, device=self.weight_poly.device, dtype=self.weight_poly.dtype)
-
-        powers = torch.arange(Kp1, device=self.weight_poly.device, dtype=self.weight_poly.dtype)
-
-        if t.ndim == 0:
-            # ----- scalar t -----
-            # t_pows: (K+1,) -> (K+1,1,1,1,1,1) to align with weight_poly dim0
-            t_pows = (t**powers).view(Kp1, 1, 1, 1, 1, 1)
-            # Elementwise multiply, then sum over polynomial dim (dim=0)
-            weight_t = (self.weight_poly * t_pows).sum(dim=0)
-            # -> (ndim, 2*(ndim-1), C_out, C_in, 2)
-            return weight_t
-
-        elif t.ndim == 1:
-            # ----- per-batch t of shape (B,) -----
-            # Build (B, K+1) table of powers
-            t_pows = t.unsqueeze(1)**powers.unsqueeze(0)  # (B, K+1)
-            # Contract polynomial dim: (B, K+1) x (K+1, ...) -> (B, ...)
-            weight_t = torch.einsum('bk,k...->b...', t_pows, self.weight_poly)
-            # -> (B, ndim, 2*(ndim-1), C_out, C_in, 2)
-            return weight_t
-
-        else:
-            raise ValueError("t must be scalar () or 1D (B,).")
-
-
-
-    def forward(self, x: torch.Tensor, t: torch.Tensor | float = 0.0) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass.
 
@@ -175,10 +109,6 @@ class GaugeLinkConv(torch.nn.Module):
 
         output_stack: List[torch.Tensor] = [None] * ndim
 
-        weight_t = self.time_dependent_weight(t)
-        per_sample = (weight_t.ndim == 6)  # (B, ndim, 2*(ndim-1), C_out, C_in, 2)
-        # scalar-t case is 5D:          (ndim, 2*(ndim-1), C_out, C_in, 2)  
-
         # Loop over lattice directions
         for mu in range(ndim):
             x_mu = x_unbound[mu]
@@ -200,21 +130,8 @@ class GaugeLinkConv(torch.nn.Module):
                 )
 
                 # Learnable weights for this mu-nu pair, reshape, & complexify
-                #w = self.weight[mu, ind:ind+2].reshape(-1, self.in_channels, 2)
-                #w = weight_t[mu, ind:ind+2].reshape(-1, self.in_channels, 2)
-
-                #w = torch.view_as_complex(w)
-
-                if per_sample:
-                    # per-sample weights
-                    w_realimag = weight_t[:, mu, ind:ind+2]                       # (B, 2, C_out, C_in, 2)
-                    w = w_realimag.reshape(w_realimag.shape[0], -1, self.in_channels, 2)  # (B, 2*C_out, C_in, 2)
-                    w = torch.view_as_complex(w)                                   # (B, 2*C_out, C_in)
-                else:
-                    # shared weights
-                    w_realimag = weight_t[mu, ind:ind+2]            # (2, C_out, C_in, 2)
-                    w = w_realimag.reshape(-1, self.in_channels, 2) # (2*C_out, C_in, 2)
-                    w = torch.view_as_complex(w)                    # (2*C_out, C_in)                       # (B, 2*C_out, C_in)
+                w = self.weight[mu, ind:ind+2].reshape(-1, self.in_channels, 2)
+                w = torch.view_as_complex(w)
 
                 # Sum contributions from weighted staples
                 staples += einsum(planar_staples, w)
@@ -234,22 +151,20 @@ class GaugeLinkConv(torch.nn.Module):
         # Remove the added channel dimension if necessary
         if self.true_out_channels is None:
             x_updated = x_updated.squeeze(1)
-        
-        #x_updated = naive_project_su3(x_updated)
-        
+
         return x_updated
 
     def set_param2zero(self):
         """Set all trainable parameters to zero."""
-        torch.nn.init.zeros_(self.weight_poly)
+        torch.nn.init.zeros_(self.weight)
 
     def set_param2normal(self, mean: float = 0.0, std: float = 1.0):
         """Set all trainable parameters to Gaussian with given mean and std."""
-        torch.nn.init.normal_(self.weight_poly, mean=mean, std=std)
+        torch.nn.init.normal_(self.weight, mean=mean, std=std)
 
 
 # =============================================================================
-def einsum_(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+def einsum(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
     """
     Applies a linear transformation over the channel dimension using einsum.
 
@@ -267,83 +182,6 @@ def einsum_(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
     out = torch.einsum('bcn,oc->bon', x.reshape(bsize, c_in, -1), w)
     return out.view(bsize, -1, *x.shape[2:])
 
-def einsum(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
-    """
-    x: (B, C_in, ...)
-    w: (C_out, C_in)          # shared weights
-       or (B, C_out, C_in)    # per-sample weights
-    returns: (B, C_out, ...)
-    """
-    B, C_in = x.shape[:2]
-    tail = x.shape[2:]
-    x_flat = x.reshape(B, C_in, -1)  # (B, C_in, N)
-
-    if w.ndim == 2:
-        # shared
-        out = torch.einsum('bcn,oc->bon', x_flat, w)       # (B, C_out, N)
-    else:
-        # per-sample
-        out = torch.einsum('bcn,boc->bon', x_flat, w)      # (B, C_out, N)
-
-    return out.view(B, -1, *tail)
-
-
-# =============================================================================
-def naive_project_su3(y):
-    """
-    Naively projects a 3x3 complex matrix to SU(3) by orthonormalizing rows.
-
-    This method assumes the input matrix is close to the identity. It first
-    orthonormalizes the first two rows, then reconstructs the third row to
-    enforce unitarity and determinant = 1.
-
-    Notes:
-    1. Although not necessary, the matrix is initially normalized to ensure
-       determinnat 1.
-    2. The changes are not in-place because PyTorch cannot handle
-       backpropagation of derivatives (if the adjointstate method is not used).
-    """
-    # Normalize matrix to ensure determinant is 1 (special unitary)
-    # Explicit calculation of determinant is faster than torch.linalg.det!
-    y_00, y_01, y_02 = torch.unbind(y[..., 0, :], dim=-1)
-    y_10, y_11, y_12 = torch.unbind(y[..., 1, :], dim=-1)
-    y_20, y_21, y_22 = torch.unbind(y[..., 2, :], dim=-1)
-    det = (
-        y_20 * (y_01 * y_12 - y_02 * y_11)
-        + y_21 * (y_02 * y_10 - y_00 * y_12)
-        + y_22 * (y_00 * y_11 - y_01 * y_10)
-    )
-
-    y = y / det[..., None, None]**(1/3.)
-
-    # Unbind rows for further calculations
-    y_0, y_1, _ = torch.unbind(y, dim=-2)
-
-    # Normalize the first row
-    norm_sq = torch.sum(y_0.conj() * y_0, dim=-1, keepdim=True)
-    y_0 = y_0 / torch.sqrt(norm_sq)
-
-    # Compute inner product of first two rows
-    vdot = torch.sum(y_0.conj() * y_1, dim=-1, keepdim=True)
-    # Orthogonalize second row against the first
-    y_1 = y_1 - y_0 * vdot
-
-    # Normalize the second row
-    norm_sq = torch.sum(y_1 * y_1.conj(), dim=-1, keepdim=True)
-    y_1 = y_1 / torch.sqrt(norm_sq)
-
-    # Reconstruct third row as complex conjugate of cross product of first two
-    y_2 = torch.stack(
-        ((y_0[..., 1] * y_1[..., 2] - y_0[..., 2] * y_1[..., 1]).conj(),
-         (y_0[..., 2] * y_1[..., 0] - y_0[..., 0] * y_1[..., 2]).conj(),
-         (y_0[..., 0] * y_1[..., 1] - y_0[..., 1] * y_1[..., 0]).conj()
-        ),
-        dim = -1
-    )
-
-    y = torch.stack((y_0, y_1, y_2), dim=-2)
-
-    return y
 
 # =============================================================================
 def _test_gauge_equivaraince():
@@ -380,5 +218,3 @@ def _test_gauge_equivaraince():
     z[0, 0, 0, 0, -1, 3] = z[0, 0, 0, 0, -1, 3] @ q
 
     print(f"Gauge Equivariant if {(z - y).abs().mean()} is approximately 0")
-
-_test_gauge_equivaraince()

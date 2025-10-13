@@ -199,7 +199,7 @@ def gauge_upsampler(
         # A from fine PRE
         A_pre = matmul(a, b)
 
-        set_id = False
+        set_id = True
 
         if not set_id:
             # Q = a† @ A @ A'^† @ A @ b†
