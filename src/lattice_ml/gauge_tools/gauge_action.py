@@ -4,11 +4,10 @@
 Wilson gauge action and force calculations for lattice gauge theory.
 """
 
-from typing import List
 import torch
 
 from .wilson_loops import compute_wilson_1x1_loop
-from .wilson_staples import compute_staples_sum
+from .wilson_staples import compute_all_directional_staples
 
 
 __all__ = ['WilsonGaugeAction']
@@ -130,17 +129,10 @@ class WilsonGaugeAction:
             Tr(T^a T^b) = -1/2 δ^ab, but this code uses Tr(T^a T^b) = -δ^ab.
         """
         n_c = x.shape[-1]
-        ndim = len(x.shape) - 4  # exclude batch & direction & matrix indices
 
-        staples_sum_stack: List[torch.Tensor] = [None] * ndim
-
-        for mu in range(ndim):
-            nu_list = [nu for nu in range(ndim) if nu != mu]
-            staples_sum_stack[mu] = compute_staples_sum(
-                x, mu, nu_list, sites_before_link=self.sites_before_link
-            )
-
-        g = torch.stack(staples_sum_stack, dim=self._link_axis)  # Gamma matrix
+        g = compute_all_directional_staples(
+            x, sites_before_link=self.sites_before_link
+        )
 
         coeff = -self.beta / n_c
         algebra_force = coeff * self._project_onto_tangent_space(x @ g)
