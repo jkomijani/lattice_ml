@@ -7,16 +7,87 @@ This module provides functions to compute planar staples and sums of staples
 for links in specified directions, as used in Wilson gauge action computations.
 """
 
-from typing import Tuple
+from typing import Tuple, List
 import torch
 
 
-__all__ = ['compute_staples_sum', 'compute_planar_staples']
+__all__ = [
+    'compute_all_directional_staples',
+    'compute_directional_staples',
+    'compute_planar_staples'
+]
 
 matmul = torch.matmul
 
 
-def compute_staples_sum(
+def compute_all_directional_staples(
+    x: torch.Tensor,
+    prefix_dims: int = 1,
+    sites_before_link: bool = True,
+):
+    """
+    Compute the staple sums for all link directions in the lattice.
+
+    For each link direction 'mu', this function sums the staples in all planes
+    spanned by ('mu', 'nu') for every perpendicular direction 'nu'.
+    The results are stacked along the link-axis dimension, producing a tensor
+    with the same shape as `x`.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Tensor containing the gauge links. After any batch and channel axes,
+        the spatial lattice axes come first (if sites_before_link=True),
+        followed by the link direction axis, and then the matrix components.
+    prefix_dims : int, default=1
+        Number of leading batch and channel dimensions in the tensor.
+        For example, if x.shape = (batch, channel, Lx, Ly, Lz, Lt, mu, Nc, Nc),
+        then prefix_dims=2. If only a single batch dimension, prefix_dims=1.
+    sites_before_link : bool, default=True
+        Whether the spatial lattice axes come before the link axis.
+
+    Returns
+    -------
+    torch.Tensor
+         Tensor of staple sums for all link directions. Its shape is identical
+         to `x`, with the link-direction axis containing the summed staples
+         for each direction `mu`.
+
+    Notes
+    -----
+    The staples are defined such that the expression `x @ g` is gauge
+    covariant, where `g` is the output of this function. Using this definition,
+    the Wilson gauge action can be expressed is proportional to
+
+        ReTr(x @ g) + ...
+
+    where the sum over lattice sites and directions is implied.
+    """
+    # Prepare keyword arguments to pass to compute_directional_staples
+    kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
+
+    # Determine the number of spatial dimensions
+    ndim = len(x.shape) - 4  # exclude batch & direction & matrix indices
+
+    # Initialize a list to store staples sums for each direction 'mu'
+    staples_stack: List[torch.Tensor] = [None] * ndim
+
+    # Loop over each link direction 'mu'
+    for mu in range(ndim):
+        # Loop over each link direction 'mu'
+        nu_list = [nu for nu in range(ndim) if nu != mu]
+
+        # Compute the staples sum for this direction
+        staples_stack[mu] = compute_directional_staples(x, mu, nu_list, **kws)
+
+    # Stack the results along the link-axis to recreate the full tensor
+    link_axis = -3 if sites_before_link else prefix_dims
+    gamma_matrix = torch.stack(staples_stack, dim=link_axis)
+
+    return gamma_matrix
+
+
+def compute_directional_staples(
     x: torch.Tensor,
     mu: int,
     nu_list: Tuple[int, ...],
