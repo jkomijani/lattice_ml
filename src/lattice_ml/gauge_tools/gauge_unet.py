@@ -122,6 +122,14 @@ def gauge_downsampler(
     x_coarse = torch.stack(coarse_links, dim=stack_dim)
     return x_coarse
 
+def _inv_via_solve(H: torch.Tensor) -> torch.Tensor:
+    """
+    Batched inverse via solve against identity. Works for non-singular square H.
+    Shapes: (..., n, n) -> (..., n, n)
+    """
+    *batch, n, _ = H.shape
+    I = torch.eye(n, dtype=H.dtype, device=H.device).expand(*batch, n, n)
+    return torch.linalg.solve(H, I)
 
 def gauge_upsampler(
     x_fine_pre: torch.Tensor,          # fine lattice BEFORE transform (contains a,b,...)
@@ -200,21 +208,42 @@ def gauge_upsampler(
         A_pre = matmul(a, b)
 
         set_id = True
+        sun = False
 
         if not set_id:
-            # Q = a† @ A @ A'^† @ A @ b†
-            Q = matmul(
-                    matmul(
-                        matmul(
-                            matmul(a.adjoint(), A_pre),
-                            A_post.adjoint()
-                        ),
-                        A_pre
-                    ),
-                    b.adjoint()
-            )
 
-            Sq = pow_special_unitary_group(Q, 0.5)
+            if sun:
+                # Q = a† @ A @ A'^† @ A @ b†
+                Q = matmul(
+                        matmul(
+                            matmul(
+                                matmul(a.adjoint(), A_pre),
+                                A_post.adjoint()
+                            ),
+                            A_pre
+                        ),
+                        b.adjoint()
+                )
+                # SU(N) square root (projected)
+                Sq = pow_special_unitary_group(Q, 0.5)
+            else:
+                # Q = (b b†)^{-1} b A'^† a (a† A' A'^† a)^{-1}
+                bb_dag   = matmul(b, b.adjoint())
+                denom    = matmul(matmul(a.adjoint(), A_post), matmul(A_post.adjoint(), a))  # a† A' A'^† a
+
+                bb_dag_inv = _inv_via_solve(bb_dag)
+                denom_inv  = _inv_via_solve(denom)
+
+                Q = matmul(
+                        matmul(
+                            bb_dag_inv,
+                            matmul(matmul(b, A_post.adjoint()), a)
+                        ),
+                        denom_inv
+                )
+                # Generic matrix sqrt (Hermitian-aware if you use _sqrtm_unitary)
+                Sq = pow_special_unitary_group(Q, 0.5)
+ 
         else:
             Nc = A_pre.size(-1)
             # Identity with correct shape/dtype/device, broadcast over batch/lattice dims
@@ -518,14 +547,16 @@ class UNetEncoderLayer(Module):
     
         data = data.unsqueeze(1)
         data = self.conv_block1(data, t=time)
-
+        
 
         '''
         if self.time_encoder is not None:
             data += self.time_encoder(time, self.spatial_ndim)
         '''
 
-        return gauge_downsampler(data, prefix_dims=2), data
+        y = gauge_downsampler(data, prefix_dims=2)
+  
+        return y, data
 
 
 # =============================================================================
@@ -610,6 +641,7 @@ class UNetDecoderLayer(Module):
 
         data = gauge_upsampler(skip_connection, data, prefix_dims=2)
 
+
         data = self.conv_block1(data, t=time)
 
         data = data.squeeze(1)
@@ -687,96 +719,3 @@ class UNetBottleneck(UNetEncoderLayer):
         print("OOPS: Not Implemented Yet!")
 
 
-# =============================================================================
-class SinusoidalTimeEncoder(Module):
-    """
-    Implements a sinusoidal time encoding inspired by "Attention Is All You
-    Need," where the frequencies change geometrically.
-
-    Unlike the original paper where positions are integers, this class supports
-    non-integer time values, typically within [0, 1]. The frequency spectrum
-    can be adjusted using `max_freq` and `max_freq`.
-
-    Args:
-        n_embed (int): Length of the code vector (must be even).
-        min_freq (float, int): Minimum angular frequency (default is 1).
-        max_freq (float, int): Maximum angular frequency (default is 1000).
-        trainable_freq (bool): Frequencies are trainable (defaults to False).
-        trainable_ampl (bool): Amplitudes are trainable (defaults to False).
-    """
-    # Note that in the mentioned paper d_model, which is out n_embed, is 512,
-    # and approximately 25000 source tokens and 25000 target tokens are used.
-    # The shortest and largest wavelengths are `2 \pi` and  10000 x `2 \pi`,
-    # resepectively. Therefore, the shortes wavelength covers about 6 tokens
-    # and the longest wavelength contains about 6 x 10000 tokens.
-    # For the default setting, we assume that time varies from 0 to 1 with time
-    # steps of 0.001, a typical time step in solving a differential equation
-    # for relatively smooth functions. Then the minimum and maximum angular
-    # frequencies can be set to 1 and 1000 as the default choise.
-
-    def __init__(
-        self,
-        n_embed: int,
-        min_freq: float = 1.0,
-        max_freq: float = 1000.0,
-        trainable_freq: bool = False,
-        trainable_ampl: bool = False
-    ):
-
-        assert n_embed % 2 == 0, "Embedding length must be even."
-
-        super().__init__()
-
-        self.n_embed = n_embed
-        self.min_freq = min_freq
-        self.max_freq = max_freq
-        self.trainable_freq = trainable_freq
-        self.trainable_ampl = trainable_ampl
-
-        if trainable_freq:
-            self.freq_ratio = torch.nn.Parameter(torch.rand(n_embed // 2))
-        else:
-            power = torch.arange(n_embed // 2) * (2 / n_embed)  # \in [0, 1)
-            freq = max_freq / (max_freq / min_freq)**power
-            self.register_buffer('freq', freq)
-
-        if trainable_ampl:
-            self.ampl = torch.nn.Parameter(torch.randn(n_embed))
-        else:
-            self.ampl = None
-
-    def forward(self, time, spatial_ndim=0):
-        """
-        Computes the sinusoidal time encodingdding.
-
-        Args:
-            time (Tensor): A 1D tensor representing time steps (batch axis).
-            spatial_ndim (int): for reshaping the output (default is 0)
-
-        Returns:
-            Tensor: A tensor of original shape (batch_size, n_embed) with
-                    sinusoidal encoding. The tensor then reshaped to have
-                    `spatial_ndim` additional inner axis with unit lenght.
-        """
-        if self.trainable_freq:
-            angle = time[:, None] * self.freq_ratio[None, :] * self.max_freq
-        else:
-            angle = time[:, None] * self.freq[None, :]
-
-        shape = (len(time), self.n_embed, *(1,) * spatial_ndim)
-        encoded_time = torch.zeros(shape[:2], device=time.device)
-
-        encoded_time[:, 0::2] = torch.sin(angle)
-        encoded_time[:, 1::2] = torch.cos(angle)
-
-        if self.trainable_ampl:
-            encoded_time = self.ampl[None, :] * encoded_time
-
-        return encoded_time.reshape(*shape)
-
-
-def _test_time_encoding(n_embed=512, **kwargs):
-    import matplotlib.pyplot as plt
-    plt.ion()
-    t = torch.linspace(0, 1, 1000)
-    plt.pcolor(SinusoidalTimeEncoder(n_embed, **kwargs)(t).detach())

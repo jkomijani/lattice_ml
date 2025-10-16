@@ -89,9 +89,9 @@ class GaugeLinkConv(torch.nn.Module):
         self.weight = torch.nn.Parameter(torch.randn(*shape) * scale)
         """
 
-        self.poly_order = 4  # e.g., degree-4 polynomial
+        self.poly_order = 5  # e.g., degree-3 polynomial
         shape = (self.poly_order + 1, ndim, 2*(ndim-1), self.out_channels, self.in_channels, 2)
-        scale = 0.0001 #it was 0.01
+        scale = 0.0 #it was 0.0001 works the best sofar
         self.weight_poly = torch.nn.Parameter(torch.rand(*shape) * scale)
     
     def time_dependent_weight(self, t: torch.Tensor | float) -> torch.Tensor:
