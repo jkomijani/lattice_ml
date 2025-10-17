@@ -67,15 +67,15 @@ def compute_all_directional_staples(
     kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
 
     # Determine the number of spatial dimensions
-    ndim = len(x.shape) - 4  # exclude batch & direction & matrix indices
+    spatial_ndim = x.ndim - prefix_dims - 3  # exclude batch, direction, matrix
 
     # Initialize a list to store staples sums for each direction 'mu'
-    staples_stack: List[torch.Tensor] = [None] * ndim
+    staples_stack: List[torch.Tensor] = [None] * spatial_ndim
 
     # Loop over each link direction 'mu'
-    for mu in range(ndim):
+    for mu in range(spatial_ndim):
         # Loop over each link direction 'mu'
-        nu_list = [nu for nu in range(ndim) if nu != mu]
+        nu_list = [nu for nu in range(spatial_ndim) if nu != mu]
 
         # Compute the staples sum for this direction
         staples_stack[mu] = compute_directional_staples(x, mu, nu_list, **kws)
