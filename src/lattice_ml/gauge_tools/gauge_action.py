@@ -73,15 +73,19 @@ class WilsonGaugeAction:
         torch.Tensor
             Per-batch action values.
         """
-        ndim = len(x.shape) - 4  # exclude batch & direction & matrix indices
-        dim = tuple(range(1, 1 + ndim))  # sum over spatial dimensions
+        # Determine the number of spatial dimensions
+        spatial_ndim = x.ndim - 4  # exclude batch, direction, matrix
+        sum_dims = tuple(range(1, 1 + spatial_ndim))  # sum over spatial dims
+
         plaq_sum = torch.zeros(len(x), device=x.device, dtype=x.real.dtype)
-        for mu in range(1, ndim):
+
+        for mu in range(1, spatial_ndim):
             for nu in range(mu):
                 plaq = compute_reduced_trace(compute_wilson_1x1_loop(
                     x, mu, nu, sites_before_link=self.sites_before_link
                 )).real
-                plaq_sum += torch.sum(plaq, dim=dim)
+                plaq_sum += torch.sum(plaq, dim=sum_dims)
+
         # Note: 1 / n_c factor is already included in `compute_reduced_trace`.
         return -self.beta * plaq_sum
 

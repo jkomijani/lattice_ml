@@ -55,7 +55,8 @@ def compute_avg_trace_wilson_mxn_loop(
         Mean of the real part of the reduced trace over all planes.
         Shape = x.shape[:prefix_dims].
     """
-    spatial_ndim = x.ndim - prefix_dims - 3  # exclude batch, link, matrix
+    # Determine the number of spatial dimensions
+    spatial_ndim = x.ndim - prefix_dims - 3  # exclude batch, direction, matrix
     sum_dims = tuple(range(prefix_dims, prefix_dims + spatial_ndim))
 
     mean = torch.zeros(
@@ -292,7 +293,8 @@ def parallel_transport(
     link_axis = -3 if sites_before_link else prefix_dims
     links = torch.unbind(x, dim=link_axis)
 
-    spatial_ndim = x.ndim - prefix_dims - 3
+    # Determine the number of spatial dimensions
+    spatial_ndim = x.ndim - prefix_dims - 3  # exclude batch, direction, matrix
     displacements = [0] * spatial_ndim
 
     # Initialize transporter
