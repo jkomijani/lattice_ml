@@ -12,7 +12,7 @@ for forward and reverse mode algorithmic differentiation."
 import torch
 import warnings
 
-from .._svd import svd, AttributeDict4SVD
+from .._svd import svd, SVDResult
 
 TOL = 1e-8
 CHECK_ARBITRARY_PHASE = False
@@ -39,7 +39,7 @@ class SVD(torch.autograd.Function):
     @classmethod
     def apply_wrapper(clc, matrix):
         u, s, vh = clc.apply(matrix)
-        return AttributeDict4SVD(U=u, S=s, Vh=vh)
+        return SVDResult(U=u, S=s, Vh=vh)
 
     @staticmethod
     def forward(ctx, matrix):
@@ -115,7 +115,7 @@ def calc_nabla(s):
     delta = s.view(-1, 1, n).repeat(1, n, 1) - s.view(-1, n, 1).repeat(1, 1, n)
     delta = delta.view(*s.shape[:-1], n, n)
     nabla = 1 / delta
-    nabla[ delta == 0 ] = 0
+    nabla[delta == 0] = 0
     return nabla
 
 
@@ -125,5 +125,5 @@ def calc_nabla_plus(s):
     zeta = s.view(-1, 1, n).repeat(1, n, 1) + s.view(-1, n, 1).repeat(1, 1, n)
     zeta = zeta.view(*s.shape[:-1], n, n)
     nabla_plus = 1 / zeta
-    nabla_plus[ zeta == 0 ] = 0
+    nabla_plus[zeta == 0] = 0
     return nabla_plus
