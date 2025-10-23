@@ -54,8 +54,7 @@ class WilsonGaugeAction:
         """
         self.beta = beta
         self.sites_before_link = sites_before_link
-        self._link_axis = -3 if sites_before_link else 1  # 1 for batch axis
-        self._project_onto_tangent_space = anti_hermitian_traceless
+        self._project_onto_algebra_space = anti_hermitian_traceless
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -139,7 +138,7 @@ class WilsonGaugeAction:
         )
 
         coeff = -self.beta / n_c
-        algebra_force = coeff * self._project_onto_tangent_space(x @ g)
+        algebra_force = coeff * self._project_onto_algebra_space(x @ g)
         return algebra_force
 
 

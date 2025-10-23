@@ -14,7 +14,8 @@ import torch
 
 
 __all__ = [
-    'compute_avg_trace_wilson_mxn_loop',
+    'compute_mean_reduced_trace_wilson_mxn_loop',
+    'compute_avg_trace_wilson_mxn_loop',  # for legacy
     'compute_wilson_1x1_loop',
     'compute_wilson_1x1_loop_response',
     'parallel_transport'
@@ -23,7 +24,7 @@ __all__ = [
 matmul = torch.matmul
 
 
-def compute_avg_trace_wilson_mxn_loop(
+def compute_mean_reduced_trace_wilson_mxn_loop(
     x: torch.Tensor,
     n: int,
     m: int,
@@ -92,6 +93,10 @@ def compute_avg_trace_wilson_mxn_loop(
     return mean
 
 
+# Define another mouthful alias (for legacy)
+compute_avg_trace_wilson_mxn_loop = compute_mean_reduced_trace_wilson_mxn_loop
+
+
 def compute_wilson_1x1_loop(
     x: torch.Tensor,
     mu: int,
@@ -154,10 +159,9 @@ def compute_wilson_1x1_loop_response(
     """
     Compute the response of a 1×1 Wilson loop to a Lie-algebra input `w`.
 
-    The tensor `w` specifies Lie-algebra directions (tangent to the gauge
-    group) along which the derivative of the Wilson loop in the (mu, nu)
-    plane is evaluated. The output is matrix-valued, representing the linear
-    effect of `w` on the Wilson loop.
+    The tensor `w` specifies Lie-algebra directions along which the derivative
+    of the Wilson loop in the (mu, nu) plane is evaluated. The output is
+    matrix-valued, representing the linear effect of `w` on the Wilson loop.
 
     Parameters
     ----------
@@ -167,8 +171,7 @@ def compute_wilson_1x1_loop_response(
         followed by the link direction axis, and then the matrix components.
     w : torch.Tensor
         Lie-algebra-valued tensor specifying the derivative directions of the
-        Wilson loop. Each element lies in the tangent space of the gauge group
-        (e.g., su(N) for SU(N)).
+        Wilson loop. Each element lies in the algebra space of the gauge group.
     mu : int
         Index of the first link direction.
     nu : int
