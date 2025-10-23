@@ -42,6 +42,9 @@ class GaugeLinkConv(torch.nn.Module):
         None, a singleton channel axis is automatically added to inputs before
         processing and/or removed afterwards. This allows layers to operate in
         both channel-free and channel-based architectures.
+
+        This cannot be used for U(1). If needed one should change the value of
+        `_link_axis` and also use an approprirate `compute_planar_staples`.
     """
 
     def __init__(

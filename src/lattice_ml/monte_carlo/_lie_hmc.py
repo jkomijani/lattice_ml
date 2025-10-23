@@ -10,7 +10,7 @@ accepted/rejected independently per batch element using the Metropolis
 criterion.
 
 Example usage:
-    action = ScalarAction(...)
+    action = WilsonGaugeAction(...)
     force_fn = lambda t, q: action.algebra_force(q)
     hmc = SUnHMC(force_fn, t_span=(0, 1), num_steps=4, action=action)
     q_batch = torch.matrix_exp(torch.zeros((batch_size, *lattice_shape)))
