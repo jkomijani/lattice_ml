@@ -10,11 +10,13 @@ all lattice planes.
 """
 
 from typing import Tuple
+import math
 import torch
 
 
 __all__ = [
     'compute_mean_u1_wilson_mxn_loop',
+    'calc_2dim_u1_topological_charge',
     'compute_u1_wilson_1x1_loop',
     'compute_u1_wilson_1x1_loop_response',
     'u1_parallel_transport'
@@ -89,6 +91,59 @@ def compute_mean_u1_wilson_mxn_loop(
         mean *= 2  # square loops counted only once in previous loop
 
     return mean
+
+
+def calc_2dim_u1_topological_charge(
+    x: torch.Tensor,
+    prefix_dims: int = 1,
+    sites_before_link: bool = True
+):
+    """
+    Compute the U(1) topological charge on a 2D lattice gauge field.
+
+    This function evaluates the total topological charge (winding number)
+    for a 2D compact U(1) lattice gauge theory, using the plaquette phases.
+    The charge is defined as the sum of plaquette angles divided by 2π.
+
+    **Important:** This definition is only valid in **two dimensions**.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Tensor containing the gauge links. After any batch and channel axes,
+        the spatial lattice axes come first (if sites_before_link=True),
+        followed by the link direction axis.
+    prefix_dims : int, default=1
+        Number of leading batch and channel dimensions in the tensor.
+        For example, if x.shape = (batch, channel, Lx, Ly, Lz, Lt, mu, Nc, Nc),
+        then prefix_dims=2. If only a single batch dimension, prefix_dims=1.
+    sites_before_link : bool, default=True
+        Whether the spatial lattice axes come before the link axis.
+
+    Returns
+    -------
+    topo_charge : torch.Tensor
+        The computed topological charge for each configuration (batch),
+        obtained by summing over all plaquette angles and dividing by 2π.
+    """
+
+    # Number of spatial dimensions (should be 2 for this formula)
+    spatial_ndim = x.ndim - prefix_dims - 1
+    if spatial_ndim != 2:
+        raise ValueError("This function is only valid for 2D lattices.")
+
+    # Axes to sum over when integrating over lattice sites
+    sum_dims = tuple(range(prefix_dims, prefix_dims + spatial_ndim))
+
+    topo_charge = 0
+
+    # In 2D, there is only one plaquette orientation: (μ, ν) = (0, 1)
+    w_1x1 = compute_u1_wilson_1x1_loop(x, 0, 1, prefix_dims, sites_before_link)
+
+    # Sum the plaquette angles and normalize by 2π
+    topo_charge = torch.angle(w_1x1).sum(dim=sum_dims) / (2 * math.pi)
+
+    return topo_charge
 
 
 def compute_u1_wilson_1x1_loop(
