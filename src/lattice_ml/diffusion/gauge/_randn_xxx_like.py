@@ -128,11 +128,23 @@ def randn_antihermitian_like(x: torch.Tensor) -> torch.Tensor:
 
     Returns:
         torch.Tensor: Anti-Hermitian tensors of the same shape as x.
+
+    Note:
+        The function is intended for complex input, so the description above
+        assumes a complex x. However, it can also be used with real x.
+        In that case, the function generates real anti-symmetric matrices.
+        The independent entries are drawn from a Gaussian distribution with
+        zero mean and unit variance, which results in a different normalization
+        for the real generators.
     """
     assert x.shape[-1] == x.shape[-2], "Not a square matrix!"
 
-    noise = torch.randn_like(x.real) + 1j * torch.randn_like(x.real)
-    return (noise - noise.adjoint()) / 2
+    # Note: For complex input, torch.randn_like returns entries distributed as
+    # standard complex normal CN(0,1), i.e. real and imaginary parts are i.i.d.
+    # N(0, 1/2), so that E[|z|^2] = 1.
+    noise = torch.randn_like(x)
+
+    return (noise - noise.adjoint()) / 2 ** 0.5
 
 
 def randn_traceless_antihermitian_like(x: torch.Tensor) -> torch.Tensor:
