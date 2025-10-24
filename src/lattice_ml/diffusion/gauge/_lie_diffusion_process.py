@@ -59,6 +59,7 @@ class SUnDiffusionProcess:
     """
 
     n_random_walk_steps = 4
+    last_step_h = 0.005
 
     def __init__(
         self, score_fn: Callable,
@@ -132,14 +133,25 @@ class SUnDiffusionProcess:
         # Expand t_eval dimensions to match y_0
         t_eval = t_eval.view(-1, *[1] * (y_0.ndim - 1))
 
+        h = self.last_step_h
+        t_1 = torch.clamp_min(t_eval - h, 0)  # max(t_eval - h, 0)
+
         # Comput the std of integrated noise at time t & generate noise terms
-        std = self.sigma_ratio * (torch.exp(2 * self.gamma * t_eval) - 1)**0.5
-        # std = torch.sqrt(2 * t_eval) * self.sigma
+        std = self.sigma_ratio * (torch.exp(2 * self.gamma * t_1) - 1)**0.5
         n_steps = self.n_random_walk_steps
         randn_grp, randn_alg = randn_special_unitary_like(y_0, std, n_steps)
 
         # Simulate the diffusion process
-        y_t = randn_grp @ y_0
+        y_t1 = randn_grp @ y_0
+
+        # Comput the std of integrated noise at time t & generate noise terms
+        c_0 = self.sigma_ratio
+        c_1 = 2 * self.gamma
+        std = c_0 * np.sqrt(np.exp(c_1 * t_eval) - np.exp(c_1 * t_1))
+        randn_grp, randn_alg = randn_special_unitary_like(y_0, std, n_steps=1)
+
+        # Simulate the diffusion process
+        y_t = randn_grp @ y_t1
 
         return y_t, randn_alg / std, std
 
@@ -186,7 +198,6 @@ class SUnDiffusionProcess:
             assert t >= t_0, "`t_eval` must monotonically increase."
 
             std = c_0 * np.sqrt(np.exp(c_1 * t) - np.exp(c_1 * t_0))
-            # std = (2 * (t - t_0))**0.5  * self.sigma
             randn_grp, _ = randn_special_unitary_like(y_0, std, n_steps)
 
             # Simulate the diffusion process
