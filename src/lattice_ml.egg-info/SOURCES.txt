@@ -7,6 +7,11 @@ src/lattice_ml.egg-info/SOURCES.txt
 src/lattice_ml.egg-info/dependency_links.txt
 src/lattice_ml.egg-info/top_level.txt
 src/lattice_ml/diffusion/__init__.py
+src/lattice_ml/diffusion/gauge/__init__.py
+src/lattice_ml/diffusion/gauge/_lie_diffusion_process.py
+src/lattice_ml/diffusion/gauge/_lie_sdeint.py
+src/lattice_ml/diffusion/gauge/_randn_xxx_like.py
+src/lattice_ml/diffusion/gauge/_trainer.py
 src/lattice_ml/diffusion/scalar/__init__.py
 src/lattice_ml/diffusion/scalar/_denoising_process.py
 src/lattice_ml/diffusion/scalar/_denoising_sdeflow.py
@@ -21,9 +26,11 @@ src/lattice_ml/flow_matching/_trainer.py
 src/lattice_ml/functions/__init__.py
 src/lattice_ml/functions/_matrix_func.py
 src/lattice_ml/functions/_matrix_func_and_jacobian.py
+src/lattice_ml/functions/_project.py
 src/lattice_ml/functions/_spectral_split_cat.py
 src/lattice_ml/gauge_tools/__init__.py
 src/lattice_ml/gauge_tools/gauge_action.py
+src/lattice_ml/gauge_tools/gauge_action_u1.py
 src/lattice_ml/gauge_tools/gauge_downsampler_debug.py
 src/lattice_ml/gauge_tools/gauge_link_conv.py
 src/lattice_ml/gauge_tools/gauge_link_conv_time.py
@@ -31,7 +38,9 @@ src/lattice_ml/gauge_tools/gauge_sampler_debug.py
 src/lattice_ml/gauge_tools/gauge_unet.py
 src/lattice_ml/gauge_tools/gauge_upsampler_debug.py
 src/lattice_ml/gauge_tools/wilson_loops.py
+src/lattice_ml/gauge_tools/wilson_loops_u1.py
 src/lattice_ml/gauge_tools/wilson_staples.py
+src/lattice_ml/gauge_tools/wilson_staples_u1.py
 src/lattice_ml/integrate/__init__.py
 src/lattice_ml/integrate/_adjoint.py
 src/lattice_ml/integrate/_hutchinson_estimator.py
@@ -65,6 +74,9 @@ src/lattice_ml/monte_carlo/_hmc.py
 src/lattice_ml/monte_carlo/_hmd.py
 src/lattice_ml/monte_carlo/_lie_hmc.py
 src/lattice_ml/monte_carlo/_lie_hmd.py
+src/lattice_ml/monte_carlo/_u1_hmc.py
 src/lattice_ml/monte_carlo/metropolis_hastings.py
 src/lattice_ml/stats/__init__.py
 src/lattice_ml/stats/_kde.py
+src/lattice_ml/stats/_modal_analysis.py
+src/lattice_ml/stats/_resampler.py

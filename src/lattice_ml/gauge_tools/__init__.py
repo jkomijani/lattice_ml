@@ -3,7 +3,7 @@
 from .gauge_action import WilsonGaugeAction
 from .gauge_action_u1 import WilsonU1GaugeAction
 
-from .gauge_link_conv_time import GaugeLinkConv
+from .gauge_link_conv import GaugeLinkConv
 
 from .gauge_unet import UNet, UNetEncoderLayer, UNetBottleneck, UNetDecoderLayer
 
