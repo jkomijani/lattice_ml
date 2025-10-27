@@ -5,26 +5,27 @@ Wilson loop and path calculations for Lattice Gauge Theory.
 
 This module provides functions to compute standard 1×1 Wilson loops and their
 linear responses to Lie-algebra-valued inputs. It also includes utilities for
-parallel transport and the averaged trace of rectangular Wilson loops of size
-m×n across all lattice planes.
+parallel transport and the averaged rectangular Wilson loops of size m×n across
+all lattice planes.
 """
 
 from typing import Tuple
+import math
 import torch
 
 
 __all__ = [
-    'compute_mean_reduced_trace_wilson_mxn_loop',
-    'compute_avg_trace_wilson_mxn_loop',  # for legacy
-    'compute_wilson_1x1_loop',
-    'compute_wilson_1x1_loop_response',
-    'parallel_transport'
+    'compute_mean_u1_wilson_mxn_loop',
+    'calc_2dim_u1_topological_charge',
+    'compute_u1_wilson_1x1_loop',
+    'compute_u1_wilson_1x1_loop_response',
+    'u1_parallel_transport'
 ]
 
-matmul = torch.matmul
+mul = torch.mul
 
 
-def compute_mean_reduced_trace_wilson_mxn_loop(
+def compute_mean_u1_wilson_mxn_loop(
     x: torch.Tensor,
     n: int,
     m: int,
@@ -33,14 +34,14 @@ def compute_mean_reduced_trace_wilson_mxn_loop(
 ):
     """
     Compute rectangular Wilson loops of size m x n in all lattice planes and
-    return the mean of their reduced traces (real part).
+    return the real part of their mean.
 
     Parameters
     ----------
     x : torch.Tensor
         Tensor containing the gauge links. After any batch and channel axes,
         the spatial lattice axes come first (if sites_before_link=True),
-        followed by the link direction axis, and then the matrix components.
+        followed by the link direction axis.
     m, n : int
         Length and width of the rectangle.
     prefix_dims : int, default=1
@@ -53,11 +54,10 @@ def compute_mean_reduced_trace_wilson_mxn_loop(
     Returns
     -------
     torch.Tensor
-        Mean of the real part of the reduced trace over all planes.
-        Shape = x.shape[:prefix_dims].
+        Mean of the real part of all planes. Shape = x.shape[:prefix_dims].
     """
     # Determine the number of spatial dimensions
-    spatial_ndim = x.ndim - prefix_dims - 3  # exclude batch, direction, matrix
+    spatial_ndim = x.ndim - prefix_dims - 1  # exclude batch, direction
     sum_dims = tuple(range(prefix_dims, prefix_dims + spatial_ndim))
 
     mean = torch.zeros(
@@ -72,17 +72,17 @@ def compute_mean_reduced_trace_wilson_mxn_loop(
                 continue  # avoid double counting
 
             if m == 1 and n == 1:
-                w_mxn = compute_wilson_1x1_loop(
+                w_mxn = compute_u1_wilson_1x1_loop(
                     x, mu, nu, prefix_dims, sites_before_link
                 )
             else:
-                # Use 1-based indexing for parallel_transport
+                # Use 1-based indexing for u1_parallel_transport
                 directions = [mu+1]*m + [nu+1]*n + [-(mu+1)]*m + [-(nu+1)]*n
-                w_mxn = parallel_transport(
+                w_mxn = u1_parallel_transport(
                     x, directions, prefix_dims, sites_before_link,
                 )
 
-            mean += torch.mean(compute_reduced_trace(w_mxn).real, dim=sum_dims)
+            mean += torch.mean(w_mxn.real, dim=sum_dims)
 
     # Normalize by number of planes
     num_planes = spatial_ndim * (spatial_ndim - 1)
@@ -93,11 +93,60 @@ def compute_mean_reduced_trace_wilson_mxn_loop(
     return mean
 
 
-# Define another mouthful alias (for legacy)
-compute_avg_trace_wilson_mxn_loop = compute_mean_reduced_trace_wilson_mxn_loop
+def calc_2dim_u1_topological_charge(
+    x: torch.Tensor,
+    prefix_dims: int = 1,
+    sites_before_link: bool = True
+):
+    """
+    Compute the U(1) topological charge on a 2D lattice gauge field.
+
+    This function evaluates the total topological charge (winding number)
+    for a 2D compact U(1) lattice gauge theory, using the plaquette phases.
+    The charge is defined as the sum of plaquette angles divided by 2π.
+
+    **Important:** This definition is only valid in **two dimensions**.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Tensor containing the gauge links. After any batch and channel axes,
+        the spatial lattice axes come first (if sites_before_link=True),
+        followed by the link direction axis.
+    prefix_dims : int, default=1
+        Number of leading batch and channel dimensions in the tensor.
+        For example, if x.shape = (batch, channel, Lx, Ly, Lz, Lt, mu, Nc, Nc),
+        then prefix_dims=2. If only a single batch dimension, prefix_dims=1.
+    sites_before_link : bool, default=True
+        Whether the spatial lattice axes come before the link axis.
+
+    Returns
+    -------
+    topo_charge : torch.Tensor
+        The computed topological charge for each configuration (batch),
+        obtained by summing over all plaquette angles and dividing by 2π.
+    """
+
+    # Number of spatial dimensions (should be 2 for this formula)
+    spatial_ndim = x.ndim - prefix_dims - 1
+    if spatial_ndim != 2:
+        raise ValueError("This function is only valid for 2D lattices.")
+
+    # Axes to sum over when integrating over lattice sites
+    sum_dims = tuple(range(prefix_dims, prefix_dims + spatial_ndim))
+
+    topo_charge = 0
+
+    # In 2D, there is only one plaquette orientation: (μ, ν) = (0, 1)
+    w_1x1 = compute_u1_wilson_1x1_loop(x, 0, 1, prefix_dims, sites_before_link)
+
+    # Sum the plaquette angles and normalize by 2π
+    topo_charge = torch.angle(w_1x1).sum(dim=sum_dims) / (2 * math.pi)
+
+    return topo_charge
 
 
-def compute_wilson_1x1_loop(
+def compute_u1_wilson_1x1_loop(
     x: torch.Tensor,
     mu: int,
     nu: int,
@@ -115,7 +164,7 @@ def compute_wilson_1x1_loop(
     x : torch.Tensor
         Tensor containing the gauge links. After any batch and channel axes,
         the spatial lattice axes come first (if sites_before_link=True),
-        followed by the link direction axis, and then the matrix components.
+        followed by the link direction axis.
     mu : int
         The index of the first link direction.
     nu : int
@@ -134,7 +183,7 @@ def compute_wilson_1x1_loop(
         Shape is the same as `x`, except the link-direction axis is removed.
     """
     # Extract the links using unbind
-    link_axis = -3 if sites_before_link else prefix_dims
+    link_axis = -1 if sites_before_link else prefix_dims
     links = torch.unbind(x, dim=link_axis)
 
     x_mu = links[mu]
@@ -143,12 +192,12 @@ def compute_wilson_1x1_loop(
     y_nu = torch.roll(x_nu, -1, dims=prefix_dims + mu)
     z_mu = torch.roll(x_mu, -1, dims=prefix_dims + nu)
 
-    w_11 = matmul(matmul(x_mu, y_nu), matmul(x_nu, z_mu).adjoint())
+    w_11 = mul(mul(x_mu, y_nu), mul(x_nu, z_mu).conj())
 
     return w_11
 
 
-def compute_wilson_1x1_loop_response(
+def compute_u1_wilson_1x1_loop_response(
     x: torch.Tensor,
     w: torch.Tensor,
     mu: int,
@@ -161,14 +210,14 @@ def compute_wilson_1x1_loop_response(
 
     The tensor `w` specifies Lie-algebra directions along which the derivative
     of the Wilson loop in the (mu, nu) plane is evaluated. The output is
-    matrix-valued, representing the linear effect of `w` on the Wilson loop.
+    represents the linear effect of `w` on the Wilson loop.
 
     Parameters
     ----------
     x : torch.Tensor
         Tensor containing the gauge links. After any batch and channel axes,
         the spatial lattice axes come first (if sites_before_link=True),
-        followed by the link direction axis, and then the matrix components.
+        followed by the link direction axis.
     w : torch.Tensor
         Lie-algebra-valued tensor specifying the derivative directions of the
         Wilson loop. Each element lies in the algebra space of the gauge group.
@@ -191,7 +240,7 @@ def compute_wilson_1x1_loop_response(
     """
 
     # Determine which axis corresponds to the link directions
-    link_axis = -3 if sites_before_link else prefix_dims
+    link_axis = -1 if sites_before_link else prefix_dims
 
     # Separate link matrices and their corresponding weight/insertions
     links = torch.unbind(x, dim=link_axis)
@@ -212,17 +261,17 @@ def compute_wilson_1x1_loop_response(
     w_z_mu = torch.roll(w_x_mu, -1, dims=prefix_dims + nu)
 
     # Compute four weighted contributions, inserting w at each link:
-    # insertion acts as δU = w @ U at that link position
-    part1 = matmul(matmul(w_x_mu @ x_mu, y_nu), matmul(x_nu, z_mu).adjoint())
-    part2 = matmul(matmul(x_mu, w_y_nu @ y_nu), matmul(x_nu, z_mu).adjoint())
-    part3 = matmul(matmul(x_mu, y_nu), matmul(w_x_nu @ x_nu, z_mu).adjoint())
-    part4 = matmul(matmul(x_mu, y_nu), matmul(x_nu, w_z_mu @ z_mu).adjoint())
+    # insertion acts as δU = w * U at that link position
+    part1 = mul(mul(w_x_mu * x_mu, y_nu), mul(x_nu, z_mu).conj())
+    part2 = mul(mul(x_mu, w_y_nu * y_nu), mul(x_nu, z_mu).conj())
+    part3 = mul(mul(x_mu, y_nu), mul(w_x_nu * x_nu, z_mu).conj())
+    part4 = mul(mul(x_mu, y_nu), mul(x_nu, w_z_mu * z_mu).conj())
 
     # Sum the four Lie-algebra-weighted response contributions
     return part1 + part2 + part3 + part4
 
 
-def parallel_transport(
+def u1_parallel_transport(
     x: torch.Tensor,
     directions: Tuple[int],
     prefix_dims: int = 1,
@@ -239,7 +288,7 @@ def parallel_transport(
     - `+d` (with `1 ≤ d ≤ ndim`) means moving **forward** along the `d`-th
         lattice direction using the link :math:`U_d(x)`.
     - `-d` means moving **backward** along the `d`-th direction, i.e. applying
-        the adjoint link :math:`U_d^\dagger(x - \hat e_d)`.
+        the conj link :math:`U_d^\dagger(x - \hat e_d)`.
 
     Example
     -------
@@ -252,7 +301,7 @@ def parallel_transport(
     x : torch.Tensor
         Tensor containing the gauge links. After any batch and channel axes,
         the spatial lattice axes come first (if sites_before_link=True),
-        followed by the link direction axis, and then the matrix components.
+        followed by the link direction axis.
     directions : Tuple[int]
         Ordered list of signed **1-based** directions describing the path.
         Positive = forward step, Negative = backward step.
@@ -265,7 +314,7 @@ def parallel_transport(
     start_tensor : torch.Tensor, default=None
         Tensor to be transported along the path. If None, the path starts
         with the first link in `directions`, which is equivalent to starting
-        from the identity matrix.
+        from the identity.
     restore_origin : bool, default=False
         If True, shifts the final transporter back to the original site,
         so the output is available at the starting point.
@@ -286,18 +335,18 @@ def parallel_transport(
     #     First shift the transporter backward along |d|, then multiply by
     #     U_d^\dagger(x - e_d).
     #
-    # Initialization is equivalent to starting from the identity matrix.
+    # Initialization is equivalent to starting from the identity.
     # Shifting the identity yields the same result, so it can be skipped.
 
     if len(directions) == 0:
         return None
 
     # Determine link axis
-    link_axis = -3 if sites_before_link else prefix_dims
+    link_axis = -1 if sites_before_link else prefix_dims
     links = torch.unbind(x, dim=link_axis)
 
     # Determine the number of spatial dimensions
-    spatial_ndim = x.ndim - prefix_dims - 3  # exclude batch, direction, matrix
+    spatial_ndim = x.ndim - prefix_dims - 1  # exclude batch, direction
     displacements = [0] * spatial_ndim
 
     # Initialize transporter
@@ -311,7 +360,7 @@ def parallel_transport(
         elif d0 < 0:
             mu = -d0 - 1
             # Shifting the identity yields the same result; it can be skipped
-            transporter = links[mu].adjoint()
+            transporter = links[mu].conj()
             displacements[mu] -= 1
         else:
             raise ValueError("direction cannot be 0")
@@ -323,13 +372,13 @@ def parallel_transport(
     for d in directions:
         if d > 0:
             mu = d - 1
-            transporter = transporter @ links[mu]
+            transporter = transporter * links[mu]
             transporter = torch.roll(transporter, +1, dims=prefix_dims + mu)
             displacements[mu] += 1
         elif d < 0:
             mu = -d - 1
             transporter = torch.roll(transporter, -1, dims=prefix_dims + mu)
-            transporter = transporter @ links[mu].adjoint()
+            transporter = transporter * links[mu].conj()
             displacements[mu] -= 1
         else:
             raise ValueError("direction cannot be 0")
@@ -341,8 +390,3 @@ def parallel_transport(
         transporter = torch.roll(transporter, shifts, dims=dims)
 
     return transporter
-
-
-def compute_reduced_trace(x):  # reduced trace = 1/n trace()
-    """Compute the reduced trace of the input matrix x."""
-    return torch.mean(torch.diagonal(x, dim1=-2, dim2=-1), dim=-1)

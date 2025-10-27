@@ -6,25 +6,25 @@ Wilson gauge action and force calculations for lattice gauge theory.
 
 import torch
 
-from .wilson_loops import compute_wilson_1x1_loop
-from .wilson_staples import compute_all_directional_staples
+from .wilson_loops_u1 import compute_u1_wilson_1x1_loop
+from .wilson_staples_u1 import compute_all_u1_directional_staples
 
 
-__all__ = ['WilsonGaugeAction']
+__all__ = ['WilsonU1GaugeAction']
 
 
-class WilsonGaugeAction:
+class WilsonU1GaugeAction:
     r"""
     Wilson gauge action and force calculations for lattice gauge theory.
 
-    Implements the Wilson gauge action for SU(N_c) gauge group, together with
+    Implements the Wilson gauge action for U(1) gauge group, together with
     the corresponding gauge force used in HMC simulations.
 
     The action is defined as:
 
     .. math::
-        S = - \frac{\beta} {2 N_c} \sum_{\nu \neq \mu} Tr \text{Plaq}_{mu, nu}
-          = - \frac{\beta} {N_c} \sum_{\nu < \mu} ReTr \text{Plaq}_{mu, nu} .
+        S = - \beta \sum_{\nu \neq \mu} \text{Plaq}_{mu, nu} / 2 ,
+          = - \beta \sum_{\nu < \mu} Re \text{Plaq}_{mu, nu} .
 
     Here:
         - :math:`\beta` is the inverse coupling.
@@ -54,7 +54,6 @@ class WilsonGaugeAction:
         """
         self.beta = beta
         self.sites_before_link = sites_before_link
-        self._project_onto_algebra_space = anti_hermitian_traceless
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -65,7 +64,7 @@ class WilsonGaugeAction:
         x : torch.Tensor
             Tensor containing the gauge links. After one batch axis, spatial
             lattice axes come first (if sites_before_link=True), followed by
-            the link direction axis, and then the link matrix components.
+            the link direction axis.
 
         Returns
         -------
@@ -73,19 +72,18 @@ class WilsonGaugeAction:
             Per-batch action values.
         """
         # Determine the number of spatial dimensions
-        spatial_ndim = x.ndim - 4  # exclude batch, direction, matrix
+        spatial_ndim = x.ndim - 2  # exclude batch, direction
         sum_dims = tuple(range(1, 1 + spatial_ndim))  # sum over spatial dims
 
         plaq_sum = torch.zeros(len(x), device=x.device, dtype=x.real.dtype)
 
         for mu in range(1, spatial_ndim):
             for nu in range(mu):
-                plaq = compute_reduced_trace(compute_wilson_1x1_loop(
+                plaq = torch.real(compute_u1_wilson_1x1_loop(
                     x, mu, nu, sites_before_link=self.sites_before_link
-                )).real
+                ))
                 plaq_sum += torch.sum(plaq, dim=sum_dims)
 
-        # Note: 1 / n_c factor is already included in `compute_reduced_trace`.
         return -self.beta * plaq_sum
 
     def force(self, x: torch.Tensor) -> torch.Tensor:
@@ -98,7 +96,7 @@ class WilsonGaugeAction:
         x : torch.Tensor
             Tensor containing the gauge links. After one batch axis, spatial
             lattice axes come first (if sites_before_link=True), followed by
-            the link direction axis, and then the link matrix components.
+            the link direction axis.
 
         Returns
         -------
@@ -106,7 +104,7 @@ class WilsonGaugeAction:
             Force on each link of the same shape of x.
         """
         # The algebra force is multiplied by links to map back to group space
-        return self.algebra_force(x) @ x
+        return self.algebra_force(x) * x
 
     def algebra_force(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -118,55 +116,16 @@ class WilsonGaugeAction:
         x : torch.Tensor
             Tensor containing the gauge links. After one batch axis, spatial
             lattice axes come first (if sites_before_link=True), followed by
-            the link direction axis, and then the link matrix components.
+            the link direction axis.
 
         Returns
         -------
         torch.Tensor
-            Anti-Hermitian traceless force matrices in the Lie algebra of the
-            same shape of x.
-
-        Note:
-            The magnitude of this force depends on the normalization of
-            the SU(N_c) generators T^a. Lattice QCD literature often uses
-            Tr(T^a T^b) = -1/2 δ^ab, but this code uses Tr(T^a T^b) = -δ^ab.
+            Pure imaginary force in the Lie algebra of the same shape of x.
         """
-        n_c = x.shape[-1]
-
-        g = compute_all_directional_staples(
+        g = compute_all_u1_directional_staples(
             x, sites_before_link=self.sites_before_link
         )
 
-        coeff = -self.beta / n_c
-        algebra_force = coeff * self._project_onto_algebra_space(x @ g)
+        algebra_force = (-self.beta * 1j) * torch.imag(x * g)
         return algebra_force
-
-
-def anti_hermitian_traceless(x: torch.Tensor) -> torch.Tensor:
-    """
-    Project the input onto the space of traceless anti-Hermitian matrices.
-
-    Parameters
-    ----------
-    x : torch.Tensor
-        Input tensor with square matrices in the last two dimensions.
-
-    Returns
-    -------
-    torch.Tensor
-        Tensor of the same shape as `x`, where each matrix is projected to be
-        anti-Hermitian and traceless.
-    """
-    # Anti-Hermitian part
-    x = (x - x.adjoint()) / 2
-
-    # Remove trace by subtracting identity * (trace / n_c)
-    n_c = x.shape[-1]
-    reduced_tr = torch.mean(torch.linalg.diagonal(x), dim=-1, keepdim=True)
-    mu = torch.diag_embed(torch.repeat_interleave(reduced_tr, n_c, dim=-1))
-    return x - mu
-
-
-def compute_reduced_trace(x):  # reduced trace = 1/n trace()
-    """Compute the reduced trace of the input matrix x."""
-    return torch.mean(torch.diagonal(x, dim1=-2, dim2=-1), dim=-1)

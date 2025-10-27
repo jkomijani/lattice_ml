@@ -1,25 +1,84 @@
-# Copyright (c) 2023 Javad Komijani
+# Copyright (c) 2023-2025 Javad Komijani
 
+"""
+A module for computing singular value decomposition of complex square matrices.
+"""
+
+from dataclasses import dataclass
+from typing import Optional
 import torch
 
 from .._eig import eigh
 
 
-class AttributeDict4SVD:
-    """For accessing a dict key like an attribute."""
+__all__ = ["svd", "SVDResult"]
 
-    def __init__(self, **dict_):
-        self.__dict__.update(**dict_)
 
-    def __repr__(self):
-        str_ = "svd:\n"
-        for key, value in self.__dict__.items():
-            str_ += f"{key}={value}\n"
-        return str_
+@dataclass
+class SVDResult:
+    """
+    Container for the outputs of `svd`.
+
+    Attributes:
+        U (torch.Tensor): Left singular vectors.
+        S (torch.Tensor): Singular values.
+        Vh (torch.Tensor): Right singular vectors.
+
+    Optional Attributes:
+        rdet_angle (torch.Tensor): The angle of rooted determinant of input.
+        sU (torch.Tensor): Scaled U ensuring special unitarity of `sU Vh`.
+        sUVh (torch.Tensor): Product of sU and Vh (special-unitary).
+        Sigma (torch.Tensor): Hermitian matrix computed as `Vh† diag(S) Vh`.
+
+    Optional fields default to None, allowing partial initialization.
+    """
+    # pylint: disable=invalid-name
+    U: torch.Tensor
+    S: torch.Tensor
+    Vh: torch.Tensor
+    rdet_angle: Optional[torch.Tensor] = None
+    sU: Optional[torch.Tensor] = None
+    sUVh: Optional[torch.Tensor] = None
+    Sigma: Optional[torch.Tensor] = None
+
+    def __repr__(self) -> str:
+        """
+        Return a full string representation of the tensors that are defined.
+
+        Attributes with value None are skipped.
+        """
+        items = [f"{key}={value}" for key, value in self.__dict__.items()
+                 if value is not None]
+        return "SVDResult(\n" + ",\n".join(items) + ")"
+
+    @property
+    def shape(self) -> dict:
+        """
+        Return the shapes of all defined tensors as a dictionary.
+        Fields with None are skipped.
+        """
+        return {
+            key: value.shape
+            for key, value in self.__dict__.items()
+            if value is not None
+        }
+
+    @property
+    def dtype(self) -> dict:
+        """
+        Return the dtypes of all defined tensors as a dictionary.
+        Fields with None are skipped.
+        """
+        return {
+            key: value.dtype
+            for key, value in self.__dict__.items()
+            if value is not None
+        }
 
 
 def svd(matrix):
-    """Return singular value decomposition of the input complex, square matrix.
+    r"""
+    Return singular value decomposition of the input complex, square matrix.
 
     The singular value decomposition of matrix :math:`M` is
 
@@ -35,9 +94,9 @@ def svd(matrix):
 
     # V can be obtained by multiplying S^{-1} U^\dagger and matrix
     s = torch.sqrt(s_sq)
-    s[ s_sq < 0 ] = 0  # to remove possible roundoff error
+    s[s_sq < 0] = 0  # to remove possible roundoff error
     inv_s = 1 / s
-    inv_s[ s == 0 ] = 0
+    inv_s[s == 0] = 0
 
     vh = (inv_s.unsqueeze(-1) * u.adjoint()) @ matrix
 
@@ -48,11 +107,12 @@ def svd(matrix):
         n = matrix.shape[-1]
         vh.view(-1, n, n)[cond] = slow_svd(matrix.view(-1, n, n)[cond]).Vh
 
-    return AttributeDict4SVD(U=u, S=s, Vh=vh)
+    return SVDResult(U=u, S=s, Vh=vh)
 
 
 def slow_svd(matrix):
-    """Return singular value decomposition of the input complex, square matrix.
+    r"""
+    Return singular value decomposition of the input complex, square matrix.
 
     The singular value decomposition of matrix :math:`M` is
 
@@ -87,9 +147,9 @@ def slow_svd(matrix):
     _, naive_v = eigh(matrix.adjoint() @ matrix)  # v = naive_v @ D.adjoint()
 
     s = torch.sqrt(s_sq)
-    s[ s_sq < 0 ] = 0  # to remove possible roundoff error
+    s[s_sq < 0] = 0  # to remove possible roundoff error
     inv_s = 1 / s
-    inv_s[ s == 0 ] = 0
+    inv_s[s == 0] = 0
 
     # If all singular values are nonzero, the following expression yields `D`
     # such that `vh = D @ naive_v.adjoint()`.
@@ -103,15 +163,18 @@ def slow_svd(matrix):
 
     fixer = torch.zeros_like(s)
     # fixer[ s == 0] = 1  # not precise because of round off errors
-    fixer[ torch.linalg.vector_norm(naive_d, dim=-1) < 0.01 ] = 1
+    fixer[torch.linalg.vector_norm(naive_d, dim=-1) < 0.01] = 1
 
     vh = (naive_d + torch.diag_embed(fixer)) @ naive_v.adjoint()
 
-    return AttributeDict4SVD(U=u, S=s, Vh=vh)
+    return SVDResult(U=u, S=s, Vh=vh)
 
+
+# =============================================================================
+# The following ones are used for test and will be removed in future.
 
 def append_suvh(svd_):
-    """Return a new svd_ object that also includes the produce of U and Vh
+    r"""Return a new svd_ object that also includes the produce of U and Vh
     projected to special unitary matrices as
 
     .. math::
@@ -126,16 +189,19 @@ def append_suvh(svd_):
     rdet = torch.det(uvh)**(1 / uvh.shape[-1])  # root of determinant
     # We now make determinant of uvh unity:
     uvh = uvh / rdet.reshape(*rdet.shape, 1, 1)
-    return AttributeDict4SVD(U=svd_.U, S=svd_.S, Vh=svd_.Vh, rdet_uvh=rdet, sUVh=uvh)
+    return SVDResult(
+        U=svd_.U, S=svd_.S, Vh=svd_.Vh, rdet_angle=rdet, sUVh=uvh
+    )
 
 
 def append_su(svd_, matrix=None):
-    """Return a new svd_ object, in which U is scaled by a phase, and called sU,
+    r"""
+    Return a new svd_ object, in which U is scaled by a phase, and called sU,
     such that sU @ Vh is special unitary
     """
     det = torch.det(svd_.U @ svd_.Vh if matrix is None else matrix)
     rdet_angle = torch.angle(det) / svd_.U.shape[-1]  # r: rooted
     s_u = svd_.U * torch.exp(-1j * rdet_angle.reshape(*rdet_angle.shape, 1, 1))
-    return AttributeDict4SVD(
+    return SVDResult(
         U=svd_.U, S=svd_.S, Vh=svd_.Vh, rdet_angle=rdet_angle, sU=s_u
         )

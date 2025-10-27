@@ -26,7 +26,11 @@ from typing import Callable, Tuple, Any
 import torch
 
 
-__all__ = ["symplectic_odeint", "lie_symplectic_odeint"]
+__all__ = [
+    "symplectic_odeint",
+    "lie_symplectic_odeint",
+    "u1_symplectic_odeint"
+]
 
 
 # =============================================================================
@@ -238,6 +242,96 @@ def lie_symplectic_odeint(
     for t in time_grid[1:-1]:
         p = p + step_size * force_fn(t, q, *args)
         q = torch.matrix_exp(step_size * p) @ q
+
+    # Final half-step momentum update
+    p = p + 0.5 * step_size * force_fn(time_grid[-1], q, *args)
+
+    return p, q
+
+
+# =============================================================================
+def u1_symplectic_odeint(
+    force_fn: Callable,
+    t_span: Tuple[float, float],
+    p0: torch.Tensor,
+    q0: torch.Tensor,
+    args: Any = None,
+    step_size: float = 1e-3,
+    num_steps: int | None = None,
+    method: str = "leapfrog"
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Solve an initial value problem for a symplectic system on U(1) Lie group.
+
+    This is a special case of `lie_symplectic_odeint` adopted for U(1) group.
+
+    Parameters
+    ----------
+    force_fn : callable
+        Function modeling momentum dynamics.
+        Signature: force_fn(t, u, *args) → tensor in Lie algebra.
+
+    t_span : tuple of float
+        Time interval (t0, t1) for integration.
+
+    p0 : torch.Tensor
+        Initial momentum (Lie algebra element).
+
+    q0 : torch.Tensor
+        Initial position (Lie group element).
+
+    args : any, optional
+        Additional arguments passed to `force_fn`.
+
+    step_size : float, optional
+        Time step size. Ignored if `num_steps` is provided.
+
+    num_steps : int, optional
+        Number of integration steps. If given, overrides `step_size`.
+
+    method : str, optional
+        Integration method. Only "leapfrog" is supported.
+
+    Returns
+    -------
+    final_p : torch.Tensor
+        Final momentum (Lie algebra element) after integration.
+
+    final_u : torch.Tensor
+        Final position (Lie group element) after integration.
+
+    See Also
+    --------
+    symplectic_odeint : Symplectic integrator for vector-space phase spaces.
+    """
+
+    assert method == "leapfrog", "Other methods are not supported yet."
+
+    # Normalize args to a tuple
+    if args is None:
+        args = ()
+    elif not isinstance(args, tuple):
+        args = (args,)
+
+    # Unpack t_span and initial momentum & position
+    t0, t1 = t_span
+
+    # Determine number of steps from step size if not explicitly given
+    if num_steps is None:
+        num_steps = max(1, int(abs((t1 - t0) / step_size)))
+
+    time_grid = torch.linspace(t0, t1, 1 + num_steps, device=p0.device)
+
+    step_size = float(time_grid[1] - time_grid[0])  # Actual step size
+
+    # Initial half-step momentum update & full-step position update
+    p = p0 + 0.5 * step_size * force_fn(time_grid[0], q0, *args)
+    q = torch.exp(step_size * p) * q0
+
+    # Intermediate, full leapfrog steps
+    for t in time_grid[1:-1]:
+        p = p + step_size * force_fn(t, q, *args)
+        q = torch.exp(step_size * p) * q
 
     # Final half-step momentum update
     p = p + 0.5 * step_size * force_fn(time_grid[-1], q, *args)

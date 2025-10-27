@@ -42,13 +42,16 @@ class GaugeLinkConv(torch.nn.Module):
         None, a singleton channel axis is automatically added to inputs before
         processing and/or removed afterwards. This allows layers to operate in
         both channel-free and channel-based architectures.
+
+        This cannot be used for U(1). If needed one should change the value of
+        `_link_axis` and also use an approprirate `compute_planar_staples`.
     """
 
     def __init__(
         self,
         in_channels: int | None,
         out_channels: int | None,
-        ndim: int,
+        spatial_ndim: int,
         sites_before_link: bool = True
     ):
         """
@@ -62,13 +65,13 @@ class GaugeLinkConv(torch.nn.Module):
         out_channels : int | None
             Number of output feature channels per link. If None, a singleton
             channel axis of output is automatically removed.
-        ndim : int
-            Number of spacetime dimensions of the lattice.
+        spatial_ndim : int
+            Number of spatial dimensions of the lattice.
         sites_before_link : bool, default=True
             Whether spatial lattice axes come before the link axis.
         """
         super().__init__()
-        self.ndim = ndim
+        self.spatial_ndim = spatial_ndim
 
         self.true_in_channels = in_channels
         self.true_out_channels = out_channels
@@ -79,6 +82,7 @@ class GaugeLinkConv(torch.nn.Module):
         self._link_axis = -3 if sites_before_link else 2  # 2: batch & channel
 
         # Learnable weight tensor for each valid (mu, nu) pair
+        ndim = spatial_ndim
         shape = (ndim, 2*(ndim-1), self.out_channels, self.in_channels, 2)
         scale = 0.01
         self.weight = torch.nn.Parameter(torch.randn(*shape) * scale)
@@ -102,22 +106,22 @@ class GaugeLinkConv(torch.nn.Module):
             x = x.unsqueeze(1)
 
         # Allocate output tensor
-        ndim = self.ndim
+        spatial_ndim = self.spatial_ndim
         link_axis = self._link_axis
 
         x_unbound = torch.unbind(x, dim=link_axis)
 
-        output_stack: List[torch.Tensor] = [None] * ndim
+        output_stack: List[torch.Tensor] = [None] * spatial_ndim
 
         # Loop over lattice directions
-        for mu in range(ndim):
+        for mu in range(spatial_ndim):
             x_mu = x_unbound[mu]
 
             shape = (x_mu.shape[0], 2 * self.out_channels, *x_mu.shape[2:])
             staples = torch.zeros(shape, dtype=x.dtype, device=x.device)
 
             ind = 0  # index for weight slices (ind+=2 for each valid nu != mu)
-            for nu in range(ndim):
+            for nu in range(spatial_ndim):
                 if nu == mu:
                     continue
 
@@ -192,8 +196,8 @@ def _test_gauge_equivaraince():
     prior = normflow.prior.SUnPrior(3, shape=shape)
 
     # Define `x` and transform it with instances of GaugeLinkConv
-    gauge_link_conv1 = GaugeLinkConv(None, 5, ndim=4)
-    gauge_link_conv2 = GaugeLinkConv(5, None, ndim=4)
+    gauge_link_conv1 = GaugeLinkConv(None, 5, spatial_ndim=4)
+    gauge_link_conv2 = GaugeLinkConv(5, None, spatial_ndim=4)
     x = prior.sample(2)
     y = gauge_link_conv2(gauge_link_conv1(x))
 

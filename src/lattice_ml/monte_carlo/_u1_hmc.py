@@ -10,26 +10,27 @@ accepted/rejected independently per batch element using the Metropolis
 criterion.
 
 Example usage:
-    action = WilsonGaugeAction(...)
+    action = WilsonU1GaugeAction(...)
     force_fn = lambda t, q: action.algebra_force(q)
-    hmc = SUnHMC(force_fn, t_span=(0, 1), num_steps=4, action=action)
-    q_batch = torch.matrix_exp(torch.zeros((batch_size, *lattice_shape)))
+    hmc = U1HMC(force_fn, t_span=(0, 1), num_steps=4, action=action)
+    q_batch = torch.ones((batch_size, *lattice_shape))
     q_new, accepted = hmc.step(q_batch)
 """
 
 from functools import partial as ftpartial
 
 import torch
-from lattice_ml.integrate import lie_symplectic_odeint
-
-__all__ = ["SUnHMC"]
+from lattice_ml.integrate import u1_symplectic_odeint
 
 
-class SUnHMC:
+__all__ = ["U1HMC"]
+
+
+class U1HMC:
     """
     Batched Hybrid Monte Carlo (HMC) sampler using a symplectic integrator.
 
-    This class performs batched HMC updates for SU(n) field theories using
+    This class performs batched HMC updates for U(1) field theories using
     Hamiltonian dynamics integrated with a symplectic solver. The sampler works
     in batch mode: the input is expected to have a leading batch dimension,
     and each trajectory is evolved and accepted/rejected independently.
@@ -79,7 +80,7 @@ class SUnHMC:
 
         # Partially applied symplectic ODE solver
         self.symplectic_odeint = ftpartial(
-            lie_symplectic_odeint,
+            u1_symplectic_odeint,
             force_fn=force_fn,
             t_span=t_span,
             num_steps=num_steps,
@@ -107,7 +108,7 @@ class SUnHMC:
         bsize = q0.shape[0]
 
         # sample fresh momenta
-        p0 = randn_traceless_antihermitian_like(q0)
+        p0 = 1j * torch.randn_like(q0.real)
 
         # integrate equations of motion
         p, q = self.symplectic_odeint(p0=p0, q0=q0)
@@ -131,67 +132,3 @@ class SUnHMC:
         self.accept_rate_history.append(is_accepted.float().mean().item())
 
         return q_new, is_accepted
-
-
-# =============================================================================
-def randn_antihermitian_like(matrix: torch.Tensor) -> torch.Tensor:
-    r"""
-    Generates random anti-Hermitian matrices with the same shape as the input.
-
-    Both the real and imaginary parts of the non-diagonal elements are drawn
-    from normal distributions with zero mean and variance of 1/2. The real part
-    of the diagonal elements is zero, while the imaginary parts are drawn from
-    a normal distribution with zero mean and unit variance. This normalization
-    is consistent with generating an anti-Hermitian matrix using the generators
-    of unitary matrices, where the coefficients are normally distributed with
-    zero mean and unit variance, and the generators are normalized as
-    :math:`Tr (T_a T_b) = - \delta_{a,b}`.
-
-    By making the resulting matrix traceless, the variance of the imaginary
-    parts of the diagonal elements is reduced, which is in agreement with the
-    generation of a traceless anti-Hermitian matrix using the generators of
-    special unitary matrices, where the coefficients are normally distributed
-    with zero mean and unit variance.
-
-    Args:
-        matrix (Tensor): Input tensor of shape (..., n, n) defining the desired
-        shape and device of the output.
-
-    Returns:
-        Tensor: A random anti-Hermitian matrix of the same shape as the matrix.
-        Note that if the input is real, the ouptut is real and anti-symmetric.
-    """
-    assert matrix.shape[-1] == matrix.shape[-2], "Not a square matrix!"
-    # Note: For complex input, torch.randn_like returns entries distributed as
-    # standard complex normal CN(0,1), i.e. real and imaginary parts are i.i.d.
-    # N(0, 1/2), so that E[|z|^2] = 1.
-    noise = torch.randn_like(matrix)
-    return (noise - noise.adjoint()) / 2 ** 0.5
-
-
-def randn_traceless_antihermitian_like(matrix: torch.Tensor) -> torch.Tensor:
-    """
-    Generates random, traceless, anti-Hermitian matrices with the same shape
-    as the input.
-
-    For details see `randn_antihermitian_like` and `make_traceless`.
-    """
-    return make_traceless(randn_antihermitian_like(matrix))
-
-
-def make_traceless(matrix: torch.Tensor) -> torch.Tensor:
-    """
-    Given a tensor of shape (..., n, n), makes the last two axes traceless
-    by subtracting the mean of the diagonal elements from the diagonal entries.
-
-    Args:
-        matrix (Tensor): Input tensor of shape (..., n, n).
-
-    Returns:
-        Tensor: A traceless tensor with the same shape as the matrix.
-    """
-    assert matrix.shape[-1] == matrix.shape[-2], "Not a square matrix!"
-
-    # Compute the mean of diagonal elements -> reduced trace
-    reduced_tr = matrix.diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True)
-    return matrix - torch.diag_embed(reduced_tr.expand(matrix.shape[:-1]))

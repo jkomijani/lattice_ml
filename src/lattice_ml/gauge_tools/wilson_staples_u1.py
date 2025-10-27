@@ -12,15 +12,15 @@ import torch
 
 
 __all__ = [
-    'compute_all_directional_staples',
-    'compute_directional_staples',
-    'compute_planar_staples'
+    'compute_all_u1_directional_staples',
+    'compute_u1_directional_staples',
+    'compute_u1_planar_staples'
 ]
 
-matmul = torch.matmul
+mul = torch.mul
 
 
-def compute_all_directional_staples(
+def compute_all_u1_directional_staples(
     x: torch.Tensor,
     prefix_dims: int = 1,
     sites_before_link: bool = True,
@@ -38,7 +38,7 @@ def compute_all_directional_staples(
     x : torch.Tensor
         Tensor containing the gauge links. After any batch and channel axes,
         the spatial lattice axes come first (if sites_before_link=True),
-        followed by the link direction axis, and then the matrix components.
+        followed by the link direction axis.
     prefix_dims : int, default=1
         Number of leading batch and channel dimensions in the tensor.
         For example, if x.shape = (batch, channel, Lx, Ly, Lz, Lt, mu, Nc, Nc),
@@ -55,11 +55,11 @@ def compute_all_directional_staples(
 
     Notes
     -----
-    The staples are defined such that the expression `x @ g` is gauge
-    covariant, where `g` is the output of this function. Using this definition,
+    The staples are defined such that the expression `x * g` is gauge
+    invaraint, where `g` is the output of this function. Using this definition,
     the Wilson gauge action can be expressed is proportional to
 
-        ReTr(x @ g) + ...
+        Re(x * g) + ...
 
     where the sum over lattice sites and directions is implied.
     """
@@ -67,10 +67,12 @@ def compute_all_directional_staples(
     kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
 
     # Determine the number of spatial dimensions
-    spatial_ndim = x.ndim - prefix_dims - 3  # exclude batch, direction, matrix
+    spatial_ndim = x.ndim - prefix_dims - 1  # exclude batch, direction
 
     # Initialize a list to store staples sums for each direction 'mu'
     staples_stack: List[torch.Tensor] = [None] * spatial_ndim
+
+    compute_directional_staples = compute_u1_directional_staples
 
     # Loop over each link direction 'mu'
     for mu in range(spatial_ndim):
@@ -81,13 +83,13 @@ def compute_all_directional_staples(
         staples_stack[mu] = compute_directional_staples(x, mu, nu_list, **kws)
 
     # Stack the results along the link-axis to recreate the full tensor
-    link_axis = -3 if sites_before_link else prefix_dims
-    gamma_matrix = torch.stack(staples_stack, dim=link_axis)
+    link_axis = -1 if sites_before_link else prefix_dims
+    gamma = torch.stack(staples_stack, dim=link_axis)
 
-    return gamma_matrix
+    return gamma
 
 
-def compute_directional_staples(
+def compute_u1_directional_staples(
     x: torch.Tensor,
     mu: int,
     nu_list: Tuple[int, ...],
@@ -115,7 +117,7 @@ def compute_directional_staples(
     x : torch.Tensor
         Tensor containing the gauge links. After any batch and channel axes,
         the spatial lattice axes come first (if sites_before_link=True),
-        followed by the link direction axis, and then the matrix components.
+        followed by the link direction axis.
     mu : int
         The index of the link direction along which the staples are computed.
     nu_list : list of int
@@ -134,10 +136,10 @@ def compute_directional_staples(
         Shape is the same as `x`, except the link-direction axis is removed.
     """
     kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
-    return sum(compute_planar_staples(x, mu, nu, **kws) for nu in nu_list)
+    return sum(compute_u1_planar_staples(x, mu, nu, **kws) for nu in nu_list)
 
 
-def compute_planar_staples(
+def compute_u1_planar_staples(
     x: torch.Tensor,
     mu: int,
     nu: int,
@@ -166,7 +168,7 @@ def compute_planar_staples(
     x : torch.Tensor
         Tensor containing the gauge links. After any batch and channel axes,
         the spatial lattice axes come first (if sites_before_link=True),
-        followed by the link direction axis, and then the matrix components.
+        followed by the link direction axis.
     mu : int
         The index of the link direction along which the staples are computed.
     nu : int
@@ -193,7 +195,7 @@ def compute_planar_staples(
     """
 
     # Extract the central and nu-direction links using unbind
-    link_axis = -3 if sites_before_link else prefix_dims
+    link_axis = -1 if sites_before_link else prefix_dims
     links = torch.unbind(x, dim=link_axis)
 
     u = links[mu]  # Central link (U in the cartoon)
@@ -210,13 +212,13 @@ def compute_planar_staples(
     #   --b--
     #  c|   |a
     #   @ U @
-    staple_upper = matmul(a, matmul(c, b).adjoint())
+    staple_upper = mul(a, mul(c, b).conj())
 
     # Lower staple: d^\dagger e^\dagger f
     #   @ U @
     #  f|   |d
     #   --e--
-    staple_lower = matmul(matmul(e, d).adjoint(), f)
+    staple_lower = mul(mul(e, d).conj(), f)
 
     # Return the staples
     if return_sum:
