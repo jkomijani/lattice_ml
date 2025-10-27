@@ -147,7 +147,7 @@ class SUnDiffusionProcess:
         # Comput the std of integrated noise at time t & generate noise terms
         c_0 = self.sigma_ratio
         c_1 = 2 * self.gamma
-        std = c_0 * np.sqrt(np.exp(c_1 * t_eval) - np.exp(c_1 * t_1))
+        std = c_0 * torch.sqrt(torch.exp(c_1 * t_eval) - torch.exp(c_1 * t_1))
         randn_grp, randn_alg = randn_special_unitary_like(y_0, std, n_steps=1)
 
         # Simulate the diffusion process
