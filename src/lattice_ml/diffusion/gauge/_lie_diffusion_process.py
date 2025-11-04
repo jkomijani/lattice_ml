@@ -7,8 +7,8 @@
 from typing import Callable, Tuple
 
 import torch
-import numpy as np
 
+from lattice_ml.functions import log_special_unitary_group
 
 from ._trainer import Trainer
 from ._randn_xxx_like import randn_special_unitary_like
@@ -25,12 +25,16 @@ class SUnDiffusionProcess:
     differential equation (SDE)
 
     .. math::
-        \frac{d U(t)}{dt} = \sqrt{2} \sigma e^{\gamma t} \eta(t) U(t)
+        \frac{d U(t)}{dt} = \sigma(t) \eta(t) U(t)
 
     where
-    - :math:`gamma > 0` controls the rate of increament in the noise variance,
-    - :math:`\sigma > 0` controls the overal scale of the noise,
+    - :math:`\sigma(t) > 0` is a time-dependent noise scale, determined by a
+      user-specified or default schedule,
     - :math:`\eta(t)` is standard white Gaussian noise in the algebra space.
+
+    By default, the noise scale :math:`\sigma(t)` follows an inverse-time
+    variance law, implemented by :class:`InverseTimeNoiseScaleSchedule`, in
+    which the variance grows as :math:`1/(1 - t)`.
 
     The reverse process is defined by an SDE that uses a learned score function
     (the gradient of the log-probability density) to iteratively denoise the
@@ -47,11 +51,8 @@ class SUnDiffusionProcess:
         A user-provided function (typically a neural network) that estimates
         the score function. It is used in the reverse diffusion process.
 
-    gamma : float
-        The parameter controling the rate of increament in the noise variance.
-
-    sigma : float
-        Noise scaling parameter.
+    sigma_schedule : Callable
+        Time-dependent noise scheduler controlling :math:`\sigma(t)`.
 
     trainer : Trainer
         An associated :class:`Trainer` instance for model training.
@@ -59,37 +60,36 @@ class SUnDiffusionProcess:
     """
 
     n_random_walk_steps = 4
-    last_step_h = 0.005
+    last_step_h = 0
 
     def __init__(
         self, score_fn: Callable,
-        gamma: float = 1,
-        sigma: float = None
+        sigma_0: float = 1,
+        sigma_schedule: Callable = None
     ):
         r"""
-        Initializes the diffusion process with a score function and an optional
-        gamma value.
+        Initializes the diffusion process with a score function.
 
         Parameters
         ----------
         score_fn : Callable
             A neural network for modeling the score function.
 
-        gamma : float, optional
-            The parameter controling the rate of increament in the noise
-            variance. It must be a positive number. Default is 1.
+        sigma_0 : float, optional
+            Scaling parameter controlling the base intensity of the noise.
+            Default is 1. Ignored if ``sigma_schedule`` is provided.
 
-        sigma : float, optional
-            The scaling factor of noise. If not provided, it will be set to
-            the saure root of `gamma`. Default is None.
+        sigma_schedule : Callable, opotiona
+            Custom callable defining the time-dependent noise scale
+            :math:`\sigma(t)`. If not provided, defaults to
+            :class:`InverseTimeNoiseScaleSchedule(sigma_0)`.
         """
-        assert gamma > 0, "gamma must be positive"
+        if sigma_schedule is None:
+            self.sigma_schedule = InverseTimeNoiseScaleSchedule(sigma_0)
+        else:
+            self.sigma_schedule = sigma_schedule
 
-        # Main components of the model
         self.score_fn = score_fn
-        self.gamma = gamma
-        self.sigma = sigma or gamma ** 0.5
-        self.sigma_ratio = self.sigma / self.gamma ** 0.5
 
         # Components for training
         self.trainer = Trainer(self)
@@ -134,24 +134,26 @@ class SUnDiffusionProcess:
         t_eval = t_eval.view(-1, *[1] * (y_0.ndim - 1))
 
         h = self.last_step_h
-        t_1 = torch.clamp_min(t_eval - h, 0)  # max(t_eval - h, 0)
+        t_intermediate = torch.clamp_min(t_eval - h, 0)  # max(t_eval - h, 0)
 
-        # Comput the std of integrated noise at time t & generate noise terms
-        std = self.sigma_ratio * (torch.exp(2 * self.gamma * t_1) - 1)**0.5
+        # Compute the cumulative noise from 0 to t_intermediate
+        std = self.sigma_schedule.cumulative(0, t_intermediate)
         n_steps = self.n_random_walk_steps
         randn_grp, randn_alg = randn_special_unitary_like(y_0, std, n_steps)
 
         # Simulate the diffusion process
-        y_t1 = randn_grp @ y_0
+        y_t = randn_grp @ y_0
 
-        # Comput the std of integrated noise at time t & generate noise terms
-        c_0 = self.sigma_ratio
-        c_1 = 2 * self.gamma
-        std = c_0 * torch.sqrt(torch.exp(c_1 * t_eval) - torch.exp(c_1 * t_1))
+        if h == 0:
+            randn_alg = log_special_unitary_group(randn_grp)
+            return y_t, randn_alg / std, std
+
+        # Compute the cumulative noise from t_intermediate to t_eval
+        std = self.sigma_schedule.cumulative(t_intermediate, t_eval)
         randn_grp, randn_alg = randn_special_unitary_like(y_0, std, n_steps=1)
 
         # Simulate the diffusion process
-        y_t = randn_grp @ y_t1
+        y_t = randn_grp @ y_t
 
         return y_t, randn_alg / std, std
 
@@ -191,13 +193,12 @@ class SUnDiffusionProcess:
 
         y_eval = [None] * len(t_eval)
         n_steps = self.n_random_walk_steps
-        c_0 = self.sigma_ratio
-        c_1 = 2 * self.gamma
 
         for ind, t in enumerate(t_eval):
             assert t >= t_0, "`t_eval` must monotonically increase."
 
-            std = c_0 * np.sqrt(np.exp(c_1 * t) - np.exp(c_1 * t_0))
+            std = self.sigma_schedule.cumulative(t_0, t)
+
             randn_grp, _ = randn_special_unitary_like(y_0, std, n_steps)
 
             # Simulate the diffusion process
@@ -215,7 +216,7 @@ class SUnDiffusionProcess:
         t_eval: Tuple[float] | float = 0.,
         method: str = 'Euler-Maruyama:su(n)',
         step_size: float = 0.001,
-        sigma_tilde: float = 1
+        rev2fwd_noise_ratio: float = 1
     ):
         """
         Simulates the denoising process (reverse diffusion process) by applying
@@ -240,9 +241,9 @@ class SUnDiffusionProcess:
         step_size : float, optional
             The step size for discretizing the SDE. Default is 0.001.
 
-        sigma_tilde : float, optional
-            Coefficient of the noise term in the SDE (up to squared root of 2).
-            Defaults to `sqrt(pi)`.
+        rev2fwd_noise_ratio : float, optional
+            Scaling factor for the reverse noise relative to the forward
+            process. Default is 1. Controls stochasticity in reverse SDE.
 
         Returns
         -------
@@ -256,15 +257,15 @@ class SUnDiffusionProcess:
             squeeze_output = False
 
         # Put all key-word args in a dictionary to pass to the solver
-        factor = np.sqrt(2) * sigma_tilde
+        rev2fwd = rev2fwd_noise_ratio
         solver_kwargs = {
             'method': method,
             'step_size': step_size,
-            'noise_scale': lambda t: factor * torch.exp(self.gamma * t)
+            'noise_scale': lambda t: rev2fwd * self.sigma_schedule(t)
         }
 
         # Build the drift function used in the reverse SDE
-        drift = self.build_denoising_drift(sigma_tilde)
+        drift = self.build_denoising_drift(rev2fwd_noise_ratio)
 
         y_eval = [None] * len(t_eval)
 
@@ -279,62 +280,111 @@ class SUnDiffusionProcess:
 
         return y_eval[0] if squeeze_output else y_eval
 
-    def build_denoising_drift(self, sigma_tilde: float):
-        r"""
-        Construct the drift function for the reverse (denoising) diffusion
-        process.
+    def build_denoising_drift(
+        self,
+        rev2fwd_noise_ratio: float,
+        algebra_valued: bool = True
+    ):
+        """
+        Build the drift function for the reverse (denoising) diffusion process.
 
-        The reverse-time dynamics are governed by an SDE whose drift term
-        is given by
-
-        .. math::
-            f(t, x) = - (\sigma^2 + \tilde{\sigma}^2)\, \nabla_x \log p_t(x),
-
-        where
-        - :math:`\sigma` is the forward diffusion noise scaling factor,
-        - :math:`\tilde{\sigma}` is a user-specified noise scaling factor, and
-        - :math:`\nabla_x \log p_t(x)` is approximated by the score function
-          :math:`\text{score}(t, x)`.
-
-        This method returns a closure ``denoising_drift(t, y_t)`` that computes
-        the drift at time ``t`` for state ``y_t``. It can be passed directly to
-        an SDE solver.
+        The reverse-time drift is defined as:
+            f(t, x) = -½ σ(t)² (1 + r²) ∇ log p_t(x),
+        where σ(t) is the noise schedule, r is the reverse/forward noise ratio,
+        and ∇ log p_t(x) is approximated by the score function.
 
         Parameters
         ----------
-        sigma_tilde : float
-            A scaling factor for the stochastic term in the reverse process.
+        rev2fwd_noise_ratio : float, optional
+            Ratio of reverse to forward noise, controlling stochasticity.
+
+        algebra_valued : bool, opitonla
+            If True, return an algebra-valued drift. Default is True.
 
         Returns
         -------
-        Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
-            A function ``denoising_drift(t, y_t)`` that computes the drift term
-            for the reverse diffusion process at time ``t`` and state ``y_t``.
+        Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+            Function denoising_drift(t, y_t) computing the drift at time t.
         """
-        score_coeff = self.sigma ** 2 + sigma_tilde ** 2
-        score_expon = 2 * self.gamma
+        constant_factor = 0.5 * (1 + rev2fwd_noise_ratio ** 2)
 
-        def denoising_drift(t: torch.Tensor, y_t: torch.Tensor):
-            r"""
-            Compute the drift term for the reverse diffusion process.
+        def alg_denoising_drift(t: torch.Tensor, y_t: torch.Tensor):
+            """
+            Compute the algebra-valued drift for the reverse diffusion process.
 
-            Parameters
-            ----------
-            t : torch.Tensor
-                Time tensor (scalar or shape ``[batch]``), aligned with the
-                batch dimension of ``y_t``.
+            Args:
+                t (torch.Tensor): Time tensor (scalar or [batch]).
+                y_t (torch.Tensor): System state at time t.
 
-            y_t : torch.Tensor
-                The state of the system at time ``t``. Serves as input to the
-                score function and as the variable being denoised.
-
-            Returns
-            -------
-            torch.Tensor
-                The drift vector field at ``(t, y_t)``, to be used in an SDE
-                solver.
+            Returns:
+                torch.Tensor: Drift vector field at `(t, y_t)`.
             """
             score = self.score_fn(t, y_t)
-            return - score_coeff * torch.exp(score_expon * t) * score
+            score_coeff = constant_factor * self.sigma_schedule(t) ** 2
+            return - score_coeff * score
 
-        return denoising_drift
+        def grp_denoising_drift(t: torch.Tensor, y_t: torch.Tensor):
+            """
+            Compute the drift for the reverse diffusion process.
+
+            Args:
+                t (torch.Tensor): Time tensor (scalar or [batch]).
+                y_t (torch.Tensor): System state at time t.
+
+            Returns:
+                torch.Tensor: Drift vector field at `(t, y_t)`.
+            """
+            score = self.score_fn(t, y_t)
+            score_coeff = constant_factor * self.sigma_schedule(t) ** 2
+            return - score_coeff * score @ y_t
+
+        return alg_denoising_drift if algebra_valued else grp_denoising_drift
+
+
+class InverseTimeNoiseScaleSchedule:
+    """
+    Noise standard deviation scheduler derived from an inverse-time variance
+    law: Var(t) ∝ 1 / (1 - t).
+
+    This scheduler provides both the instantaneous noise std as a function of
+    time, and its cumulative value between two time points.
+    """
+
+    EPS = 1e-4  # Small constant to avoid division by zero or log(0)
+
+    def __init__(self, sigma_0: float = 1):
+        """
+        Initialize the noise standard deviation scheduler.
+
+        Args:
+            sigma_0 (float): Scaling factor (default is 1).
+        """
+        self.sigma_0 = sigma_0
+
+    def __call__(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the instantaneous noise standard deviation at time `t`.
+
+        Args:
+            t (torch.Tensor): Time tensor with values in (0, 1).
+
+        Returns:
+            torch.Tensor: Standard deviation of noise at time `t`.
+        """
+        return self.sigma_0 / (1 + self.EPS - t) ** 0.5
+
+    def cumulative(self, t_0: torch.Tensor, t_1: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the cumulative noise std between two times `t_0` and `t_1`.
+
+        Args:
+            t_0 (torch.Tensor): Start time tensor.
+            t_1 (torch.Tensor): End time tensor.
+
+        Returns:
+            torch.Tensor: Cumulative noise standard deviation.
+        """
+        t_max = 1 + self.EPS
+        return self.sigma_0 * torch.sqrt(
+            torch.log((t_max - t_0) / (t_max - t_1)).abs()
+        )
