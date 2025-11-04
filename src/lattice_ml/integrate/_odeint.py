@@ -41,6 +41,8 @@ def odeint(
     num_steps: int | None = None,
     method: str = "RK4",
     ode_step: Callable | None = None,
+    t_eval: Tuple[float] | None = None,
+    fn_eval: Callable | None = None,
     loss_rate: Callable | None = None
 ) -> Union[TensorOrArray, Tuple[TensorOrArray, Any]]:
     """
@@ -79,6 +81,12 @@ def odeint(
         Must be one of: "RK4", "Euler".
     ode_step : callable, optional
         If provided, overrides `method` and is used as the ODE step function.
+    t_eval : tuple of float, optional
+        Times within `t_span` at which to evaluate the solution. Must be
+        strictly monotonic. If omitted, only the final state is returned.
+    fn_eval : callable, optional
+        Function applied to the system state at each `t_eval`. Should have the
+        form `fn_eval(y)`. If None, the raw states `y(t_eval)` are returned.
     loss_rate : callable, optional
         A function that computes an instantaneous quantity to be integrated
         along the ODE trajectory. If provided, it is called at each integration
@@ -129,11 +137,51 @@ def odeint(
         return _integrate_with_loss(
                 ode_step, func, loss_rate, time_grid, y, step_size, args
                 )
+    if t_eval is not None:
+        return _integrate_with_eval(
+                ode_step, func, time_grid, y, step_size, args, t_eval, fn_eval
+                )
 
     for t in time_grid[:-1]:
         y = ode_step(func, t, y, step_size, *args)
 
     return y
+
+
+def _integrate_with_eval(
+    ode_step: Callable,
+    func: Callable,
+    time_grid: TensorOrArray,
+    y: TensorOrArray,
+    step_size: float,
+    args: Tuple,
+    t_eval: Tuple,
+    fn_eval: Callable | None,
+) -> Tuple[TensorOrArray]:
+    """
+    Helper for odeint that integrates the ODE and records results at specified
+    evaluation times (`t_eval`).
+
+    See `odeint` for parameter details.
+    """
+    out_eval = []  # Stores evaluated states or fn_eval outputs
+    ind_eval = 0  # Index for current evaluation time
+
+    for t in time_grid:
+        # Note that the loop breaks once t reaches t_eval[-1]
+        if len(t_eval) <= ind_eval:
+            break
+        delta_t = t_eval[ind_eval] - t
+        # Check if next t_eval lies within the current step interval
+        if delta_t * (delta_t - step_size) <= 0:
+            # Integrate up to t_eval and record result
+            y_eval_ = ode_step(func, t, y, delta_t, *args)
+            out_eval.append(y_eval_ if fn_eval is None else fn_eval(y_eval_))
+            ind_eval += 1
+        # Advance one integration step
+        y = ode_step(func, t, y, step_size, *args)
+
+    return tuple(out_eval)
 
 
 def _integrate_with_loss(
