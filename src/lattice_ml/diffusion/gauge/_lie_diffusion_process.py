@@ -28,7 +28,7 @@ class SUnDiffusionProcess:
         \frac{d U(t)}{dt} = \sigma(t) \eta(t) U(t)
 
     where
-    - :math:`\sigma(t) > 0` is a time-dependent noise scale, determined by a
+    - :math:`\sigma(t)` is a time-dependent noise scale, determined by a
       user-specified or default schedule,
     - :math:`\eta(t)` is standard white Gaussian noise in the algebra space.
 
@@ -60,7 +60,6 @@ class SUnDiffusionProcess:
     """
 
     n_random_walk_steps = 4
-    last_step_h = 0
 
     def __init__(
         self, score_fn: Callable,
@@ -124,7 +123,6 @@ class SUnDiffusionProcess:
                 in the tangent space of the Lie group, normalized by its
                 standard deviation. This tensor shows how noise evolves in the
                 algebraic space over time.
-                More precisely We have :math:`alg_t = \int_0^t d \Gamma_t`.
 
             - Tensor: `std`: The accumulated standard deviation (noise) over
                 time. This tensor tracks how much noise has been added to the
@@ -133,28 +131,15 @@ class SUnDiffusionProcess:
         # Expand t_eval dimensions to match y_0
         t_eval = t_eval.view(-1, *[1] * (y_0.ndim - 1))
 
-        h = self.last_step_h
-        t_intermediate = torch.clamp_min(t_eval - h, 0)  # max(t_eval - h, 0)
-
         # Compute the cumulative noise from 0 to t_intermediate
-        std = self.sigma_schedule.cumulative(0, t_intermediate)
+        std = self.sigma_schedule.cumulative(0, t_eval)
         n_steps = self.n_random_walk_steps
-        randn_grp, randn_alg = randn_special_unitary_like(y_0, std, n_steps)
+        randn_grp, _ = randn_special_unitary_like(y_0, std, n_steps)
 
         # Simulate the diffusion process
         y_t = randn_grp @ y_0
 
-        if h == 0:
-            randn_alg = log_special_unitary_group(randn_grp)
-            return y_t, randn_alg / std, std
-
-        # Compute the cumulative noise from t_intermediate to t_eval
-        std = self.sigma_schedule.cumulative(t_intermediate, t_eval)
-        randn_grp, randn_alg = randn_special_unitary_like(y_0, std, n_steps=1)
-
-        # Simulate the diffusion process
-        y_t = randn_grp @ y_t
-
+        randn_alg = log_special_unitary_group(randn_grp)
         return y_t, randn_alg / std, std
 
     def forward(
