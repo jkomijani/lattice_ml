@@ -8,8 +8,6 @@ from typing import Callable, Tuple
 
 import torch
 
-from lattice_ml.functions import log_special_unitary_group
-
 from ._trainer import Trainer
 from ._randn_xxx_like import randn_special_unitary_like
 from ._lie_sdeint import integrate_sde
@@ -134,12 +132,11 @@ class SUnDiffusionProcess:
         # Compute the cumulative noise from 0 to t_intermediate
         std = self.sigma_schedule.cumulative(0, t_eval)
         n_steps = self.n_random_walk_steps
-        randn_grp, _ = randn_special_unitary_like(y_0, std, n_steps)
+        randn_grp, randn_alg = randn_special_unitary_like(y_0, std, n_steps)
 
         # Simulate the diffusion process
         y_t = randn_grp @ y_0
 
-        randn_alg = log_special_unitary_group(randn_grp)
         return y_t, randn_alg / std, std
 
     def forward(
