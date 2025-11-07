@@ -63,7 +63,7 @@ class SUnDiffusionProcess:
 
     def __init__(
         self, score_fn: Callable,
-        sigma_0: float = 1,
+        sigma_0: float = 1.0,
         sigma_schedule: Callable = None
     ):
         r"""
@@ -200,8 +200,8 @@ class SUnDiffusionProcess:
         t_0: float = 1.0,
         t_eval: Tuple[float] | float = 0.,
         method: str = 'Euler-Maruyama:su(n)',
-        step_size: float = 0.001,
-        rev2fwd_noise_ratio: float = 1
+        step_size: float = 0.01,
+        rev2fwd_noise_ratio: float = 1.0
     ):
         """
         Simulates the denoising process (reverse diffusion process) by applying
@@ -335,9 +335,9 @@ class InverseTimeNoiseScaleSchedule:
     time, and its cumulative value between two time points.
     """
 
-    EPS = 1e-4  # Small constant to avoid division by zero or log(0)
+    EPS = 1e-2  # Small constant to regulate the divergence at t = 1
 
-    def __init__(self, sigma_0: float = 1):
+    def __init__(self, sigma_0: float = 1.0):
         """
         Initialize the noise standard deviation scheduler.
 
