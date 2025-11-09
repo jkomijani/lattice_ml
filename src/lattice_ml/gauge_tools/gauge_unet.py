@@ -519,7 +519,7 @@ class UNetEncoderLayer(Module):
 
         super().__init__()
 
-        self.conv_block1 = GaugeLinkConv(in_channels=channels[0], out_channels=channels[1], ndim= spatial_ndim)
+        self.conv_block1 = GaugeLinkConv(in_channels=channels[0], out_channels=channels[1], spatial_ndim= spatial_ndim)
 
         '''
         if time_embedding:
@@ -546,7 +546,7 @@ class UNetEncoderLayer(Module):
         """
     
         data = data.unsqueeze(1)
-        data = self.conv_block1(data, t=time)
+        data = self.conv_block1(data)
         
 
         '''
@@ -612,7 +612,7 @@ class UNetDecoderLayer(Module):
                 self.upsampler = torch.nn.Identity()
         '''
 
-        self.conv_block1 = GaugeLinkConv(in_channels=channels[0], out_channels=channels[1], ndim=spatial_ndim)
+        self.conv_block1 = GaugeLinkConv(in_channels=channels[0], out_channels=channels[1], spatial_ndim=spatial_ndim)
 
         '''
         if time_embedding:
@@ -642,7 +642,7 @@ class UNetDecoderLayer(Module):
         data = gauge_upsampler(skip_connection, data, prefix_dims=2)
 
 
-        data = self.conv_block1(data, t=time)
+        data = self.conv_block1(data)
 
         data = data.squeeze(1)
         '''
@@ -690,7 +690,7 @@ class UNetBottleneck(UNetEncoderLayer):
             Tensor: The result after processing through the down-sampler.
             Tensor: The intermediate result before the down-sampler.
         """
-        data = self.conv_block1(data, t = time)
+        data = self.conv_block1(data)
 
         '''
         if self.time_encoder is not None:
