@@ -55,6 +55,8 @@ class Trainer:
     optimizer = None
     scheduler = None
 
+    loss_c0 = 0  # c_0 in the augmented loss functions
+
     def __init__(self, diffusion_process):
 
         self._diffusion_process = diffusion_process
@@ -74,6 +76,8 @@ class Trainer:
         self,
         data_loader,
         n_epochs: int = 100,
+        loss_c0: float = 0,
+        action=None,
         optimizer_class=None,
         scheduler=None,
         hyperparam=None,
@@ -88,6 +92,14 @@ class Trainer:
             Loads true samples for training.
         n_epochs : int, default=100
             Number of training epochs.
+        loss_c0 : float, default=0.0
+            If greater than zero, enables force regularization at t = 0.
+        action : callable or None, optional
+            The action to be used when `loss_c0` > 0. Ignored otherwise.
+        loss_c0 : float, default=0,
+            If larger than zero, it executed the force regularization at t=0.
+        action : callable | None, optional
+            Relavant only if loss_c0 is larger than 0 (default: None).
         optimizer_class : type, optional
             Optimizer class (default: AdamW).
         scheduler : callable, optional
@@ -108,6 +120,9 @@ class Trainer:
 
         if optimizer_class is None:
             optimizer_class = torch.optim.AdamW
+
+        self.loss_c0 = loss_c0
+        self.action = action
 
         parameters = self._diffusion_process.score_fn.parameters()
         self.optimizer = optimizer_class(parameters, **self.hyperparam)
@@ -171,6 +186,12 @@ class Trainer:
 
             # Compute loss: implicit score matching weighted by noise variance.
             loss = self.loss_fn(score, eps, noise_std)
+
+            # contribution from t = 0 if loss_c0 > 0
+            if self.loss_c0 > 0:
+                score0 = process.score_fn(0 * diffusion_time, x_0)
+                diff0 = score0 - self.action.algebra_force(x_0)
+                loss = loss + self.loss_c0 * torch.mean(diff0 * diff0.conj()).real
 
             self.optimizer.zero_grad()  # clears old gradients from last steps
             loss.backward()
