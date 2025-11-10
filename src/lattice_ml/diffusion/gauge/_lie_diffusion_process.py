@@ -174,12 +174,13 @@ class SUnDiffusionProcess:
             squeeze_output = False
 
         y_eval = [None] * len(t_eval)
-        n_steps = self.n_random_walk_steps
 
         for ind, t in enumerate(t_eval):
             assert t >= t_0, "`t_eval` must monotonically increase."
 
             std = self.sigma_schedule.cumulative(t_0, t)
+
+            n_steps = 1 if (t - t_0).abs() < 0.05 else self.n_random_walk_steps
 
             randn_grp, _ = randn_special_unitary_like(y_0, std, n_steps)
 
