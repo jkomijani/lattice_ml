@@ -56,6 +56,7 @@ class Trainer:
     scheduler = None
 
     loss_c0 = 0  # c_0 in the augmented loss functions
+    action = None  # needed if loss_c0 > 0
 
     def __init__(self, diffusion_process):
 
@@ -190,8 +191,8 @@ class Trainer:
             # contribution from t = 0 if loss_c0 > 0
             if self.loss_c0 > 0:
                 score0 = process.score_fn(0 * diffusion_time, x_0)
-                diff0 = score0 - self.action.algebra_force(x_0)
-                loss = loss + self.loss_c0 * torch.mean(diff0 * diff0.conj()).real
+                df0 = score0 - self.action.algebra_force(x_0)
+                loss = loss + self.loss_c0 * torch.mean(df0 * df0.conj()).real
 
             self.optimizer.zero_grad()  # clears old gradients from last steps
             loss.backward()
@@ -231,10 +232,11 @@ def implicit_score_matching(
     r"""
     Implicit score matching loss.
 
-    Computes the weighted mean squared error between the predicted score
-    and the true noise. The weighting is the variance of the effective
-    noise at time ``t``.
+    Computes the weighted MSE between the predicted and empirical scores,
+    weighted by the effective noise variance at time `t`.
 
+
+    Parameters
     ----------
     score : torch.Tensor
         Predicted score, shape (batch_size, ...).
@@ -248,5 +250,13 @@ def implicit_score_matching(
     torch.Tensor
         Scalar loss value.
     """
+    n_c = score.shape[-1]
+
+    # Residual between predicted and conditional scores (variance-weighted)
     res = score * noise_std + eps
-    return torch.mean(res * res.conj()).real
+    loss = torch.mean(res * res.conj()).real
+
+    # Correcting for noise fluctuation
+    fluctuation = torch.mean(eps * eps.conj()).real - (n_c ** 2 - 1) / n_c ** 2
+
+    return loss - fluctuation
