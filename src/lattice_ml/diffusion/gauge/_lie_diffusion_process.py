@@ -34,10 +34,6 @@ class SUnDiffusionProcess:
     variance law, implemented by :class:`InverseTimeNoiseScaleSchedule`, in
     which the variance grows as :math:`1/(1 - t)`.
 
-    The reverse process is defined by an SDE that uses a learned score function
-    (the gradient of the log-probability density) to iteratively denoise the
-    corrupted signal and recover clean samples.
-
     Use Cases:
     - Simulate noisy trajectories (`forward`).
     - Train score-based generative models (`run_for_training`).
@@ -333,7 +329,7 @@ class InverseTimeNoiseScaleSchedule:
     time, and its cumulative value between two time points.
     """
 
-    EPS = 1e-2  # Small constant to regulate the divergence at t = 1
+    EPS = 1e-4  # Small constant to regulate the divergence at t = 1
 
     def __init__(self, sigma_0: float = 1.0):
         """
