@@ -26,8 +26,7 @@ class SUnDiffusionProcess:
         \frac{d U(t)}{dt} = \sigma(t) \eta(t) U(t)
 
     where
-    - :math:`\sigma(t)` is a time-dependent noise scale, determined by a
-      user-specified or default schedule,
+    - :math:`\sigma(t)` is a time-dependent noise scale,
     - :math:`\eta(t)` is standard white Gaussian noise in the algebra space.
 
     By default, the noise scale :math:`\sigma(t)` follows an inverse-time
@@ -38,44 +37,24 @@ class SUnDiffusionProcess:
     - Simulate noisy trajectories (`forward`).
     - Train score-based generative models (`run_for_training`).
     - Generate clean samples by reversing the diffusion (`reverse`).
-
-    Attributes
-    ----------
-    score_fn : Callable
-        A user-provided function (typically a neural network) that estimates
-        the score function. It is used in the reverse diffusion process.
-
-    sigma_schedule : Callable
-        Time-dependent noise scheduler controlling :math:`\sigma(t)`.
-
-    trainer : Trainer
-        An associated :class:`Trainer` instance for model training.
-        The alias `self.train` maps directly to `trainer.execute`.
     """
-
-    n_random_walk_steps = 4
 
     def __init__(
         self, score_fn: Callable,
         sigma_0: float = 1.0,
-        sigma_schedule: Callable = None
+        sigma_schedule: Callable | None = None,
+        n_random_walk_steps: int = 4,
     ):
-        r"""
-        Initializes the diffusion process with a score function.
+        """Initializes the diffusion process with a score function.
 
-        Parameters
-        ----------
-        score_fn : Callable
-            A neural network for modeling the score function.
-
-        sigma_0 : float, optional
-            Scaling parameter controlling the base intensity of the noise.
-            Default is 1. Ignored if ``sigma_schedule`` is provided.
-
-        sigma_schedule : Callable, opotiona
-            Custom callable defining the time-dependent noise scale
-            :math:`\sigma(t)`. If not provided, defaults to
-            :class:`InverseTimeNoiseScaleSchedule(sigma_0)`.
+        Args:
+            score_fn (Callable): A neural network for the score function.
+            sigma_0 (float): Scaling parameter controlling the noise intensity.
+                (Default is 1. Ignored if `sigma_schedule` is provided.)
+            sigma_schedule (Callable): Defines the time-dependent noise scale.
+                (Default is :class:`InverseTimeNoiseScaleSchedule(sigma_0)`.)
+            n_random_walk_steps (int): Number of multipicative terms to obtain
+                the heat kernel. (Default is 4.)
         """
         if sigma_schedule is None:
             self.sigma_schedule = InverseTimeNoiseScaleSchedule(sigma_0)
@@ -83,6 +62,7 @@ class SUnDiffusionProcess:
             self.sigma_schedule = sigma_schedule
 
         self.score_fn = score_fn
+        self.n_random_walk_steps = n_random_walk_steps
 
         # Components for training
         self.trainer = Trainer(self)
