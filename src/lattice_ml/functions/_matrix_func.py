@@ -7,6 +7,7 @@ matrices and their Lie algebra elements.
 
 # pylint: disable=invalid-name  # for matrices like U & A
 
+import itertools
 import math
 import torch
 
@@ -17,6 +18,7 @@ __all__ = [
     "exp_unitary_algebra",
     "log_unitary_group",
     "log_special_unitary_group",
+    "enumerate_sun_preimages",
     "pow_special_unitary_group",
     "pow_special_unitary_group_",
     "matrix_exp1jh",
@@ -121,6 +123,44 @@ def log_special_unitary_group(U: torch.Tensor) -> torch.Tensor:
     vals, vecs = eigu(U)
     f_vals = 1j * enforce_zero_sum(torch.angle(vals))
     return inverse_eign(f_vals, vecs)
+
+
+def enumerate_sun_preimages(logU: torch.Tensor, max_branch_shift: int = 1):
+    """Enumerate preimages of the exponential map `exp(logU)` given `logU`.
+
+    Each preimage is obtained by adding 2π times integers to the eigenvalues
+    of `logU`, generating different branches of the logarithm.
+
+    Args:
+        logU (torch.Tensor): AntiHermitian su(n) matrix of shape `(..., n, n)`.
+        max_branch_shift (int): Maximum integer shift for eigenvalues.
+
+    Returns:
+        List[torch.Tensor]: Matrices corresponding to different 2π branch
+        shifts of the input logU eigenvalues.
+    """
+
+    vals, vecs = eigh(1j * logU)
+    vals = enforce_zero_sum(vals)  # make logU traceless
+    # Note: a traceless logU is not necessarily in the principal branch.
+
+    all_vals = [vals]
+
+    n_c = vals.shape[-1]  # number of colors
+    rng = range(-max_branch_shift, max_branch_shift + 1)
+
+    for shift_tuple in itertools.product(rng, repeat=n_c):
+        if all(s == 0 for s in shift_tuple):
+            continue
+        if sum([s**2 for s in shift_tuple]) > max_branch_shift**2:
+            continue
+        shift = torch.tensor(shift_tuple, dtype=vals.dtype, device=vals.device)
+        shift = shift * (2.0 * math.pi)
+        all_vals.append(vals + shift)
+
+    # Convert eigenvalues into matrices in su(N)
+    preimgs = [inverse_eign(-1j * v, vecs) for v in all_vals]
+    return preimgs
 
 
 def pow_special_unitary_group(
