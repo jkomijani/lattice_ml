@@ -13,8 +13,11 @@ import logging
 import time
 import torch
 
-from normflow.nn import RQSplineWithGrad
 from lattice_ml.functions import pow_special_unitary_group_
+
+saved_dtype = torch.get_default_dtype()
+from normflow.nn import RQSplineWithGrad
+torch.set_default_dtype(saved_dtype)  # importing normflow may change dtype
 
 
 IS_MAIN_PROCESS = True  # TODO: Automate detection in distributed training

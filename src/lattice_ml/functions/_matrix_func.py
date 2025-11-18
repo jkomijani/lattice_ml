@@ -308,8 +308,10 @@ def eyes_like(matrix):
 
 # =============================================================================
 def _test_enforce_zero_sum(n_samples):
+    saved_dtype = torch.get_default_dtype()
     # pylint: disable=import-outside-toplevel
     from normflow.prior import SUnPrior
+    torch.set_default_dtype(saved_dtype)  # importing normflow may change dtype
     samples = SUnPrior(n=3, shape=(1,)).sample(n_samples)
     vals, _ = eigu(samples)
     angs = torch.angle(vals)

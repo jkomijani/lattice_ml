@@ -191,9 +191,13 @@ def einsum(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
 def _test_gauge_equivaraince():
     """Shows the gauge equivariance of the transformation in GaugeLinkConv."""
 
-    import normflow  # pylint: disable=import-outside-toplevel
+    saved_dtype = torch.get_default_dtype()
+    # pylint: disable=import-outside-toplevel
+    from normflow.prior import SUnPrior
+    torch.set_default_dtype(saved_dtype)  # importing normflow may change dtype
+
     shape = (2, 2, 2, 2, 4)  # 2^4 lattice; the last axis is the "mu" axis.
-    prior = normflow.prior.SUnPrior(3, shape=shape)
+    prior = SUnPrior(3, shape=shape)
 
     # Define `x` and transform it with instances of GaugeLinkConv
     gauge_link_conv1 = GaugeLinkConv(None, 5, spatial_ndim=4)
