@@ -10,7 +10,7 @@ using short Wilson lines starting at the tail of a link and ending at its head.
 import torch
 
 from .wilson_staples import compute_all_directional_staples
-from .time_embedding import TimeModulatedWeight
+from .time_embedding import TimeEmbeddedWeight
 
 
 __all__ = ["GaugeLinkSmear"]
@@ -34,7 +34,7 @@ class GaugeLinkSmear(torch.nn.Module):
         self._project_onto_algebra_space = anti_hermitian_traceless
 
         # Learnable time-dependent weight tensor
-        self.weight_fn = TimeModulatedWeight(weight_shape=(1,))
+        self.weight_fn = TimeEmbeddedWeight(weight_shape=(1,))
 
     def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """

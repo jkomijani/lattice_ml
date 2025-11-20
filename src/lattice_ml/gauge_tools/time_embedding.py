@@ -1,35 +1,50 @@
 # Created by Javad Komijan, 2025
 
 """
-Module for generating time-dependent weight tensors.
+Module for generating time-embedded weight tensors and modules.
 """
 
+
+from typing import Tuple
 import torch
 
-__all__ = ['TimeModulatedWeight', 'SinusoidalTimeEncoder']
+
+__all__ = [
+    "TimeEmbeddedWeight",
+    "TimeModulatedWeight",  # alis -> TimeEmbeddedWeight; kept for legacy
+    "SinusoidalTimeEncoder",
+]
 
 
 # =============================================================================
-class TimeModulatedWeight(torch.nn.Module):
+class TimeEmbeddedWeight(torch.nn.Module):
     """
-    Maps scalar time inputs to time-dependent weight tensors.
+    Constructs time-emebedded weight tensors.
 
     Args:
         weight_shape (tuple of int): Shape of the output weight tensor,
             excluding batch dimension.
+        hidden_dim (int): Hidden dimension of the MLP (default 32).
+        max_freq (int): Maximum frequencey in the time encoder (default 32).
+            Overlooked if `time_encoder` is provided.
         time_encoder (nn.Module, optional): Module that encodes time.
-            Defaults to `SinusoidalTimeEncoder(hidden_dim)`.
-        hidden_dim (int, optional): Hidden dimension of the MLP (default 32).
+            Defaults to `SinusoidalTimeEncoder(hidden_dim, max_freq=max_freq)`.
     """
 
-    def __init__(self, weight_shape, time_encoder=None, hidden_dim=32):
+    def __init__(
+        self,
+        weight_shape: Tuple[int],
+        hidden_dim: int = 32,
+        max_freq: int = 32,
+        time_encoder=None
+    ):
         super().__init__()
 
         self.weight_shape = weight_shape
         n_weight = int(torch.tensor(weight_shape).prod())
 
         if time_encoder is None:
-            time_encoder = SinusoidalTimeEncoder(hidden_dim, max_freq=32)
+            time_encoder = SinusoidalTimeEncoder(hidden_dim, max_freq=max_freq)
 
         self.time_encoder = time_encoder
         time_n_embed = self.time_encoder.n_embed
@@ -65,6 +80,9 @@ class TimeModulatedWeight(torch.nn.Module):
             torch.nn.init.normal_(param, mean=mean, std=std)
 
 
+TimeModulatedWeight = TimeEmbeddedWeight  # for legacy
+
+
 # =============================================================================
 class SinusoidalTimeEncoder(torch.nn.Module):
     """
@@ -83,25 +101,12 @@ class SinusoidalTimeEncoder(torch.nn.Module):
         trainable_freq (bool): Frequencies are trainable (defaults to False).
         trainable_ampl (bool): Amplitudes are trainable (defaults to False).
     """
-    # Note that in the mentioned paper d_model, which is out n_embed, is 512,
-    # and approximately 25000 source tokens and 25000 target tokens are used.
-    # The shortest and largest wavelengths are `2 \pi` and  10000 x `2 \pi`,
-    # resepectively. Therefore, the shortes wavelength covers about 6 tokens
-    # and the longest wavelength contains about 6 x 10000 tokens.
-    # For the default setting, we assume that time varies from 0 to 1 with time
-    # steps of 0.001, a typical time step in solving a differential equation
-    # for relatively smooth functions. Then the minimum and maximum angular
-    # frequencies can be set to 1 and 1000 as the default choise.
-    #
-    # When used with nonlinear transformation, like in TimeModulatedWeight, one
-    # can reduce the maximum angular frequency. The non-linearity can generate
-    # higher modes.
 
     def __init__(
         self,
         n_embed: int,
-        min_freq: float = 1.0,
-        max_freq: float = 1000.0,
+        min_freq: float = 1.,
+        max_freq: float = 1000.,
         inner_ndim: int = 0,
         trainable_freq: bool = False,
         trainable_ampl: bool = False
