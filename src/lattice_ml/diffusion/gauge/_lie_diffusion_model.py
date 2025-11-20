@@ -471,4 +471,4 @@ def implicit_score_matching(
     # Correcting for noise fluctuation
     fluctuation = torch.mean(eps * eps.conj()).real - (n_c ** 2 - 1) / n_c ** 2
 
-    return loss - fluctuation
+    return (loss - fluctuation) * n_c ** 2
