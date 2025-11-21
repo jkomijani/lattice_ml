@@ -128,7 +128,7 @@ class SUnDiffusionModel(LightningModule):
         """To be used by Lightning Trainer."""
         return self.training_config.configure_optimizers(self.parameters())
 
-    def run_for_training(self, y_0: torch.Tensor, t_eval: torch.Tensor):
+    def run_for_training(self, y_0: torch.Tensor, t_eval: torch.Tensor, t_0=0):
         r"""
         Simulates the forward diffusion process for training purposes.
 
@@ -138,17 +138,13 @@ class SUnDiffusionModel(LightningModule):
         their noise characteristics, which can be used for training denoising
         models.
 
-        Parameters
-        ----------
-        y_0 : torch.Tensor
-            The initial state of the system at time 0.
+        Args:
+            y_0 (torch.Tensor): The initial state of the system.
+            t_eval (torch.Tensor): A 1d or 0d tensor containing the evaluation
+                   times. If 1d, its length must match the batch size of `y_0`.
+            t_0 (float): Initial time (default is 0).
 
-        t_eval : torch.Tensor
-            A 1-dimensional tensor containing the number of evaluations times.
-            Its length must match the batch size of `y_0`.
-
-        Returns
-        -------
+        Returns:
             A tuple containing
             - torch.Tensor: `y_t` (noisy state): The noisy states after
                 applying the diffusion process over the specified time steps.
@@ -166,7 +162,7 @@ class SUnDiffusionModel(LightningModule):
         t_eval = t_eval.view(-1, *[1] * (y_0.ndim - 1))
 
         # Compute the cumulative noise from 0 to t_intermediate
-        std = self.sigma_schedule.cumulative(0, t_eval)
+        std = self.sigma_schedule.cumulative(t_0, t_eval)
         n_steps = self.n_random_walk_steps
         randn_grp, randn_alg = randn_special_unitary_like(y_0, std, n_steps)
 
