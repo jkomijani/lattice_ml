@@ -1,8 +1,6 @@
 # Created by Javad Komijan, 2025
 
-"""
-Module for generating time-embedded weight tensors and modules.
-"""
+"""Module for generating time-embedded weight tensors and modules."""
 
 
 from typing import Tuple
@@ -11,15 +9,15 @@ import torch
 
 __all__ = [
     "TimeEmbeddedWeight",
-    "TimeModulatedWeight",  # alis -> TimeEmbeddedWeight; kept for legacy
-    "SinusoidalTimeEncoder",
+    "SinusoidalEncoder",
+    "TimeModulatedWeight",  # alias -> TimeEmbeddedWeight; for legacy
+    "SinusoidalTimeEncoder"  # alias -> SinusoidalEncoder; for legacy
 ]
 
 
 # =============================================================================
 class TimeEmbeddedWeight(torch.nn.Module):
-    """
-    Constructs time-emebedded weight tensors.
+    """Constructs time-emebedded weight tensors.
 
     Args:
         weight_shape (tuple of int): Shape of the output weight tensor,
@@ -27,16 +25,15 @@ class TimeEmbeddedWeight(torch.nn.Module):
         hidden_dim (int): Hidden dimension of the MLP (default 32).
         max_freq (int): Maximum frequencey in the time encoder (default 32).
             Overlooked if `time_encoder` is provided.
-        time_encoder (nn.Module, optional): Module that encodes time.
-            Defaults to `SinusoidalTimeEncoder(hidden_dim, max_freq=max_freq)`.
+        time_encoder (torch.nn.Module): Module that encodes time.
+            Defaults to `SinusoidalEncoder(hidden_dim, max_freq=max_freq)`.
     """
-
     def __init__(
         self,
         weight_shape: Tuple[int],
         hidden_dim: int = 32,
         max_freq: int = 32,
-        time_encoder=None
+        time_encoder: torch.nn.Module = None
     ):
         super().__init__()
 
@@ -44,7 +41,7 @@ class TimeEmbeddedWeight(torch.nn.Module):
         n_weight = int(torch.tensor(weight_shape).prod())
 
         if time_encoder is None:
-            time_encoder = SinusoidalTimeEncoder(hidden_dim, max_freq=max_freq)
+            time_encoder = SinusoidalEncoder(hidden_dim, max_freq=max_freq)
 
         self.time_encoder = time_encoder
         time_n_embed = self.time_encoder.n_embed
@@ -56,18 +53,16 @@ class TimeEmbeddedWeight(torch.nn.Module):
         )
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        """
-        Compute time-dependent weight tensor for given time.
+        """Compute time-dependent weight tensor for given time.
 
         Args:
-            t (Tensor): A 1D tensor representing time (batch dimension).
+            t (torch.Tensor): A tensor representing time.
 
         Returns:
-            Tensor: Weight tensor of shape `(len(t), *self.weight_shape)`.
+            Tensor: Weight tensor of shape `(*t.shape, *self.weight_shape)`.
         """
-        t_emb = self.time_encoder(t)
-        weight_t = self.mlp(t_emb).view(-1, *self.weight_shape)
-        return weight_t
+        weight_t = self.mlp(self.time_encoder(t))
+        return weight_t.reshape(*t.shape, *self.weight_shape)
 
     def set_param2zero(self):
         """Set all trainable parameters to zero."""
@@ -80,18 +75,15 @@ class TimeEmbeddedWeight(torch.nn.Module):
             torch.nn.init.normal_(param, mean=mean, std=std)
 
 
-TimeModulatedWeight = TimeEmbeddedWeight  # for legacy
-
-
 # =============================================================================
-class SinusoidalTimeEncoder(torch.nn.Module):
+class SinusoidalEncoder(torch.nn.Module):
     """
-    Implements a sinusoidal time encoding inspired by "Attention Is All You
-    Need," where the frequencies change geometrically.
+    Implements a sinusoidal encoding inspired by "Attention Is All You Need,"
+    where the frequencies change geometrically.
 
     Unlike the original paper where positions are integers, this class supports
-    non-integer time values, typically within [0, 1]. The frequency spectrum
-    can be adjusted using `max_freq` and `max_freq`.
+    non-integer values, typically within [0, 1]. The frequency spectrum can be
+    adjusted using `max_freq` and `max_freq`.
 
     Args:
         n_embed (int): Length of the code vector (must be even).
@@ -135,30 +127,34 @@ class SinusoidalTimeEncoder(torch.nn.Module):
         else:
             self.ampl = None
 
-    def forward(self, time):
-        """
-        Computes the sinusoidal time encodingdding.
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """Computes the sinusoidal encoding of t.
 
         Args:
-            time (Tensor): A 1D tensor representing time (batch dimension).
+            t (torch.Tensor): The input tensor, e.g., representing time.
 
         Returns:
-            Tensor: A tensor of original shape (batch_size, n_embed) with
-                    sinusoidal encoding. The tensor then reshaped to have
-                    `inner_ndim` additional inner dimensions with unit lenght.
+            torch.Tensor: A tensor of original shape `(*t.shape, n_embed)` with
+                sinusoidal encoding. It is then reshaped to have `inner_ndim`
+                additional inner dimensions with unit lenght.
         """
         if self.trainable_freq:
-            angle = time[:, None] * self.freq_ratio[None, :] * self.max_freq
+            angle = t.unsqueeze(-1) * (self.freq_ratio * self.max_freq)
         else:
-            angle = time[:, None] * self.freq[None, :]
+            angle = t.unsqueeze(-1) * self.freq
 
-        shape = (len(time), self.n_embed, *(1,) * self.inner_ndim)
-        encoded_time = torch.zeros(shape[:2], device=time.device)
+        encoded_t = torch.zeros((*t.shape, self.n_embed), device=t.device)
 
-        encoded_time[:, 0::2] = torch.sin(angle)
-        encoded_time[:, 1::2] = torch.cos(angle)
+        encoded_t[..., 0::2] = torch.sin(angle)
+        encoded_t[..., 1::2] = torch.cos(angle)
 
         if self.trainable_ampl:
-            encoded_time = self.ampl[None, :] * encoded_time
+            encoded_t = self.ampl * encoded_t
 
-        return encoded_time.reshape(*shape)
+        out_shape = (*t.shape, self.n_embed, *(1,) * self.inner_ndim)
+        return encoded_t.reshape(*out_shape)
+
+
+# Keep for legacy
+TimeModulatedWeight = TimeEmbeddedWeight
+SinusoidalTimeEncoder = SinusoidalEncoder
