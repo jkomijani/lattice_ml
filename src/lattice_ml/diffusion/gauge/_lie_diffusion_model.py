@@ -88,7 +88,7 @@ class SUnDiffusionModel(LightningModule):
         # Choose a random diffusion time per sample, uniformly in [0, 1].
         t = torch.rand((bsize,), device=x_0.device)
 
-        # Run the process to time t & get the injected noise and its std.
+        # Run the process to time t & get the injected `noise/std` and also std
         x_t, eps, noise_std = self.run_for_training(x_0, t)
 
         # Predict the score at (t, x_t).

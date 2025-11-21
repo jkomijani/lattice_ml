@@ -179,7 +179,7 @@ class Trainer:
             diffusion_time = torch.rand((bsize,), device=x_0.device)
 
             # Diffuse the data at time t, returning noisy sample, injected
-            # noise, and the effective noise standard deviation.
+            # `noise/std`, and the effective noise standard deviation.
             x_t, eps, noise_std = process.run_for_training(x_0, diffusion_time)
 
             # Predict the score (gradient of log density) at (t, x_t).
