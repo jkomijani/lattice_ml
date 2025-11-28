@@ -40,7 +40,7 @@ class SUnDiffusionModel(LightningModule):
 
     Use Cases:
     - Simulate noisy trajectories (`forward`).
-    - Train score-based generative models (`run_for_training`).
+    - Train score-based generative models (`training_step`).
     - Generate clean samples by reversing the diffusion (`reverse`).
     """
 
@@ -49,7 +49,7 @@ class SUnDiffusionModel(LightningModule):
         sigma_0: float = 1.0,
         sigma_schedule: Callable | None = None,
         n_random_walk_steps: int = 4,
-        training_config: Dict | "TrainingConfiguration" | None = None
+        training_config: Dict | None = None
     ):
         """Initializes the diffusion process with a score function.
 
@@ -74,12 +74,10 @@ class SUnDiffusionModel(LightningModule):
         self.n_random_walk_steps = n_random_walk_steps
 
         if training_config is None:
-            training_config = TrainingConfiguration()
-        if isinstance(training_config, dict):
-            training_config = TrainingConfiguration(**training_config)
-        self.training_config = training_config
+            training_config = {}
+        self.training_config = TrainingConfiguration(**training_config)
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch, batch_idx=None):
         """Perform a training step to be used by Lightning Trainer."""
 
         x_0, = batch
@@ -360,8 +358,8 @@ class SUnDiffusionModel(LightningModule):
 class TrainingConfiguration(pydantic.BaseModel):
     """Training Configuration."""
 
-    loss_c0: int = 0
-    force0_fn: Callable = None
+    loss_c0: float = 0
+    force0_fn: Callable | None = None
     print_every: int | None = None
     optimizer_class: Callable = torch.optim.AdamW
     scheduler: Callable | None = None
