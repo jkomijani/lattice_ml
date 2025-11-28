@@ -4,20 +4,22 @@
 
 # pylint: disable=too-many-arguments, too-many-positional-arguments
 
-from typing import Callable, Tuple
+from typing import Callable, Tuple, Dict
 
+import pydantic
 import torch
 
-from ._trainer import Trainer
+from .._trainer import Trainer
+
 from ._randn_xxx_like import randn_special_unitary_like
 from ._lie_sdeint import integrate_sde
 
 
-__all__ = ["SUnDiffusionProcess"]
+__all__ = ["SUnDiffusionProcess", "InverseTimeNoiseScaleSchedule"]
 
 
 # =============================================================================
-class SUnDiffusionProcess:
+class SUnDiffusionProcess(torch.nn.Module):
     r"""
     Implements a diffusion process as described by the following stochastic
     differential equation (SDE)
@@ -35,7 +37,7 @@ class SUnDiffusionProcess:
 
     Use Cases:
     - Simulate noisy trajectories (`forward`).
-    - Train score-based generative models (`run_for_training`).
+    - Train score-based generative models (`training_step`).
     - Generate clean samples by reversing the diffusion (`reverse`).
     """
 
@@ -44,6 +46,7 @@ class SUnDiffusionProcess:
         sigma_0: float = 1.0,
         sigma_schedule: Callable | None = None,
         n_random_walk_steps: int = 4,
+        training_config: Dict | None = None
     ):
         """Initializes the diffusion process with a score function.
 
@@ -55,7 +58,10 @@ class SUnDiffusionProcess:
                 (Default is :class:`InverseTimeNoiseScaleSchedule(sigma_0)`.)
             n_random_walk_steps (int): Number of multipicative terms to obtain
                 the heat kernel. (Default is 4.)
+            training_config: Contains optional loss_c0 for configuration.
         """
+        super().__init__()
+
         if sigma_schedule is None:
             self.sigma_schedule = InverseTimeNoiseScaleSchedule(sigma_0)
         else:
@@ -66,7 +72,37 @@ class SUnDiffusionProcess:
 
         # Components for training
         self.trainer = Trainer(self)
-        self.train = self.trainer.execute
+
+        if training_config is None:
+            training_config = {}
+        self.training_config = TrainingConfiguration(**training_config)
+
+    def training_step(self, batch, batch_idx=None):
+        """Perform a training step to be used by Trainer."""
+
+        x_0, = batch
+        bsize = x_0.shape[0]
+
+        # Choose a random diffusion time per sample, uniformly in [0, 1].
+        t = torch.rand((bsize,), device=x_0.device)
+
+        # Run the process to time t & get the injected `noise/std` and also std
+        x_t, eps, noise_std = self.run_for_training(x_0, t)
+
+        # Predict the score at (t, x_t).
+        score = self.score_fn(t, x_t)
+
+        # Compute loss: implicit score matching weighted by noise variance.
+        loss = implicit_score_matching(score, eps, noise_std)
+
+        # contribution from t = 0 if loss_c0 > 0
+        if self.training_config.loss_c0 > 0:
+            score0 = self.score_fn(0 * t, x_0)
+            force0 = self.training_config.force0_fn(x_0)
+            loss0 = implicit_score_matching(score0, -force0, 1)
+            loss = loss + self.training_config.loss_c0 * loss0
+
+        return loss
 
     def run_for_training(self, y_0: torch.Tensor, t_eval: torch.Tensor, t_0=0):
         r"""
@@ -296,6 +332,20 @@ class SUnDiffusionProcess:
         return alg_denoising_drift if algebra_valued else grp_denoising_drift
 
 
+# =============================================================================
+class TrainingConfiguration(pydantic.BaseModel):
+    """Training Configuration."""
+
+    loss_c0: float = 0
+    force0_fn: Callable | None = None
+
+    def update(self, **kwargs):
+        """Update the attributes."""
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+# =============================================================================
 class InverseTimeNoiseScaleSchedule:
     """
     Noise standard deviation scheduler derived from an inverse-time variance
@@ -343,3 +393,35 @@ class InverseTimeNoiseScaleSchedule:
         return self.sigma_0 * torch.sqrt(
             torch.log((t_max - t_0) / (t_max - t_1)).abs()
         )
+
+
+# =============================================================================
+def implicit_score_matching(
+    score: torch.Tensor,
+    eps: torch.Tensor,
+    noise_std: torch.Tensor
+) -> torch.Tensor:
+    """Compute the implicit score matching loss.
+
+    This computes a weighted mean squared error (MSE) between the predicted and
+    the empirical conditional score at a diffusion time. The MSE is weighted by
+    the effective (cumulative) noise variance at the diffusion time.
+
+    Args:
+        score (torch.Tensor): Predicted score, shape (batch_size, ...).
+        eps (torch.Tensor): Gaussian (cumulative) noise added during diffusion.
+        noise_std (torch.Tensor): Standard deviation of the cumulative noise.
+
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
+    n_c = score.shape[-1]
+
+    # Residual between predicted and conditional scores (variance-weighted)
+    res = score * noise_std + eps
+    loss = torch.mean(res * res.conj()).real
+
+    # Correcting for noise fluctuation
+    fluctuation = torch.mean(eps * eps.conj()).real - (n_c ** 2 - 1) / n_c ** 2
+
+    return (loss - fluctuation) * n_c ** 2
