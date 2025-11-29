@@ -560,13 +560,16 @@ def print_model_info(model):
     trainable_params = sum(p.numel() for p in parameters if p.requires_grad)
     non_trainable_params = total_params - trainable_params
 
-    print("\n  | Name     | Type                 | Params | Mode ")
-    print("-" * 50)
+    def format(i, a, b, c, d):
+        print(f"{i} | {a[:10]:<10} | {b[:20]:<20} | {c:<6} | {d}")
+
+    print("\n  | Name       | Type                 | Params | Mode ")
+    print("-" * 54)
     for i, (name, module) in enumerate(model.named_children()):
         params = sum(p.numel() for p in module.parameters())
         mode = "train" if module.training else "eval"
-        print(f"{i} | {name:} | {type(module).__name__} | {params} | {mode}")
-    print("-" * 50)
+        format(i, name, type(module).__name__, params, mode)
+    print("-" * 54)
     print(f"{trainable_params}\tTrainable params")
     print(f"{non_trainable_params}\tNon-trainable params")
     print(f"{total_params}\tTotal params\n")
