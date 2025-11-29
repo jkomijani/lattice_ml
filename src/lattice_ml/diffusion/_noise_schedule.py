@@ -27,6 +27,7 @@ class InverseTimeNoiseSchedule(torch.nn.Module):
             sigma_0 (float): Scaling factor (default is 1).
         """
         super().__init__()
+        self.train(False)  # indicating it is not trainable
         self.register_buffer("sigma_0", torch.tensor(sigma_0))
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
