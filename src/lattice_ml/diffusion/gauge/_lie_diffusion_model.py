@@ -127,14 +127,7 @@ class SUnDiffusionModel(LightningModule):
         return self.training_config.configure_optimizers(self.parameters())
 
     def run_for_training(self, y_0: torch.Tensor, t_eval: torch.Tensor, t_0=0):
-        r"""
-        Simulates the forward diffusion process for training purposes.
-
-        This method simulates the forward diffusion process starting from an
-        initial state `y_0`, which is a tensor of the Lie group elements, over
-        discrete time steps `t_steps`. The method computes noisy states and
-        their noise characteristics, which can be used for training denoising
-        models.
+        """Simulates the forward diffusion process for training purposes.
 
         Args:
             y_0 (torch.Tensor): The initial state of the system.
@@ -144,17 +137,11 @@ class SUnDiffusionModel(LightningModule):
 
         Returns:
             A tuple containing
-            - torch.Tensor: `y_t` (noisy state): The noisy states after
-                applying the diffusion process over the specified time steps.
-
+            - torch.Tensor: `y_t` (noisy group state): The final noisy states.
             - torch.Tensor: `alg / std` (normalized algebraic state): The state
-                in the tangent space of the Lie group, normalized by its
-                standard deviation. This tensor shows how noise evolves in the
-                algebraic space over time.
-
-            - Tensor: `std`: The accumulated standard deviation (noise) over
-                time. This tensor tracks how much noise has been added to the
-                algebraic state during the diffusion process.
+                evoloved in the algebra, normalized by its standard deviation.
+            - Tensor: `std`: The accumulated standard deviation of noise over
+                time, tracking how much noise is added to the algebraic state.
         """
         # Expand t_eval dimensions to match y_0
         t_eval = t_eval.view(-1, *[1] * (y_0.ndim - 1))
@@ -175,27 +162,16 @@ class SUnDiffusionModel(LightningModule):
         t_0: float = 0.,
         t_eval: Tuple[float] | float = 1.0
     ):
-        """
-        Simulates the forward diffusion process, evolving the state `y_0` from
-        initial time `t_0` to the time points specified by `t_eval`.
+        """Simulates the forward diffusion process.
 
-        Parameters
-        ----------
-        y_0 : torch.Tensor
-            The initial state of the system at time `t_0`.
+        Args:
+            y_0 (torch.Tensor): The initial state of the system at time `t_0`.
+            t_0 (float): The initial time for the simulation. Default is 0.
+            t_eval (Tuple[float] | float): A time or a monotonically increasing
+               sequence of times at which the system state must be evaluated.
 
-        t_0 : float, optional
-            The initial time for the simulation. Default is 0.
-
-        t_eval : Tuple of float | float
-            A sequence of times at which the state `y_t` of the system is
-            evaluated. The times must be monotonically increasing.
-
-        Returns
-        -------
-        list of Tensor
-            A list containing the states `y_t` of the system at each time
-            defined in `t_eval`.
+        Returns:
+            The states `y_t` of the system at times defined in `t_eval`.
         """
         if isinstance(t_eval, (float, int)):
             t_eval = (t_eval,)
@@ -231,37 +207,21 @@ class SUnDiffusionModel(LightningModule):
         step_size: float = 0.01,
         rev2fwd_noise_ratio: float = 1.0
     ):
-        """
-        Simulates the denoising process (reverse diffusion process) by applying
-        the learned score function to gradually remove the noise and recover
-        the clean signal.
+        """Simulates the revese diffusion process (denoising process).
 
-        Parameters
-        ----------
-        y_0 : torch.Tensor
-            The state of the system at time `t_0`.
+        Args:
+            y_0 (torch.Tensor): The initial state of the system at time `t_0`.
+            t_0 (float): The initial time for the simulation. Default is 0.
+            t_eval (Tuple[float] | float): A time or a monotonically increasing
+               sequence of times at which the system state must be evaluated.
+            method (str): The solving method. Default 'Euler-Maruyama:su(n)'.
+            step_size (float): The discretization step size. Default is 0.001.
+            rev2fwd_noise_ratio (float): Controls stochasticity in reverse SDE.
+                It is the ratio of the noise strength in the reverse vs forward
+                processes. Default is 1.
 
-        t_0 : float, optional
-            The initial time for the denoising process. Default is 1.
-
-        t_eval : Tuple of float | float
-            A sequence of times at which the denoised state `y_t` of the system
-            is evaluated. Times must be monotonically decreasing.
-
-        method : str, optional
-            The method for solving the SDE. Default is 'Euler-Maruyama:su(n)'.
-
-        step_size : float, optional
-            The step size for discretizing the SDE. Default is 0.001.
-
-        rev2fwd_noise_ratio : float, optional
-            Scaling factor for the reverse noise relative to the forward
-            process. Default is 1. Controls stochasticity in reverse SDE.
-
-        Returns
-        -------
-        torch.Tensor
-            The denoised state at each time step.
+        Returns:
+            torch.Tensor: The denoised state at each time step.
         """
         if isinstance(t_eval, (float, int)):
             t_eval = (t_eval,)
@@ -298,32 +258,27 @@ class SUnDiffusionModel(LightningModule):
         rev2fwd_noise_ratio: float,
         algebra_valued: bool = True
     ):
-        """
-        Build the drift function for the reverse (denoising) diffusion process.
+        """Build the drift function for the reverse diffusion process.
 
         The reverse-time drift is defined as:
             f(t, x) = -½ σ(t)² (1 + r²) ∇ log p_t(x),
         where σ(t) is the noise schedule, r is the reverse/forward noise ratio,
         and ∇ log p_t(x) is approximated by the score function.
 
-        Parameters
-        ----------
-        rev2fwd_noise_ratio : float, optional
-            Ratio of reverse to forward noise, controlling stochasticity.
+        Args:
+            rev2fwd_noise_ratio (float):
+                Ratio of reverse to forward noise, controlling stochasticity.
+            algebra_valued (bool):
+                If True, return an algebra-valued drift. Default is True.
 
-        algebra_valued : bool, opitonla
-            If True, return an algebra-valued drift. Default is True.
-
-        Returns
-        -------
-        Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
-            Function denoising_drift(t, y_t) computing the drift at time t.
+        Returns:
+            Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+                Function denoising_drift(t, y_t) computing the drift at time t.
         """
         constant_factor = 0.5 * (1 + rev2fwd_noise_ratio ** 2)
 
         def alg_denoising_drift(t: torch.Tensor, y_t: torch.Tensor):
-            """
-            Compute the algebra-valued drift for the reverse diffusion process.
+            """Compute the algebra-valued drift for the denoising process.
 
             Args:
                 t (torch.Tensor): Time tensor (scalar or [batch]).
@@ -337,8 +292,7 @@ class SUnDiffusionModel(LightningModule):
             return - score_coeff * score
 
         def grp_denoising_drift(t: torch.Tensor, y_t: torch.Tensor):
-            """
-            Compute the drift for the reverse diffusion process.
+            """Compute the drift for the denoising process.
 
             Args:
                 t (torch.Tensor): Time tensor (scalar or [batch]).
