@@ -29,8 +29,6 @@ class Trainer:
     def __init__(
         self,
         model: torch.nn.Module,
-        devices: int = 1,  # number of devices per node
-        num_nodes: int = 1,
         logger: Union["LoggerLike", None] = None,
         **training_config,
     ):
@@ -38,7 +36,6 @@ class Trainer:
 
         Args:
             model (torch.nn.Module): The model to be trained.
-            device (int): Number of devives per node.
             logger (LoggerLike or None): If None, uses the default `CSVLogger`.
             **training_config: Additional kweword arguments, including:
                 optimizer_class: Callable = torch.optim.AdamW
@@ -48,7 +45,7 @@ class Trainer:
         self.model = model
         self.current_epoch = 0
         self.training_dataloader = None
-        self.device_handler = DeviceHandler(devices, num_nodes)
+        self.device_handler = DeviceHandler()
         self.logger = logger or CSVLogger()
         self.optimizer = None
         self.scheduler = None
@@ -84,7 +81,7 @@ class Trainer:
             self._run_ddp_training(training_dataloader, n_epochs, **config)
 
         if self.is_main_process:
-            logging.info("Training Time: %g sec", time.time() - t_0)
+            logging.info("Training completed in %.1f sec.", time.time() - t_0)
 
     def _run_training(
         self,
@@ -109,7 +106,7 @@ class Trainer:
         self.training_dataloader = training_dataloader
 
         self.device_handler.print_device_info()
-        print_startup_info(self.model)
+        print_model_info(self.model)
 
         progress = tqdm(
             range(1 + self.current_epoch, 1 + self.current_epoch + n_epochs),
@@ -270,21 +267,17 @@ class DeviceHandler:
     """
     def __init__(
         self,
-        devices: int = 1,
-        num_nodes: int = 1,
-        accelerator: Literal["gpu", "cpu", "auto"] = "auto"
+        training_device: Literal["gpu", "cpu", "auto"] = "auto"
     ):
         """Initialize for 1 rank. If needed will be changed later."""
-        self.devices = devices  # number of devices per node
-        self.num_nodes = num_nodes
-        self.world_size = devices * num_nodes
+        self.world_size = int(os.environ.get("WORLD_SIZE", 1))
         if self.world_size == 1:
             self.rank = 0  # The global rank of the current process
             self.local_rank = 0  # The rank within the local node (GPU)
-            flag = torch.cuda.is_available() and accelerator in ["gpu", "auto"]
+            flag = torch.cuda.is_available() and training_device != "cpu"
             self.training_device = "cuda" if flag else "cpu"
         else:
-            # to be de determined later
+            # to be de determined later in self.init_process_group()
             self.rank = None  # The global rank of the current process
             self.local_rank = None  # The rank within the local node (GPU)
             self.training_device = None
@@ -377,7 +370,7 @@ class DeviceHandler:
         """Print device info."""
         if self.world_size > 1:
             torch.distributed.barrier()
-        logging.info(f"Training device: {self.training_device}")
+        logging.info("Utilized training device: %s", self.training_device)
         if self.world_size > 1:
             torch.distributed.barrier()
 
@@ -553,13 +546,11 @@ class LoggerLike(Protocol):
 
 
 # =============================================================================
-def print_startup_info(model):
-    """Print GPU info, local rank, and model summary in DDP."""
+def print_model_info(model):
+    """Print Model summary."""
 
-    if int(os.environ.get("LOCAL_RANK", 0)) != 0:
+    if int(os.environ.get("RANK", 0)) != 0:
         return  # Only main worker prints full startup info
-
-    print(f"Default dtype: {torch.ones(1).dtype}")
 
     # Model summary
     if dist.is_available() and dist.is_initialized():
@@ -579,3 +570,4 @@ def print_startup_info(model):
     print(f"{trainable_params}\tTrainable params")
     print(f"{non_trainable_params}\tNon-trainable params")
     print(f"{total_params}\tTotal params\n")
+    print(f"Default dtype: {torch.ones(1).dtype}\n")
