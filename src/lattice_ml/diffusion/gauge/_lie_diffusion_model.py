@@ -400,11 +400,12 @@ def implicit_score_matching(
 
     This computes a weighted mean squared error (MSE) between the predicted and
     the empirical conditional score at a diffusion time. The MSE is weighted by
-    the effective (cumulative) noise variance at the diffusion time.
+    the effective (cumulative) noise variance at the diffusion time. For matrix
+    indices, this computes Tr(x x^†) / N and is intended for SU(n) matrix data.
 
     Args:
         score (torch.Tensor): Predicted score, shape (batch_size, ...).
-        eps (torch.Tensor): Gaussian (cumulative) noise added during diffusion.
+        eps (torch.Tensor): Gaussian noise scaled by the standard deviation.
         noise_std (torch.Tensor): Standard deviation of the cumulative noise.
 
     Returns:
@@ -417,6 +418,6 @@ def implicit_score_matching(
     loss = torch.mean(res * res.conj()).real
 
     # Correcting for noise fluctuation
-    fluctuation = torch.mean(eps * eps.conj()).real - (n_c ** 2 - 1) / n_c ** 2
+    fluctuation = torch.mean(eps * eps.conj()).real - (n_c**2 - 1) / n_c**2
 
-    return (loss - fluctuation) * n_c ** 2
+    return (loss - fluctuation) * n_c
