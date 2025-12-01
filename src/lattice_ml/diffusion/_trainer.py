@@ -183,6 +183,9 @@ class Trainer:
             batch = self.device_handler.to_training_device(batch)
             loss = self.model.training_step(batch)
 
+            if torch.isnan(loss):
+                raise RuntimeError("Stopping due to NaN loss")
+
             self.optimizer.zero_grad()  # clears old gradients from last steps
             loss.backward()
             self.optimizer.step()
