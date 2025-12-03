@@ -7,7 +7,7 @@ Wilson gauge action and force calculations for lattice gauge theory.
 import torch
 
 from .wilson_loops import compute_wilson_1x1_loop
-from .wilson_staples import compute_all_directional_staples
+from .wilson_staples import compute_staples
 
 
 __all__ = ['WilsonGaugeAction']
@@ -133,8 +133,8 @@ class WilsonGaugeAction:
         """
         n_c = x.shape[-1]
 
-        g = compute_all_directional_staples(
-            x, sites_before_link=self.sites_before_link
+        g = compute_staples(
+            x, sites_before_link=self.sites_before_link, sum_over_staples=True
         )
 
         coeff = -self.beta / n_c

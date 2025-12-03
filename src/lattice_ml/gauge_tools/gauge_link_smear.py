@@ -9,7 +9,7 @@ using short Wilson lines starting at the tail of a link and ending at its head.
 
 import torch
 
-from .wilson_staples import compute_all_directional_staples
+from .wilson_staples import compute_staples
 from .time_embedding import TimeEmbeddedWeight
 
 
@@ -45,8 +45,8 @@ class GaugeLinkSmear(torch.nn.Module):
         Returns:
             torch.Tensor: Updated gauge field tensor with the same shape as x.
         """
-        g = compute_all_directional_staples(
-            x, sites_before_link=self.sites_before_link
+        g = compute_staples(
+            x, sites_before_link=self.sites_before_link, sum_over_staples=True
         )
 
         algebra_force = self._project_onto_algebra_space(x @ g)
