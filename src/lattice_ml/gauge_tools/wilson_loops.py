@@ -345,4 +345,4 @@ def parallel_transport(
 
 def compute_reduced_trace(x):  # reduced trace = 1/n trace()
     """Compute the reduced trace of the input matrix x."""
-    return torch.mean(torch.diagonal(x, dim1=-2, dim2=-1), dim=-1)
+    return torch.einsum('...ii->...', x) / x.shape[-1]
