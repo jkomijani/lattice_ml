@@ -7,7 +7,7 @@ Wilson gauge action and force calculations for lattice gauge theory.
 import torch
 
 from .wilson_loops_u1 import compute_u1_wilson_1x1_loop
-from .wilson_staples_u1 import compute_all_u1_directional_staples
+from .wilson_staples_u1 import compute_u1_staples
 
 
 __all__ = ['WilsonU1GaugeAction']
@@ -123,8 +123,8 @@ class WilsonU1GaugeAction:
         torch.Tensor
             Pure imaginary force in the Lie algebra of the same shape of x.
         """
-        g = compute_all_u1_directional_staples(
-            x, sites_before_link=self.sites_before_link
+        g = compute_u1_staples(
+            x, sites_before_link=self.sites_before_link, sum_over_staples=True
         )
 
         algebra_force = (-self.beta * 1j) * torch.imag(x * g)
