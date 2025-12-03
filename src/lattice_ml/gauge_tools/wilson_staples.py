@@ -12,7 +12,7 @@ import torch
 
 
 __all__ = [
-    'compute_all_directional_staples',
+    'compute_staples',
     'compute_directional_staples',
     'compute_planar_staples'
 ]
@@ -20,13 +20,15 @@ __all__ = [
 matmul = torch.matmul
 
 
-def compute_all_directional_staples(
+def compute_staples(
     x: torch.Tensor,
     prefix_dims: int = 1,
     sites_before_link: bool = True,
+    sum_over_staples: bool = True
 ):
-    """
-    Compute the staple sums for all link directions in the lattice.
+    """Compute the staples for all link directions.
+
+    Currently only `sum_over_staples = True` is supported.
 
     For each link direction 'mu', this function sums the staples in all planes
     spanned by ('mu', 'nu') for every perpendicular direction 'nu'.
@@ -45,6 +47,9 @@ def compute_all_directional_staples(
         then prefix_dims=2. If only a single batch dimension, prefix_dims=1.
     sites_before_link : bool, default=True
         Whether the spatial lattice axes come before the link axis.
+    sum_over_staples : bool, default=True
+        If True, returns the sum over all staples for each link direction.
+        **Note**: Currently only `sum_over_staples = True` is supported.
 
     Returns
     -------
@@ -63,6 +68,9 @@ def compute_all_directional_staples(
 
     where the sum over lattice sites and directions is implied.
     """
+    if not sum_over_staples:
+        raise ValueError("Currently only sum_over_staples=True is supported.")
+
     # Prepare keyword arguments to pass to compute_directional_staples
     kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
 
@@ -74,7 +82,6 @@ def compute_all_directional_staples(
 
     # Loop over each link direction 'mu'
     for mu in range(spatial_ndim):
-        # Loop over each link direction 'mu'
         nu_list = [nu for nu in range(spatial_ndim) if nu != mu]
 
         # Compute the staples sum for this direction
@@ -93,10 +100,9 @@ def compute_directional_staples(
     nu_list: Tuple[int, ...],
     prefix_dims: int = 1,
     sites_before_link: bool = True,
+    sum_over_staples: bool = True
 ):
-    """
-    Compute the sum of staples in the mu-nu planes for a given link direction
-    `mu` as used in the Wilson gauge action.
+    """Compute the staples in the mu-nu planes for a given link direction `mu`.
 
     Staples are 3-link paths forming a 'staple' shape adjacent to a central
     link, used in the Wilson gauge action in lattice gauge theory. The upper
@@ -126,15 +132,37 @@ def compute_directional_staples(
         then prefix_dims=2. If only a single batch dimension, prefix_dims=1.
     sites_before_link : bool, default=True
         Whether the spatial lattice axes come before the link axis.
+    sum_over_staples : bool, default=True
+        If True, returns the sum over all nu in nu_list.
+        If False, returns the individual planar staples, including the upper
+        and lower ones, stacked along a new axis.
 
     Returns
     -------
     torch.Tensor
-        Tensor containing the sum of staples for links in direction `mu`.
-        Shape is the same as `x`, except the link-direction axis is removed.
+        If sum_over_staples=True:
+            Contains the sum of staples for links in direction mu.
+            Shape is the same as x, except the link-direction axis is removed.
+        If sum_over_staples=False:
+            Contains individual planar staples for each ν, including both upper
+            and lower contributions. The planar staples are stacked along a new
+            axis inserted at `prefix_dims`.
     """
-    kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
-    return sum(compute_planar_staples(x, mu, nu, **kws) for nu in nu_list)
+    kws = {
+        'prefix_dims': prefix_dims,
+        'sites_before_link': sites_before_link,
+        'return_sum': sum_over_staples
+    }
+
+    staples = [compute_planar_staples(x, mu, nu, **kws) for nu in nu_list]
+
+    if sum_over_staples:
+        return sum(staples)
+
+    # Flatten the list of (upper, lower) tuples to [U1, L1, U2, L2, ...]
+    staples = [z for upper_lower_tuple in staples for z in upper_lower_tuple]
+    # stack along a new axis corresponding to nu, and return
+    return torch.stack(staples, dim=prefix_dims)
 
 
 def compute_planar_staples(
