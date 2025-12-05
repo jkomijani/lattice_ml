@@ -28,8 +28,6 @@ def compute_u1_staples(
 ):
     """Compute the staples for all link directions.
 
-    Currently only `sum_over_staples = True` is supported.
-
     For each link direction 'mu', this function computes the staples in all
     planes spanned by ('mu', 'nu') for every perpendicular direction 'nu'.
     The results are stacked along the link-axis dimension, producing a tensor
@@ -49,14 +47,20 @@ def compute_u1_staples(
         Whether the spatial lattice axes come before the link axis.
     sum_over_staples : bool, default=True
         If True, returns the sum over all staples for each link direction.
-        **Note**: Currently only `sum_over_staples = True` is supported.
+        If False, returns the individual planar staples, including the upper
+        and lower ones, stacked along a new axis.
 
     Returns
     -------
     torch.Tensor
-         Tensor of staple sums for all link directions. Its shape is identical
-         to `x`, with the link-direction axis containing the summed staples
-         for each direction `mu`.
+        If sum_over_staples=True:
+            Contains the sum of staples for all link directions. Its shape is
+            identical to `x`, with the link-direction axis containing the
+            summed staples for each direction `mu`.
+        If sum_over_staples=False:
+            Contains individual planar staples for each nu direction, including
+            both upper and lower contributions. The planar staples are stacked
+            along a new axis inserted at `prefix_dims`.
 
     Notes
     -----
@@ -68,11 +72,12 @@ def compute_u1_staples(
 
     where the sum over lattice sites and directions is implied.
     """
-    if not sum_over_staples:
-        raise ValueError("Currently only sum_over_staples=True is supported.")
-
     # Prepare keyword arguments to pass to compute_directional_staples
-    kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
+    kws = {
+        'prefix_dims': prefix_dims,
+        'sites_before_link': sites_before_link,
+        'sum_over_staples': sum_over_staples
+    }
 
     # Determine the number of spatial dimensions
     spatial_ndim = x.ndim - prefix_dims - 1  # exclude batch, direction
@@ -88,6 +93,10 @@ def compute_u1_staples(
 
         # Compute the staples sum for this direction
         staples_stack[mu] = compute_directional_staples(x, mu, nu_list, **kws)
+
+    if not sum_over_staples:
+        # All staples are stacked along a new axis inserted at `prefix_dims`.
+        prefix_dims += 1
 
     # Stack the results along the link-axis to recreate the full tensor
     link_axis = -1 if sites_before_link else prefix_dims
@@ -154,7 +163,7 @@ def compute_u1_directional_staples(
     kws = {
         'prefix_dims': prefix_dims,
         'sites_before_link': sites_before_link,
-        'return_sum': sum_over_staples
+        'sum_over_staples': sum_over_staples
     }
 
     staples = [compute_u1_planar_staples(x, mu, nu, **kws) for nu in nu_list]
@@ -174,7 +183,7 @@ def compute_u1_planar_staples(
     nu: int,
     prefix_dims: int = 1,
     sites_before_link: bool = True,
-    return_sum: bool = True
+    sum_over_staples: bool = True
 ):
     r"""
     Compute the staples in the mu-nu plane for a given link direction `mu` as
@@ -208,16 +217,17 @@ def compute_u1_planar_staples(
         then prefix_dims=2. If only a single batch dimension, prefix_dims=1.
     sites_before_link : bool, default=True
         Whether the spatial lattice axes come before the link axis.
-    return_sum : bool
+    sum_over_staples : bool
         If False, return both the upper and lower staples as a tuple.
         If True, return their sum. Default is True.
 
     Returns
     -------
     torch.Tensor or Tuple[torch.Tensor, torch.Tensor]
-        If `return_sum` is True (default), returns the sum of the upper and
-        lower staples. If `return_sum` is False, returns a tuple containing
-        the upper and lower staples separately.
+        If sum_over_staples=True:
+            The sum of the upper and lower staples.
+        If sum_over_staples=False:
+            A tuple containing the upper and lower staples separately.
 
         In either case, each staple tensor has the same shape as `x`, except
         that the link-direction axis is removed.
@@ -250,6 +260,6 @@ def compute_u1_planar_staples(
     staple_lower = mul(mul(e, d).conj(), f)
 
     # Return the staples
-    if return_sum:
+    if sum_over_staples:
         return staple_upper + staple_lower
     return staple_upper, staple_lower
