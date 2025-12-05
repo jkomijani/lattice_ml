@@ -30,8 +30,8 @@ def compute_staples(
 
     Currently only `sum_over_staples = True` is supported.
 
-    For each link direction 'mu', this function sums the staples in all planes
-    spanned by ('mu', 'nu') for every perpendicular direction 'nu'.
+    For each link direction 'mu', this function computes the staples in all
+    planes spanned by ('mu', 'nu') for every perpendicular direction 'nu'.
     The results are stacked along the link-axis dimension, producing a tensor
     with the same shape as `x`.
 
@@ -102,7 +102,8 @@ def compute_directional_staples(
     sites_before_link: bool = True,
     sum_over_staples: bool = True
 ):
-    """Compute the staples in the mu-nu planes for a given link direction `mu`.
+    """Compute the staples in the mu-nu planes for a given link direction `mu`
+    and all perpendicular directions listed in `nu_list`.
 
     Staples are 3-link paths forming a 'staple' shape adjacent to a central
     link, used in the Wilson gauge action in lattice gauge theory. The upper
@@ -125,7 +126,7 @@ def compute_directional_staples(
     mu : int
         The index of the link direction along which the staples are computed.
     nu_list : list of int
-        List of perpendicular directions `nu` over which to sum the staples.
+        List of perpendicular directions over which to calculate the staples.
     prefix_dims : int, default=1
         Number of leading batch and channel dimensions in the tensor.
         For example, if x.shape = (batch, channel, Lx, Ly, Lz, Lt, mu, Nc, Nc),
@@ -144,9 +145,9 @@ def compute_directional_staples(
             Contains the sum of staples for links in direction mu.
             Shape is the same as x, except the link-direction axis is removed.
         If sum_over_staples=False:
-            Contains individual planar staples for each ν, including both upper
-            and lower contributions. The planar staples are stacked along a new
-            axis inserted at `prefix_dims`.
+            Contains individual planar staples for each nu direction, including
+            both upper and lower contributions. The planar staples are stacked
+            along a new axis inserted at `prefix_dims`.
     """
     kws = {
         'prefix_dims': prefix_dims,
