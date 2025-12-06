@@ -7,31 +7,33 @@ This module provides gauge-equivariant layers that update lattice gauge links
 using short Wilson lines starting at the tail of a link and ending at its head.
 """
 
-from typing import List
 import torch
 
-from .wilson_staples import compute_planar_staples
+from .wilson_staples import compute_staples
+from .time_embedding import TimeEmbeddedWeight
 
 
-__all__ = ["GaugeLinkConv"]
+__all__ = ["GaugeLinkConv", "TimeEmbeddedStapleLayer"]
 
 matmul = torch.matmul
 
 
 # =============================================================================
 class GaugeLinkConv(torch.nn.Module):
-    """
-    Gauge-equivariant link convolution layer for lattice gauge fields.
+    """Gauge-equivariant link convolution layer for lattice gauge fields.
 
-    GaugeLinkConv updates gauge links using gauge-covariant combinations of
-    short Wilson lines (paths along links) starting at the tail of each link
-    and ending at the head. The layer maintains gauge covariance by combining
-    contributions from allowed paths containing the staples and of length <= 5,
-    weighted by learnable parameters.
+    GaugeLinkConv updates gauge links using gauge-covariant linear combinations
+    of Wilson staples. Only nearby links are mixed, similar to a convolution in
+    standard ML layers. The linear weights are time-dependent, allowing dynamic
+    evolution of the gauge links.
 
-    Unlike the original gauge link variables, the output of this layer is not
-    necessarily unitary, but it transforms under gauge transformations in the
-    same way as the original link variables.
+    The name reflects that it is:
+        - Gauge-covariant (preserves link transformations)
+        - Operates on links (not plaquettes or other lattice objects)
+        - Convolution-like (local aggregation over nearby staples)
+
+    The output is not unitary, but is scaled so its Frobenius norm equals
+    sqrt(n_c), as in unitary matrices.
 
     Note:
         Tensors are expected by default to have spatial lattice axes before
@@ -43,8 +45,7 @@ class GaugeLinkConv(torch.nn.Module):
         processing and/or removed afterwards. This allows layers to operate in
         both channel-free and channel-based architectures.
 
-        This cannot be used for U(1). If needed one should change the value of
-        `_link_axis` and also use an approprirate `compute_planar_staples`.
+        This cannot be used for U(1).
     """
 
     def __init__(
@@ -52,139 +53,193 @@ class GaugeLinkConv(torch.nn.Module):
         in_channels: int | None,
         out_channels: int | None,
         spatial_ndim: int,
-        sites_before_link: bool = True
+        sites_before_link: bool = True,
+        sum_over_staples: bool = False,
+        normalize_output: bool = True
     ):
-        """
-        Initialize the GaugeLinkConv module.
+        """Initialize the GaugeLinkConv module.
 
         Parameters
         ----------
-        in_channels : int | None
-            Number of input feature channels per link. If None, a singleton
-            channel axis is automatically added to the input.
-        out_channels : int | None
-            Number of output feature channels per link. If None, a singleton
-            channel axis of output is automatically removed.
-        spatial_ndim : int
+        in_channels: int | None
+            Number of input channels. If None, a singleton channel is added.
+        out_channels: int | None
+            Number of output channels. If None, a singleton channel is removed.
+        spatial_ndim: int
             Number of spatial dimensions of the lattice.
-        sites_before_link : bool, default=True
+        sites_before_link: bool, default=True
             Whether spatial lattice axes come before the link axis.
+        sum_over_staples: bool, default=False
+            Whether to sum over all staples instead of keeping them separate.
+        normalize_output: bool, default=True
+            Whether to normalize the output to have Frobenius norm sqrt(n_c).
         """
         super().__init__()
-        self.spatial_ndim = spatial_ndim
 
         self.true_in_channels = in_channels
         self.true_out_channels = out_channels
         self.in_channels = 1 if in_channels is None else in_channels
         self.out_channels = 1 if out_channels is None else out_channels
+        self.normalize_output = normalize_output
 
-        self.sites_before_link = sites_before_link
-        self._link_axis = -3 if sites_before_link else 2  # 2: batch & channel
+        self.wilson_staple_linear = TimeEmbeddedStapleLayer(
+            self.in_channels,
+            4 * self.out_channels,
+            spatial_ndim,
+            sites_before_link,
+            sum_over_staples
+        )
 
-        # Learnable weight tensor for each valid (mu, nu) pair
-        ndim = spatial_ndim
-        shape = (ndim, 2*(ndim-1), self.out_channels, self.in_channels, 2)
-        scale = 0.01
-        self.weight = torch.nn.Parameter(torch.randn(*shape) * scale)
+    def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass.
+        Args:
+           x (torch.Tensor): Tensor containing the gauge links.
 
-        Parameters
-        ----------
-        x : torch.Tensor
-            Tensor containing the gauge links.
-
-        Returns
-        -------
-        torch.Tensor
-            Updated gauge field tensor with the same shape as `x`.
+        Returns:
+            torch.Tensor: Updated gauge field tensor with the same shape as x.
         """
         # Add a channel dimension if input channels are None
         if self.true_in_channels is None:
             x = x.unsqueeze(1)
 
-        # Allocate output tensor
-        spatial_ndim = self.spatial_ndim
-        link_axis = self._link_axis
+        staples = self.wilson_staple_linear(t, x)
+        # Note that the number of channels in staples is twice of out_channels
 
-        x_unbound = torch.unbind(x, dim=link_axis)
+        s_1, s_2, s_3, s_4 = torch.tensor_split(staples, 4, dim=1)
 
-        output_stack: List[torch.Tensor] = [None] * spatial_ndim
+        if self.in_channels > 1:
+            x = x.mean(dim=1, keepdim=True)
 
-        # Loop over lattice directions
-        for mu in range(spatial_ndim):
-            x_mu = x_unbound[mu]
+        trace_plaqs = torch.einsum('...ii->...', - s_3.adjoint() @ x + x @ s_4)
 
-            shape = (x_mu.shape[0], 2 * self.out_channels, *x_mu.shape[2:])
-            staples = torch.zeros(shape, dtype=x.dtype, device=x.device)
+        x = x + trace_plaqs[..., None, None] / 3 * x
 
-            ind = 0  # index for weight slices (ind+=2 for each valid nu != mu)
-            for nu in range(spatial_ndim):
-                if nu == mu:
-                    continue
-
-                # Compute planar staples (upper + lower) along mu-nu plane
-                planar_staples = compute_planar_staples(
-                    x, mu, nu,
-                    prefix_dims=2,
-                    sites_before_link=self.sites_before_link,
-                    return_sum=True
-                )
-
-                # Learnable weights for this mu-nu pair, reshape, & complexify
-                w = self.weight[mu, ind:ind+2].reshape(-1, self.in_channels, 2)
-                w = torch.view_as_complex(w)
-
-                # Sum contributions from weighted staples
-                staples += einsum(planar_staples, w)
-                ind += 2
-
-            # Average over input channels for this link direction if needed
-            if self.in_channels > 1:
-                x_mu = x_mu.mean(dim=1, keepdim=True)
-
-            s_1, s_2 = torch.tensor_split(staples, 2, dim=1)
-
-            # Covariant update of the link
-            output_stack[mu] = x_mu + s_1.adjoint() + x_mu @ s_2 @ x_mu
-
-        x_updated = torch.stack(output_stack, dim=link_axis)
+        # Covariant update of the link
+        if self.normalize_output:
+            x = normalize_matrix(x + s_1.adjoint() - x @ s_2 @ x)
+        else:
+            x = x + s_1.adjoint() - x @ s_2 @ x
 
         # Remove the added channel dimension if necessary
         if self.true_out_channels is None:
-            x_updated = x_updated.squeeze(1)
+            x = x.squeeze(1)
 
-        return x_updated
-
-    def set_param2zero(self):
-        """Set all trainable parameters to zero."""
-        torch.nn.init.zeros_(self.weight)
-
-    def set_param2normal(self, mean: float = 0.0, std: float = 1.0):
-        """Set all trainable parameters to Gaussian with given mean and std."""
-        torch.nn.init.normal_(self.weight, mean=mean, std=std)
+        return x
 
 
 # =============================================================================
-def einsum(x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+class TimeEmbeddedStapleLayer(torch.nn.Module):
     """
-    Applies a linear transformation over the channel dimension using einsum.
+    Computes Wilson staples from gauge links and mixes them using a
+    time-dependent linear map.
 
-    Parameters:
-        x (Tensor): Input tensor of shape (B, C_in, *), where * represents any
-            number of spatial or additional dimensions.
-        w (Tensor): Weight tensor of shape (C_out, C_in), representing the
-            linear mapping from input to output channels.
+    Note:
+        By default, lattice-site axes are assumed to come before the link axis
+        (`sites_before_link=True`). Set to False if the link axis comes first.
 
-    Returns:
-        Tensor: Output tensor of shape (B, C_out, *), with the same shape as
-            x but with C_out channels instead of C_in.
+        Inputs `in_channels` and/or `out_channels` may be None; in that case
+        a singleton channel is added or removed automatically.
+
+        Cannot be used for U(1). If needed, use appropriate 'compute_staples'.
     """
-    bsize, c_in = x.shape[:2]
-    out = torch.einsum('bcn,oc->bon', x.reshape(bsize, c_in, -1), w)
-    return out.view(bsize, -1, *x.shape[2:])
+    def __init__(
+        self,
+        in_channels: int | None,
+        out_channels: int | None,
+        spatial_ndim: int,
+        sites_before_link: bool = True,
+        sum_over_staples: bool = False,
+    ):
+        """Initialize the GaugeLinkConv module.
+
+        Parameters
+        ----------
+        in_channels: int | None
+            Number of input channels. If None, a singleton channel is added.
+        out_channels: int | None
+            Number of output channels. If None, a singleton channel is removed.
+        spatial_ndim : int
+            Number of spatial lattice dimensions.
+        sites_before_link : bool, default=True
+            Whether spatial lattice axes come before the link axis.
+        sum_over_staples: bool, default=False
+            Whether to sum over all staples instead of keeping them separate.
+        """
+        super().__init__()
+
+        self.spatial_ndim = spatial_ndim
+        self.sites_before_link = sites_before_link
+        self.sum_over_staples = sum_over_staples
+
+        # Remember user-specified channels
+        self.true_in_channels = in_channels
+        self.true_out_channels = out_channels
+
+        # Actual channel dimensions used in computation
+        self.in_channels = 1 if in_channels is None else in_channels
+        self.out_channels = 1 if out_channels is None else out_channels
+
+        # Number of staples per link: 2 staples for each transverse direction
+        if self.sum_over_staples:
+            num_staples = 1
+        else:
+            num_staples = 2 * (spatial_ndim - 1)
+
+        # Learnable time-dependent weight tensor
+        weight_shape = (self.out_channels, self.in_channels * num_staples)
+        self.weight_fn = TimeEmbeddedWeight(weight_shape=weight_shape)
+
+    def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        """Apply the time-dependent linear staple map to gauge links.
+
+        Args:
+           x (torch.Tensor): Tensor containing the gauge links.
+
+        Returns:
+            torch.Tensor: Computed link-like tensor with the same shape as x.
+        """
+        # Insert channel dimension if needed
+        if self.true_in_channels is None:
+            x = x.unsqueeze(1)
+
+        # Compute staples
+        staples = compute_staples(
+            x,
+            prefix_dims=2,
+            sites_before_link=self.sites_before_link,
+            sum_over_staples=self.sum_over_staples,
+        )
+
+        if not self.sum_over_staples:
+            # Flatten staple and channel dims
+            # staples: (B, C_in, n_staples, ...) -> (B, C_in*n_staples, ...)
+            staples = staples.flatten(start_dim=1, end_dim=2)
+
+        # Linear map: (B, F, ...) -> (B_out, F_out, ...)
+        weight = self.weight_fn(t) + 0j
+        staples = torch.einsum('bi...,boi->bo...', staples, weight)
+
+        # Remove channel if out_channels=None
+        if self.true_out_channels is None:
+            staples = staples.squeeze(1)
+
+        return staples
+
+
+# =============================================================================
+def normalize_matrix(x: torch.Tensor) -> torch.Tensor:
+    """
+    Normalize matrices by their Frobenius norm scaled by sqrt(n_c) and averaged
+    over channels.
+
+    For unitary matrices this scale is one, so the output is unchanged.
+    """
+    n_c = x.shape[-1]
+    norm = torch.linalg.matrix_norm(x, keepdim=True) / n_c ** 0.5
+    norm = torch.mean(norm, dim=1, keepdim=True)
+    norm = norm.clamp_min(1e-12)  # avoid division by accidental zero
+    return x / norm
 
 
 # =============================================================================
