@@ -55,7 +55,8 @@ class GaugeLinkConv(torch.nn.Module):
         spatial_ndim: int,
         sites_before_link: bool = True,
         sum_over_staples: bool = False,
-        normalize_output: bool = True
+        normalize_output: bool = True,
+        **time_embed_kwargs
     ):
         """Initialize the GaugeLinkConv module.
 
@@ -73,6 +74,8 @@ class GaugeLinkConv(torch.nn.Module):
             Whether to sum over all staples instead of keeping them separate.
         normalize_output: bool, default=True
             Whether to normalize the output to have Frobenius norm sqrt(n_c).
+        **time_embed_kwargs:
+            Additional options to pass to `TimeEmbeddedWeight`.
         """
         super().__init__()
 
@@ -87,7 +90,8 @@ class GaugeLinkConv(torch.nn.Module):
             4 * self.out_channels,
             spatial_ndim,
             sites_before_link,
-            sum_over_staples
+            sum_over_staples,
+            **time_embed_kwargs
         )
 
     def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -150,6 +154,7 @@ class TimeEmbeddedStapleLayer(torch.nn.Module):
         spatial_ndim: int,
         sites_before_link: bool = True,
         sum_over_staples: bool = False,
+        **time_embed_kwargs
     ):
         """Initialize the GaugeLinkConv module.
 
@@ -165,6 +170,8 @@ class TimeEmbeddedStapleLayer(torch.nn.Module):
             Whether spatial lattice axes come before the link axis.
         sum_over_staples: bool, default=False
             Whether to sum over all staples instead of keeping them separate.
+        **time_embed_kwargs:
+            Additional options to pass to `TimeEmbeddedWeight`.
         """
         super().__init__()
 
@@ -188,7 +195,10 @@ class TimeEmbeddedStapleLayer(torch.nn.Module):
 
         # Learnable time-dependent weight tensor
         weight_shape = (self.out_channels, self.in_channels * num_staples)
-        self.weight_fn = TimeEmbeddedWeight(weight_shape=weight_shape)
+        self.weight_fn = TimeEmbeddedWeight(
+            weight_shape=weight_shape,
+            **time_embed_kwargs
+        )
 
     def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """Apply the time-dependent linear staple map to gauge links.
