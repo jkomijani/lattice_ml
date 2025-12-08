@@ -159,27 +159,52 @@ def _integrate_with_eval(
     fn_eval: Callable | None,
 ) -> Tuple[TensorOrArray]:
     """
-    Helper for odeint that integrates the ODE and records results at specified
-    evaluation times (`t_eval`).
+    Integrate an ODE along a monotonic, uniform time grid and record values at
+    specified evaluation times `t_eval`. The time grid is assumed monotonic
+    (either increasing or decreasing) with constant increments `step_size`.
+
+    Requirements:
+      * `time_grid` has at least two points and is uniformly spaced.
+      * `t_eval` is monotonic and lies entirely within `time_grid`; onsecutive
+        values in `t_eval` differ by at least `step_size` in magnitude.
 
     See `odeint` for parameter details.
     """
+    if t_eval[0] < torch.min(time_grid) or t_eval[0] > torch.max(time_grid):
+        raise ValueError("t_eval must be monotonic and within time_grid.")
+
+    for i in range(len(t_eval) - 1):
+        if (t_eval[i+1] - t_eval[i]) / step_size < 1:
+            raise ValueError("Increament in t_eval is smaller than step size!")
+
     out_eval = []  # Stores evaluated states or fn_eval outputs
     ind_eval = 0  # Index for current evaluation time
 
     for t in time_grid:
-        # Note that the loop breaks once t reaches t_eval[-1]
+        # Stop once all evaluation times have been processed
         if len(t_eval) <= ind_eval:
             break
+
+        # Distance from current grid time to next evaluation time
         delta_t = t_eval[ind_eval] - t
-        # Check if next t_eval lies within the current step interval
-        if delta_t * (delta_t - step_size) <= 0:
-            # Integrate up to t_eval and record result
+
+        # Detect whether t_eval falls within the current step interval.
+        # Condition holds if:
+        #   step_size > 0 and delta_t <= step_size, or
+        #   step_size < 0 and delta_t >= step_size.
+        if step_size * (delta_t - step_size) <= 0:
+            # Take a (partial) step to exactly reach t_eval & recoder result
             y_eval_ = ode_step(func, t, y, delta_t, *args)
             out_eval.append(y_eval_ if fn_eval is None else fn_eval(y_eval_))
             ind_eval += 1
-        # Advance one integration step
-        y = ode_step(func, t, y, step_size, *args)
+
+        # Advance one full step unless the partial step already did so.
+        # If delta_t == step_size, the partial step exactly equals one full
+        # grid increment, so reuse y_eval_ instead of integrating again
+        if delta_t == step_size:
+            y = y_eval_
+        else:
+            y = ode_step(func, t, y, step_size, *args)
 
     return tuple(out_eval)
 
