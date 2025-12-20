@@ -4,8 +4,6 @@
 This module has functions for projection of matrices onto U(N) and SU(N).
 """
 
-# pylint: disable=no-member
-
 import torch
 from lattice_ml.linalg import svd
 
@@ -14,7 +12,8 @@ __all__ = [
     "project_onto_unitary",
     "project_onto_special_unitary",
     "project_onto_su2",
-    "naive_project_onto_su3"
+    "naive_project_onto_su3",
+    "jacobi_project_onto_su3"
 ]
 
 
@@ -22,8 +21,8 @@ def project_onto_unitary(matrix):
     """
     Project a square matrix onto the closest unitary matrix using SVD.
 
-    This function computes the singular value decomposition (SVD) of the input
-    matrix M and reconstructs the unitary matrix Q that maximizes Re Tr(Q† M).
+    This function computes the unitary matrix Q that maximizes `ReTr(Q† M)` for
+    the input matrix M using the singular value decomposition (SVD) of M.
 
     Parameters
     ----------
@@ -33,7 +32,7 @@ def project_onto_unitary(matrix):
     Returns
     -------
     torch.tensor
-        The closest unitary matrix.
+        The closest U(n) matrix Q that maximizes `ReTr(Q† M)` for the input M.
     """
     svd_ = svd(matrix)
     return svd_.U @ svd_.Vh
@@ -42,11 +41,18 @@ def project_onto_unitary(matrix):
 def project_onto_special_unitary(matrix):
     """
     Project a square matrix onto the closest special unitary matrix using SVD.
+    (See the comment below.)
 
-    This function first projects the input matrix onto the unitary group
-    (using SVD), then rescales it by a global phase factor so that its
-    determinant is 1. Equivalently, it finds Q ∈ SU(n) that maximizes
-    Re Tr(Q† M).
+    This function computes the SU(n) matrix Q that maximizes `ReTr(Q† M)` for
+    the input matrix M. To this end, this function first projects M onto the
+    unitary group (using SVD), then rescales it by a global phase factor so
+    that its determinant is 1.
+
+    **Comment**:
+        Rescaling by a global phase does not maximize `ReTr(Q† M)`.
+        In order to maximize it, one must choose a diagonal unitary matrix
+        such that `U D V†` is SU(n) and `ReTr(D† S)` is maximized.
+        This function does not currently do what is supposed to do.
 
     Parameters
     ----------
@@ -56,7 +62,7 @@ def project_onto_special_unitary(matrix):
     Returns
     -------
     torch.Tensor
-        The closest special unitary matrix.
+        The closest SU(n) matrix Q that maximizes `ReTr(Q† M)` for the input M.
     """
     q = project_onto_unitary(matrix)
     rdet_angle = torch.angle(torch.linalg.det(q)) / q.shape[-1]
@@ -76,10 +82,10 @@ def project_onto_su2(matrix):
     Returns
     -------
     torch.Tensor
-        The closest SU(2) matrix.
+        The closest SU(2) matrix Q that maximizes `ReTr(Q† M)` for the input M.
     """
 
-    # The SU(2) matrix is represented as v0 + i * Sum_j (sigma_j * vj)
+    # The SU(2) matrix is represented as v0 + i * sum_j (sigma_j * vj)
     #
     #     | A+iB     C+iD |
     # M = |               |
@@ -88,9 +94,9 @@ def project_onto_su2(matrix):
     #   = 1/2*[ (A+G)*I + i*(B-H)*sigma_z + i*(F+D)*sigma_x + i*(C-E)*sigma_y ]
     #   + i/2*[ (B+H)*I - i*(A-G)*sigma_z - i*(C+E)*sigma_x - i*(F-D)*sigma_y ]
     #
-    # The second line does not contribute to `Re Tr (Q^\dagger W)`, so we drop
-    # it. When the first line is identical to zero, we simply assign
-    # the identity matrix as the projection of M onto SU(2).
+    # The second line does not contribute to ReTr(Q† M), so we drop it.
+    # When the first line is identical to zero, we simply assign the identity
+    # matrix as the projection of M onto SU(2).
 
     v0 = matrix[..., 0, 0].real + matrix[..., 1, 1].real
     v3 = matrix[..., 0, 0].imag - matrix[..., 1, 1].imag
@@ -117,9 +123,10 @@ def naive_project_onto_su3(y):
     """
     Naively projects a 3x3 complex matrix to SU(3) by orthonormalizing rows.
 
-    This method assumes the input matrix is close to the identity. It first
-    orthonormalizes the first two rows, then reconstructs the third row to
-    enforce unitarity and determinant = 1.
+    This function compute the SU(3) matrix Q that approximately maximizes
+    `ReTr(Q† M)` for the input matrix M. This method works well if M is close
+    to a unitary matrix. It first orthonormalizes the first two rows, then
+    reconstructs the third row to enforce unitarity and determinant = 1.
 
     Notes:
     1. Although not necessary, the matrix is initially normalized to ensure
@@ -168,3 +175,80 @@ def naive_project_onto_su3(y):
     y = torch.stack((y_0, y_1, y_2), dim=-2)
 
     return y
+
+
+def jacobi_project_onto_su3(matrix, n_hits=2):
+    """
+    Project an 3x3 matrix onto SU(3) using a method based on Jacobi's method,
+    by iterative hiting in three diagonal SU(2) subgroups.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        Input complex or real matrix of shape (..., 3, 3).
+
+    n_hits: int
+        Number of SU(3) hits (default is 2).
+
+    Returns
+    -------
+    torch.Tensor
+        The closest SU(3) matrix Q that maximizes `ReTr(Q† M)` for the input M.
+    """
+    # This code is developed following `project_su3_hit.c` in the `MILC code`_,
+    # .. _MILC code: http://physics.utah.edu/~detar/milc.html
+
+    omega_dagger = naive_project_onto_su3(matrix).adjoint()  # initial guess
+    for _ in range(n_hits):
+        # In Jacobi's method the largest off-diagonal term must be selected.
+        # Instead, we simply repeat over all three SU(2) subgroups.
+        for ind in range(3):
+            p = ind % 3
+            q = (ind + 1) % 3
+            if p > q:
+                p, q = q, p
+            omega_dagger = _project_su2_hit(omega_dagger, matrix, p=p, q=q)
+    return omega_dagger.adjoint()
+
+
+def _project_su2_hit(omega_dagger, matrix, p=0, q=1):
+    # Decompose the (p, q) subgroups of V = Q† M using Pauli matrices,
+    # with a method similar to the one used in ``project_onto_su2``.
+
+    # The SU(2) hit matrix is represented as v0 + i * sum_j (sigma_j * vj)
+    #
+    #     | A+iB     C+iD |
+    # M = |               |
+    #     | E+iF     G+iH |
+    #
+    #   = 1/2*[ (A+G)*I + i*(B-H)*sigma_z + i*(F+D)*sigma_x + i*(C-E)*sigma_y ]
+    #   + i/2*[ (B+H)*I - i*(A-G)*sigma_z - i*(C+E)*sigma_x - i*(F-D)*sigma_y ]
+    #
+    # The second line does not contribute to ReTr(Q† M), so we drop it.
+    # When the first line is identical to zero, we simply assign the identity
+    # matrix as the projection of M onto SU(2).
+
+    v = omega_dagger @ matrix
+
+    v0 = v[..., p, p].real + v[..., q, q].real
+    v3 = v[..., p, p].imag - v[..., q, q].imag
+    v1 = v[..., p, q].imag + v[..., q, p].imag
+    v2 = v[..., p, q].real - v[..., q, p].real
+
+    v_sq = v0**2 + v1**2 + v2**2 + v3**2
+
+    h = torch.zeros_like(v)  # for the SU(2) hit
+    for i in range(h.shape[-1]):
+        h[..., i, i] = 1
+
+    r = 1 / v_sq**0.5  # for normalization
+
+    # TODO: zero v_sq is not yet taken into account
+
+    h[..., p, p] = (v0 - v3 * 1J) * r
+    h[..., p, q] = (-v2 - v1 * 1J) * r
+    h[..., q, p] = (v2 - v1 * 1J) * r
+    h[..., q, q] = (v0 + v3 * 1J) * r
+    omega_dagger = h @ omega_dagger
+
+    return omega_dagger
