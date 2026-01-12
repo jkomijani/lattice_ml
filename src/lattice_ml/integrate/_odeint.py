@@ -174,7 +174,7 @@ def _integrate_with_eval(
         raise ValueError("t_eval must be monotonic and within time_grid.")
 
     for i in range(len(t_eval) - 1):
-        if (t_eval[i+1] - t_eval[i]) / step_size < 1:
+        if torch.round((t_eval[i+1] - t_eval[i]) / step_size) < 1:
             raise ValueError("Increament in t_eval is smaller than step size!")
 
     out_eval = []  # Stores evaluated states or fn_eval outputs
