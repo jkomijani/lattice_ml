@@ -378,21 +378,30 @@ def delta_from_rk4_step(func, t, var, dt, *args):
     return (k_1 + 2 * k_2 + 2 * k_3 + k_4) * (dt / 6)
 
 
-def anti_hermitian_traceless(mtrx: torch.Tensor) -> torch.Tensor:
+def anti_hermitian_traceless(x: torch.Tensor) -> torch.Tensor:
     """
-    Project a square matrix (or batch of matrices) onto the Lie algebra su(n).
+    Project the input onto the space of traceless anti-Hermitian matrices.
 
-    This function returns an anti-Hermitian, traceless version of the input
-    matrix `mtrx`.
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input tensor with square matrices in the last two dimensions.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of the same shape as `x`, where each matrix is projected to be
+        anti-Hermitian and traceless.
     """
-    # Make anti-Hermitian
-    mtrx = (mtrx - mtrx.adjoint()) / 2.
+    # Anti-Hermitian part
+    x = (x - x.adjoint()) / 2
 
-    # Compute average diagonal value (trace / n) over the last two axes
-    reduced_trace = mtrx.diagonal(dim1=-2, dim2=-1).mean(dim=-1, keepdim=True)
+    # Remove trace
+    trace = torch.einsum("...ii->...", x)[..., None, None]
+    n = x.shape[-1]
+    eye = torch.eye(n, device=x.device, dtype=x.dtype)
 
-    # Subtract the average from the diagonal to make it traceless
-    return mtrx - torch.diag_embed(reduced_trace.expand(mtrx.shape[:-1]))
+    return x - (trace / n) * eye
 
 
 # =============================================================================
@@ -555,7 +564,6 @@ def _benchmark_construct_rk4_special_unitary():
                 command_str, number=4, globals={**globals(), **locals()}
                 ) / 4 / n
         print(f"   {command_str}: \t Execution time: {time} seconds")
-
 
     for n in [2**10, 2**15, 2**20]:
         for device in ['cpu', 'cuda']:

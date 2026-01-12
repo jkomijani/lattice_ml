@@ -160,11 +160,12 @@ def anti_hermitian_traceless(x: torch.Tensor) -> torch.Tensor:
     # Anti-Hermitian part
     x = (x - x.adjoint()) / 2
 
-    # Remove trace by subtracting identity * (trace / n_c)
-    n_c = x.shape[-1]
-    reduced_tr = torch.mean(torch.linalg.diagonal(x), dim=-1, keepdim=True)
-    mu = torch.diag_embed(torch.repeat_interleave(reduced_tr, n_c, dim=-1))
-    return x - mu
+    # Remove trace
+    trace = torch.einsum("...ii->...", x)[..., None, None]
+    n = x.shape[-1]
+    eye = torch.eye(n, device=x.device, dtype=x.dtype)
+
+    return x - (trace / n) * eye
 
 
 def compute_reduced_trace(x):  # reduced trace = 1/n trace()
