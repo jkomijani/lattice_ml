@@ -115,7 +115,7 @@ class GaugeLinkConv(torch.nn.Module):
         if self.in_channels > 1:
             x = x.mean(dim=1, keepdim=True)
 
-        trace_plaqs = torch.einsum('...ii->...', - s_3.adjoint() @ x + x @ s_4)
+        trace_plaqs = torch.einsum('...ii->...', x @ s_3 - (x @ s_4).adjoint())
 
         x = x + trace_plaqs[..., None, None] / 3 * x
 
