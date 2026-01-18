@@ -21,11 +21,61 @@ __all__ = ["Trainer"]
 
 # =============================================================================
 class Trainer:
-    """A class for training a model.
-
-    This class provides functionality for setting up and running the training
-    loop with various configurable parameters such as optimizer and scheduler.
     """
+    High-level orchestration for model training.
+
+    Overview:
+        This class serves a role similar to a lightweight PyTorch Lightning
+        Trainer. It manages the training loop, epoch tracking, optimizer and
+        scheduler configuration, and distributed execution, while delegating
+        model-specific logic to the model's `training_step` method.
+
+    Key features:
+        - Unified interface for single-device and multi-device (DDP) training
+        - Centralized optimizer and scheduler configuration
+        - Automatic device placement and process coordination
+        - Checkpoint loading and saving (rank-safe in distributed mode)
+        - Pluggable logging backend with sensible defaults
+        - Deterministic and reproducible training via seed management
+
+    Design assumptions:
+        - The model implements a `training_step(batch) -> loss` method
+        - The training dataloader yields batches compatible with the model
+
+    Device selection:
+        Single- or multi-GPU execution is determined automatically based on the
+        runtime environment and launch method. When the script is launched via
+        ``torchrun`` and the environment variable ``WORLD_SIZE`` is greater
+        than 1, the Trainer uses Distributed Data Parallel (DDP) for multi-GPU
+        training. When launched via standard ``python`` (or when
+        ``WORLD_SIZE == 1``), training runs in a single process on one device
+        (GPU if available, CPU otherwise).
+
+    Training configuration:
+        Training-related configuration (e.g. optimizer, scheduler, and
+        hyperparameters) can be provided either at initialization time or
+        when calling `run_training`. Configuration passed to `run_training`
+        overrides values specified during initialization.
+
+    Typical usage:
+        >>> model = MyModel()
+        >>> trainer = Trainer(model)
+        >>> trainer.run_training(
+        ...     training_dataloader=train_loader,
+        ...     n_epochs=10,
+        ...     optimizer_class=torch.optim.AdamW,
+        ...     hyperparam={"lr": 3e-4},
+        ...     save_checkpoint_path="model.pt",
+        ... )
+
+    Responsibilities:
+        - Maintain training state (epochs, optimizers, schedulers)
+        - Configure and apply optimization strategies
+        - Execute training loops (single-process or DDP)
+        - Persist and restore model checkpoints
+        - Coordinate logging and progress reporting
+    """
+
     def __init__(
         self,
         model: torch.nn.Module,
@@ -41,6 +91,15 @@ class Trainer:
                 optimizer_class: Callable = torch.optim.AdamW
                 scheduler_class: Callable | None = None
                 hyperparam: Dict = {}
+
+        Notes:
+            Training configuration can be supplied either at initialization
+            or when calling `run_training`. If the same configuration key is
+            provided in both places, the value passed to `run_training` takes
+            precedence.
+
+            This design allows static (Lightning-style) configuration as well
+            as dynamic, run-specific overrides.
         """
         self.model = model
         self.current_epoch = 0
@@ -68,11 +127,20 @@ class Trainer:
         """Run the training workflow (distributed or non-distributed).
 
         This method performs the following steps:
+        - Selects between single-process and Distributed Data Parallel (DDP)
+          execution based on the current environment.
         - Loads a checkpoint if a `load_checkpoint_path` is provided.
         - Sets up the optimizer, scheduler, and other training components.
         - Runs the training loop for the specified number of epochs.
         - Saves a checkpoint after training if a `save_checkpoint_path` is
           provided (only on the main process when using distributed training).
+
+        Args:
+            training_dataloader: DataLoader providing training batches.
+            n_epochs (int): Number of epochs to train for.
+            **config: Optional training configuration. These parameters update
+               or replace any configuration provided at initialization time
+               (e.g. optimizer, scheduler, hyperparameters, logging name).
         """
         t_0 = time.time()
         if self.device_handler.world_size == 1:
@@ -563,7 +631,7 @@ def print_model_info(model):
     trainable_params = sum(p.numel() for p in parameters if p.requires_grad)
     non_trainable_params = total_params - trainable_params
 
-    def format(i, a, b, c, d):
+    def print_format(i, a, b, c, d):
         print(f"{i} | {a[:10]:<10} | {b[:20]:<20} | {c:<6} | {d}")
 
     print("\n  | Name       | Type                 | Params | Mode ")
@@ -571,7 +639,7 @@ def print_model_info(model):
     for i, (name, module) in enumerate(model.named_children()):
         params = sum(p.numel() for p in module.parameters())
         mode = "train" if module.training else "eval"
-        format(i, name, type(module).__name__, params, mode)
+        print_format(i, name, type(module).__name__, params, mode)
     print("-" * 54)
     print(f"{trainable_params}\tTrainable params")
     print(f"{non_trainable_params}\tNon-trainable params")
