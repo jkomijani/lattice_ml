@@ -182,6 +182,15 @@ class Trainer:
         )
 
         for self.current_epoch in progress:
+            # -----------------------------
+            # If using DistributedSampler, we must call `set_epoch(epoch)` at
+            # the start of each epoch. Otherwise, all ranks shuffle the dataset
+            # identically across epochs, reducing statistical diversity.
+            sampler = self.training_dataloader.sampler
+            if isinstance(sampler, torch.utils.data.DistributedSampler):
+                sampler.set_epoch(self.current_epoch)
+            # -----------------------------
+
             loss = self.training_epoch()
             self.logger.log_epoch(self.current_epoch, {'loss': loss})
             if self.scheduler is not None:
