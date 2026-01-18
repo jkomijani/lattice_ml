@@ -8,10 +8,39 @@ from torch.utils.data import DataLoader, IterableDataset
 
 
 __all__ = [
+    'PairedDataset',
     'make_random_dataloader',
     'make_process_dataloader',
     'make_hmc_dataloader'
 ]
+
+
+class PairedDataset(Dataset):
+    """
+    Dataset returning a pair of samples (x0, x1) for paired-data tasks.
+
+    Can be used in Flow Matching, where training requires data at endpoints.
+
+    Args:
+        dataset_x0 (Dataset): Dataset for the first endpoint (x0).
+        dataset_x1 (Dataset): Dataset for the second endpoint (x1).
+
+    __getitem__ returns:
+        x0: sample from dataset_x0 at the given index
+        x1: random sample from dataset_x1
+    """
+    def __init__(self, dataset_x0, dataset_x1):
+        self.dataset_x0 = dataset_x0
+        self.dataset_x1 = dataset_x1
+
+    def __len__(self):
+        return len(self.dataset_x0)
+
+    def __getitem__(self, idx):
+        x0 = self.dataset_x0[idx]
+        j = torch.randint(0, len(self.dataset_x1), (1,)).item()
+        x1 = self.dataset_x1[j]
+        return x0, x1
 
 
 class IIDPriorDataset(IterableDataset):
