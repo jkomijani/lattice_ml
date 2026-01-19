@@ -4,11 +4,13 @@
 Dataset and DataLoader utilities for flow-matching training.
 """
 
-from torch.utils.data import DataLoader, IterableDataset
+import torch
+from torch.utils.data import DataLoader, Dataset, IterableDataset
 
 
 __all__ = [
-    'PairedDataset',
+    'IIDPriorDataset',
+    'make_paired_dataloader',
     'make_random_dataloader',
     'make_process_dataloader',
     'make_hmc_dataloader'
@@ -22,25 +24,99 @@ class PairedDataset(Dataset):
     Can be used in Flow Matching, where training requires data at endpoints.
 
     Args:
-        dataset_x0 (Dataset): Dataset for the first endpoint (x0).
-        dataset_x1 (Dataset): Dataset for the second endpoint (x1).
-
-    __getitem__ returns:
-        x0: sample from dataset_x0 at the given index
-        x1: random sample from dataset_x1
+        dataset0 (Dataset): Dataset for the first endpoint (x0).
+        dataset1 (Dataset): Dataset for the second endpoint (x1).
+        fixed_pairing (bool): If True, use a deterministic pairing.
+            If False (default), sample x1 independently at random for each x0.
     """
-    def __init__(self, dataset_x0, dataset_x1):
-        self.dataset_x0 = dataset_x0
-        self.dataset_x1 = dataset_x1
+    def __init__(self, dataset0, dataset1, fixed_pairing: bool = False):
+
+        if not (hasattr(dataset0, "__len__") and hasattr(dataset1, "__len__")):
+            raise TypeError(
+                "PairedDataset requires both datasets to have __len__. "
+                "For IterableDataset, consider PairedIterableDataset instead."
+            )
+
+        self.dataset0 = dataset0
+        self.dataset1 = dataset1
+        self.fixed_pairing = fixed_pairing
 
     def __len__(self):
-        return len(self.dataset_x0)
+        return min(len(self.dataset0), len(self.dataset1))
 
     def __getitem__(self, idx):
-        x0 = self.dataset_x0[idx]
-        j = torch.randint(0, len(self.dataset_x1), (1,)).item()
-        x1 = self.dataset_x1[j]
-        return x0, x1
+        x0 = self.dataset0[idx]
+        if self.fixed_pairing:
+            x1 = self.dataset1[idx]
+        else:
+            j = torch.randint(0, len(self.dataset1), (1,)).item()
+            x1 = self.dataset1[j]
+        return *x0, *x1
+
+
+class PairedIterableDataset(IterableDataset):
+    """
+    IterableDataset yielding paired batches (x0_batch, x1_batch).
+
+    Can be used in Flow Matching, where training requires data at endpoints.
+
+    Both dataset0 and dataset1 can be either:
+        - Dataset (finite, will be wrapped to iterable)
+        - IterableDataset (stochastic)
+
+    If the inputs are already IterableDatasets, batch_size is ignored.
+
+    Each iteration returns a tuple of batches:
+        x0_batch, x1_batch
+
+    Warning:
+        If both inputs are finite Datasets, internal batching is sequential
+        and no shuffling occurs. Use `PairedDataset` instead if shuffling is
+        required.
+    """
+
+    def __init__(self, dataset0, dataset1, batch_size: int):
+        n_non_iterables = 0
+
+        # Wrap non-iterable datasets into DatasetToIterable
+        if not isinstance(dataset0, IterableDataset):
+            dataset0 = DatasetToIterable(dataset0, batch_size)
+            n_non_iterables += 1
+        if not isinstance(dataset1, IterableDataset):
+            dataset1 = DatasetToIterable(dataset1, batch_size)
+            n_non_iterables += 1
+
+        # Warn if both are finite Datasets
+        if n_non_iterables == 2:
+            print(
+                "Warning: both inputs are finite Datasets. "
+                "Internal batching is sequential, so shuffling is disabled. "
+                "Use PairedDataset if you need shuffling."
+            )
+
+        self.dataset0 = dataset0
+        self.dataset1 = dataset1
+
+    def __iter__(self):
+        iter_x0 = iter(self.dataset0)
+        iter_x1 = iter(self.dataset1)
+
+        # Yield paired batches
+        for x0_batch, x1_batch in zip(iter_x0, iter_x1):
+            yield *x0_batch, *x1_batch
+
+
+class DatasetToIterable(IterableDataset):
+    """Wraps a finite Dataset to yield sequential batches without shuffling."""
+
+    def __init__(self, dataset: Dataset, batch_size: int):
+        self.dataset = dataset
+        self.batch_size = batch_size
+
+    def __iter__(self):
+        for i in range(0, len(self.dataset), self.batch_size):
+            batch = self.dataset[i:i + self.batch_size]  # may be a tuple!
+            yield batch  # already a tuple
 
 
 class IIDPriorDataset(IterableDataset):
@@ -141,6 +217,45 @@ class HMCDataset(IterableDataset):
         for _ in range(self.num_batches):
             self.cfgs, _ = self.hmc.step(self.cfgs)
             yield (self.cfgs,)  # yield current state as one batch
+
+
+def make_paired_dataloader(dataset0, dataset1, batch_size: int):
+    """
+    Create a DataLoader yielding paired batches (x0_batch, x1_batch).
+
+    Chooses between PairedDataset and PairedIterableDataset depending
+    on whether the inputs are Dataset or IterableDataset.
+
+    Parameters
+    ----------
+    dataset0 : Dataset or IterableDataset
+        Dataset for the first endpoint (x0).
+    dataset1 : Dataset or IterableDataset
+        Dataset for the second endpoint (x1).
+    batch_size : int
+        Batch size for training. Used only when wrapping finite Datasets.
+
+    Returns
+    -------
+    DataLoader
+        A DataLoader instance yielding tuples of batches:
+        (x0_batch, x1_batch)
+    """
+    # Determine if either input is iterable
+    is_iterable0 = isinstance(dataset0, IterableDataset)
+    is_iterable1 = isinstance(dataset1, IterableDataset)
+
+    # Choose dataset class
+    if is_iterable0 or is_iterable1:
+        # Use PairedIterableDataset
+        dataset = PairedIterableDataset(
+            dataset0, dataset1, batch_size=batch_size
+        )
+        return DataLoader(dataset, batch_size=None, shuffle=False)
+    else:
+        # Use PairedDataset
+        dataset = PairedDataset(dataset0, dataset1)
+        return DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
 
 def make_random_dataloader(prior, batch_size, num_batches):
