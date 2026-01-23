@@ -147,17 +147,13 @@ def integrate_denoising_sde(
 
     noise_scale = 2 ** 0.5  # to pass to the corrector
 
-    # Apply predictor and corrector at each time step except the final one
+    # Apply predictor and corrector at each time step
     out_list = [y]
-    for t in time_grid[:-2]:
+    for t, next_t in zip(time_grid[:-1], time_grid[1:]):
         y = predictor(drift_fn, t, y, step_size)
         for _ in range(num_langevin_iters):
-            y = corrector(score_fn, t, y, langevin_step_size, noise_scale)
+            y = corrector(score_fn, next_t, y, langevin_step_size, noise_scale)
         out_list.append(y)
-
-    # Final step: apply only the predictor from t_{N-2} to t_{N-1}
-    y = predictor(drift_fn, time_grid[-2], y, step_size)
-    out_list.append(y)
 
     return out_list
 
