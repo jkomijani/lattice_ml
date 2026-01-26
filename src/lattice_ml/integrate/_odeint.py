@@ -43,7 +43,8 @@ def odeint(
     ode_step: Callable | None = None,
     t_eval: Tuple[float] | None = None,
     fn_eval: Callable | None = None,
-    loss_rate: Callable | None = None
+    loss_rate: Callable | None = None,
+    corrector: Callable | None = None
 ) -> Union[TensorOrArray, Tuple[TensorOrArray, Any]]:
     """
     Solve an initial value problem for a system of ODEs.
@@ -98,6 +99,15 @@ def odeint(
         Typical uses include log-Jacobian terms in KL divergence losses or
         gradient accumulation terms in adjoint sensitivity analysis.
 
+    corrector: callable, optional
+        Optional *corrector* function applied after each predictor step to
+        refine the state without advancing time.
+
+        The corrector is intended to reduce discretization error or improve
+        sample quality, e.g., in predictor–corrector schemes. It is applied
+        after each call to `ode_step` and uses the updated time and state.
+        The function must have signature: `corrector(t, y) -> y_corrected`.
+
     Returns
     -------
     final_state : same type as y0
@@ -133,6 +143,11 @@ def odeint(
 
     y = y0
 
+    if corrector is not None:
+        return _integrate_with_corrector(
+                ode_step, func, corrector, time_grid, y, step_size, args,
+                t_eval, fn_eval
+                )
     if loss_rate is not None:
         return _integrate_with_loss(
                 ode_step, func, loss_rate, time_grid, y, step_size, args
@@ -146,6 +161,48 @@ def odeint(
         y = ode_step(func, t, y, step_size, *args)
 
     return y
+
+
+def _integrate_with_corrector(
+    ode_step: Callable,
+    func: Callable,
+    corrector: Callable,
+    time_grid: TensorOrArray,
+    y: TensorOrArray,
+    step_size: float,
+    args: Tuple,
+    t_eval: Tuple[float] | None = None,
+    fn_eval: Callable | None = None
+) -> Union[TensorOrArray, Tuple[TensorOrArray, ...]]:
+    """
+    Helper for odeint that integrates using a predictor–corrector scheme.
+
+    Each step first advances the state using `ode_step` (predictor), then
+    applies `corrector` to refine the result without advancing time.
+
+    If `t_eval` is None, only the final corrected state is returned. Otherwise,
+    intermediate states are recorded (t_eval is used only as a flag). When
+    recording, both the predicted and corrected states are included in order.
+    If `fn_eval` is provided, it is applied before storing.
+
+    See `odeint` for parameter details.
+    """
+    if t_eval is None:
+        # Apply predictor and corrector at each time step
+        for t, next_t in zip(time_grid[:-1], time_grid[1:]):
+            y = ode_step(func, t, y, step_size, *args)
+            y = corrector(next_t, y)
+        return y
+
+    # t_eval is irrelevant and used only as a flag
+    out_eval = []  # Stores states (or fn_eval outputs)
+    out_eval.append(y if fn_eval is None else fn_eval(y))  # initial state
+    for t, next_t in zip(time_grid[:-1], time_grid[1:]):
+        y = ode_step(func, t, y, step_size, *args)
+        out_eval.append(y if fn_eval is None else fn_eval(y))
+        y = corrector(next_t, y)
+        out_eval.append(y if fn_eval is None else fn_eval(y))
+    return tuple(out_eval)
 
 
 def _integrate_with_eval(
