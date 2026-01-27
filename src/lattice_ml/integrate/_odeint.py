@@ -100,12 +100,13 @@ def odeint(
         gradient accumulation terms in adjoint sensitivity analysis.
 
     corrector: callable, optional
-        Optional *corrector* function applied after each predictor step to
-        refine the state without advancing time.
+        Optional corrector function applied after each call to `ode_step`,
+        except for the final call, to refine the state without advancing
+        time.
 
         The corrector is intended to reduce discretization error or improve
-        sample quality, e.g., in predictor–corrector schemes. It is applied
-        after each call to `ode_step` and uses the updated time and state.
+        sample quality, as in predictor–corrector schemes.
+        It uses the updated time and state returned by `ode_step`.
         The function must have signature: `corrector(t, y) -> y_corrected`.
 
     Returns
@@ -177,8 +178,9 @@ def _integrate_with_corrector(
     """
     Helper for odeint that integrates using a predictor–corrector scheme.
 
-    Each step first advances the state using `ode_step` (predictor), then
-    applies `corrector` to refine the result without advancing time.
+    Each step advances the state using `ode_step` (predictor). After each
+    call to `ode_step`, except for the final call, `corrector` is applied to
+    refine the state without advancing time.
 
     If `t_eval` is None, only the final corrected state is returned. Otherwise,
     intermediate states are recorded (t_eval is used only as a flag). When
@@ -187,21 +189,31 @@ def _integrate_with_corrector(
 
     See `odeint` for parameter details.
     """
+
     if t_eval is None:
-        # Apply predictor and corrector at each time step
-        for t, next_t in zip(time_grid[:-1], time_grid[1:]):
+        # All predictor–corrector steps except the final one
+        for t, next_t in zip(time_grid[:-2], time_grid[1:-1]):
             y = ode_step(func, t, y, step_size, *args)
             y = corrector(next_t, y)
+
+        t = time_grid[-2]
+        y = ode_step(func, t, y, step_size, *args)
         return y
 
     # t_eval is irrelevant and used only as a flag
     out_eval = []  # Stores states (or fn_eval outputs)
     out_eval.append(y if fn_eval is None else fn_eval(y))  # initial state
-    for t, next_t in zip(time_grid[:-1], time_grid[1:]):
+
+    # All predictor–corrector steps except the final one
+    for t, next_t in zip(time_grid[:-2], time_grid[1:-1]):
         y = ode_step(func, t, y, step_size, *args)
         out_eval.append(y if fn_eval is None else fn_eval(y))
         y = corrector(next_t, y)
         out_eval.append(y if fn_eval is None else fn_eval(y))
+
+    t = time_grid[-2]
+    y = ode_step(func, t, y, step_size, *args)
+    out_eval.append(y if fn_eval is None else fn_eval(y))
     return tuple(out_eval)
 
 
