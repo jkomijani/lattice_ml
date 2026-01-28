@@ -8,6 +8,7 @@ from typing import Callable, Tuple, Dict
 
 import pydantic
 import torch
+import numpy as np
 
 from ._trainer import Trainer
 from ._noise_schedule import InverseTimeNoiseSchedule
@@ -97,9 +98,11 @@ class SUnDiffusionProcess(torch.nn.Module):
 
         # contribution from t = 0 if loss_c0 > 0
         if self.training_config.loss_c0 > 0:
-            score0 = self.score_fn(0 * t, x_0)
-            force0 = self.training_config.force0_fn(x_0)
-            loss0 = implicit_score_matching(score0, -force0, 1)
+            ind = np.random.randint(0, len(x_0))  # choose only one sample
+            score0 = self.score_fn(0 * t[ind:ind+1], x_0[ind:ind+1])
+            force0 = self.training_config.force0_fn(x_0[ind:ind+1])
+            res = score0 - force0
+            loss0 = torch.mean(res * res.conj()).real
             loss = loss + self.training_config.loss_c0 * loss0
 
         return loss
