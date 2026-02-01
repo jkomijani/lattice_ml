@@ -249,7 +249,12 @@ def _integrate_with_eval(
     out_eval = []  # Stores evaluated states or fn_eval outputs
     ind_eval = 0  # Index for current evaluation time
 
-    for t in time_grid:
+    # Take care of the initial point
+    if time_grid[0] == t_eval[0]:
+        out_eval.append(y if fn_eval is None else fn_eval(y))
+        ind_eval += 1
+
+    for t in time_grid[:-1]:
         # Stop once all evaluation times have been processed
         if len(t_eval) <= ind_eval:
             break
