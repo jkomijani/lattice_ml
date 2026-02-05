@@ -80,12 +80,12 @@ class WilsonGaugeAction:
 
         for mu in range(1, spatial_ndim):
             for nu in range(mu):
-                plaq = compute_reduced_trace(compute_wilson_1x1_loop(
+                plaq = compute_normalized_trace(compute_wilson_1x1_loop(
                     x, mu, nu, sites_before_link=self.sites_before_link
                 )).real
                 plaq_sum += torch.sum(plaq, dim=sum_dims)
 
-        # Note: 1 / n_c factor is already included in `compute_reduced_trace`.
+        # Note: 1 / n_c factor is already included in compute_normalized_trace
         return -self.beta * plaq_sum
 
     def force(self, x: torch.Tensor) -> torch.Tensor:
@@ -168,6 +168,6 @@ def anti_hermitian_traceless(x: torch.Tensor) -> torch.Tensor:
     return x - (trace / n) * eye
 
 
-def compute_reduced_trace(x):  # reduced trace = 1/n trace()
-    """Compute the reduced trace of the input matrix x."""
+def compute_normalized_trace(x):
+    """Compute the normalized trace (trace / n) of the input matrix x."""
     return torch.einsum('...ii->...', x) / x.shape[-1]

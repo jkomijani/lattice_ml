@@ -14,7 +14,8 @@ import torch
 
 
 __all__ = [
-    'compute_mean_reduced_trace_wilson_mxn_loop',
+    'compute_mean_normalized_trace_wilson_mxn_loop',
+    'compute_mean_reduced_trace_wilson_mxn_loop',  # for legacy
     'compute_avg_trace_wilson_mxn_loop',  # for legacy
     'compute_wilson_1x1_loop',
     'compute_wilson_1x1_loop_response',
@@ -24,7 +25,7 @@ __all__ = [
 matmul = torch.matmul
 
 
-def compute_mean_reduced_trace_wilson_mxn_loop(
+def compute_mean_normalized_trace_wilson_mxn_loop(
     x: torch.Tensor,
     n: int,
     m: int,
@@ -33,7 +34,7 @@ def compute_mean_reduced_trace_wilson_mxn_loop(
 ):
     """
     Compute rectangular Wilson loops of size m x n in all lattice planes and
-    return the mean of their reduced traces (real part).
+    return the mean of their normalized traces (real part).
 
     Parameters
     ----------
@@ -53,7 +54,7 @@ def compute_mean_reduced_trace_wilson_mxn_loop(
     Returns
     -------
     torch.Tensor
-        Mean of the real part of the reduced trace over all planes.
+        Mean of the real part of the normalized trace over all planes.
         Shape = x.shape[:prefix_dims].
     """
     # Determine the number of spatial dimensions
@@ -82,7 +83,9 @@ def compute_mean_reduced_trace_wilson_mxn_loop(
                     x, directions, prefix_dims, sites_before_link,
                 )
 
-            mean += torch.mean(compute_reduced_trace(w_mxn).real, dim=sum_dims)
+            mean += torch.mean(
+                compute_normalized_trace(w_mxn).real, dim=sum_dims
+            )
 
     # Normalize by number of planes
     num_planes = spatial_ndim * (spatial_ndim - 1)
@@ -94,6 +97,8 @@ def compute_mean_reduced_trace_wilson_mxn_loop(
 
 
 # Define another mouthful alias (for legacy)
+compute_mean_reduced_trace_wilson_mxn_loop = \
+    compute_mean_normalized_trace_wilson_mxn_loop
 compute_avg_trace_wilson_mxn_loop = compute_mean_reduced_trace_wilson_mxn_loop
 
 
@@ -343,6 +348,6 @@ def parallel_transport(
     return transporter
 
 
-def compute_reduced_trace(x):  # reduced trace = 1/n trace()
-    """Compute the reduced trace of the input matrix x."""
+def compute_normalized_trace(x):
+    """Compute the normalized trace (trace / n) of the input matrix x."""
     return torch.einsum('...ii->...', x) / x.shape[-1]
