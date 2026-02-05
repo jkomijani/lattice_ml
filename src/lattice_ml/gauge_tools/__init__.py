@@ -6,7 +6,7 @@ from .gauge_action_u1 import WilsonU1GaugeAction
 from .gauge_link_conv import GaugeLinkConv
 from .gauge_link_smear import GaugeLinkSmear
 
-import gauge_equivariant_layers
+from . import gauge_equivariant_layers
 
 from .time_embedding import *
 

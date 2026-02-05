@@ -17,7 +17,7 @@ The convolution is gauge-equivariant and works in arbitrary spatial dimension.
 from typing import Tuple
 import torch
 
-from lattice_ml.gauge_tools import compute_wilson_1x1_loop
+from .wilson_loops import compute_wilson_1x1_loop
 
 
 __all__ = ['Conv', 'Bilinear', 'Act', 'StateInitializer', 'Normalize']
