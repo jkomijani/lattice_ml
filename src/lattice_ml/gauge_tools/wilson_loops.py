@@ -17,8 +17,8 @@ __all__ = [
     'compute_mean_normalized_trace_wilson_mxn_loop',
     'compute_mean_reduced_trace_wilson_mxn_loop',  # for legacy
     'compute_avg_trace_wilson_mxn_loop',  # for legacy
-    'compute_wilson_1x1_loop',
-    'compute_wilson_1x1_loop_response',
+    'compute_planar_wilson_1x1_loop',
+    'compute_planar_wilson_1x1_loop_response',
     'parallel_transport'
 ]
 
@@ -73,7 +73,7 @@ def compute_mean_normalized_trace_wilson_mxn_loop(
                 continue  # avoid double counting
 
             if m == 1 and n == 1:
-                w_mxn = compute_wilson_1x1_loop(
+                w_mxn = compute_planar_wilson_1x1_loop(
                     x, mu, nu, prefix_dims, sites_before_link
                 )
             else:
@@ -102,7 +102,7 @@ compute_mean_reduced_trace_wilson_mxn_loop = \
 compute_avg_trace_wilson_mxn_loop = compute_mean_reduced_trace_wilson_mxn_loop
 
 
-def compute_wilson_1x1_loop(
+def compute_planar_wilson_1x1_loop(
     x: torch.Tensor,
     mu: int,
     nu: int,
@@ -153,7 +153,7 @@ def compute_wilson_1x1_loop(
     return w_11
 
 
-def compute_wilson_1x1_loop_response(
+def compute_planar_wilson_1x1_loop_response(
     x: torch.Tensor,
     w: torch.Tensor,
     mu: int,
