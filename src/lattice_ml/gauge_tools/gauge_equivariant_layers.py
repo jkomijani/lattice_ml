@@ -14,13 +14,21 @@ The convolution is gauge-equivariant and works in arbitrary spatial dimension.
 
 # pylint: disable=invalid-name
 
+
 from typing import Tuple
 import torch
 
 from .wilson_loops import compute_wilson_1x1_loop
 
 
-__all__ = ['Conv', 'Bilinear', 'Act', 'StateInitializer', 'Normalize']
+__all__ = [
+    'Conv',
+    'Bilinear',
+    'TraceConditionedNet',
+    'ColorSingletonShift',
+    'Normalize',
+    'StateInitializer'
+]
 
 
 # =============================================================================
@@ -29,8 +37,8 @@ class Conv(torch.nn.Module):
 
     def __init__(
         self,
-        in_channels: int | None,
-        out_channels: int | None,
+        in_channels: int,
+        out_channels: int,
         spatial_ndim: int,
         kernel_size: int = 3,
         sites_before_link: bool = True,
@@ -77,12 +85,12 @@ class Conv(torch.nn.Module):
         ----------
         state : (U, W)
             U : gauge links (B, ..., D, N, N) or (B, D, ..., N, N)
-            W : Wilson-like field (B, C, ..., N, N)
+            W : gauge loops (B, C, ..., N, N)
 
         Returns
         -------
         (U, W_out) : Tuple
-            Gauge field unchanged, updated feature field.
+            Gauge links unchanged, updated gauge loops.
         """
         U, W = state
 
@@ -143,13 +151,13 @@ class Bilinear(torch.nn.Module):
         state1 : (U, W1)
         state2 : (U, W2)
             U : gauge links (B, ..., D, N, N) or (B, D, ..., N, N)
-            W1 : Wilson-like field (B, C1, ..., N, N)
-            W2 : Wilson-like field (B, C2, ..., N, N)
+            W1 : gauge loops (B, C1, ..., N, N)
+            W2 : gauge loops (B, C2, ..., N, N)
 
         Returns
         -------
         (U, W_out) : Tuple
-            Gauge field unchanged, updated feature field.
+            Gauge links unchanged, updated gauge loops.
         """
         U, W1 = state1
         U, W2 = state2
@@ -172,12 +180,35 @@ class Bilinear(torch.nn.Module):
 
 
 # =============================================================================
-class Act(torch.nn.Module):
-    """Local gauge-equivariant activation layer [Eq. (7), arXiv:2012.12901]."""
+class TraceConditionedNet(torch.nn.Module):
+    """
+    Gauge-equivariant transformation conditioned on the trace invariant.
 
-    def __init__(self, act: torch.nn.Module):
+    This module extracts the trace of the Wilson-like field `W`, producing a
+    gauge-invariant complex scalar at each batch/channel/lattice location.
+    The scalar is represented as a real tensor with the innermost dimension
+    of size 2 (real and imaginary parts). This tensor is processed by `net`,
+    which can be any scalar map (e.g., neural network, linear layer, or
+    elementwise activation). The output is then interpreted as a complex
+    tensor again.
+
+    The resulting complex scalar field is lifted back to color space via the
+    identity matrix, yielding a gauge-equivariant update of `W`. The gauge
+    field `U` is left unchanged.
+
+    No external conditioning is required — the transformation depends solely
+    on gauge-invariant information extracted from `W`.
+
+    Notes
+    -----
+    - Gauge equivariance is preserved because the trace is gauge invariant and
+      the update is proportional to the identity in color space.
+    - `net` operates on real representations of the trace scalars.
+    """
+
+    def __init__(self, net: torch.nn.Module):
         super().__init__()
-        self.act = act
+        self.net = net
 
     def forward(self, state: Tuple[torch.Tensor, torch.Tensor]):
         """
@@ -185,17 +216,79 @@ class Act(torch.nn.Module):
         ----------
         state : (U, W)
             U : gauge links (B, ..., D, N, N) or (B, D, ..., N, N)
-            W : Wilson-like field (B, C, ..., N, N)
-
+            W : gauge loops (B, C, ..., N, N)
 
         Returns
         -------
         (U, W_out) : Tuple
-            Gauge field unchanged, updated feature field.
+            Gauge links unchanged, updated gauge loops.
         """
         U, W = state
+
+        # Compute the trace and apply the transformatios
         trace = torch.einsum('...ii->...', W)
-        W_out = self.act(trace)[..., None, None] * W
+        shift = torch.view_as_complex(self.net(torch.view_as_real(trace)))
+
+        # Identity in color space
+        n_c = W.shape[-1]
+        eye = torch.eye(n_c, dtype=W.dtype, device=W.device)
+
+        # Apply shift
+        W_out = W + shift[..., None, None] * eye
+
+        return U, W_out
+
+
+# =============================================================================
+class ColorSingletonShift(torch.nn.Module):
+    """
+    Gauge-equivariant identity-matrix shift applied to the color space.
+
+    Performs the linear map:
+        W = W + s · I
+
+    where `s` is a tensor broadcastable to the outer dimensions of `W` (all
+    axes except the last two color/matrix axes), and `I` is the identity in
+    color space. Singleton dimensions are automatically added if necessary.
+
+
+    Gauge equivariance is preserved because the update is proportional to the
+    identity matrix. The gauge field `U` is unchanged.
+    """
+
+    def forward(self, state, shift):
+        """
+        Parameters
+        ----------
+        state : Tuple[Tensor, Tensor]
+            U : gauge links (B, ..., D, N, N) or (B, D, ..., N, N)
+            W : gauge loops (B, C, ..., N, N)
+
+        shift : Tensor
+            Tensor broadcastable to the outer dimensions of W. Singleton
+            dimensions will be automatically added to match remaining axes.
+
+        Returns
+        -------
+        (U, W_out) : Tuple
+            Gauge links unchanged, updated gauge loops.
+        """
+        U, W = state
+
+        # Add singleton dimensions to match W if needed
+        if shift.ndim < W.ndim - 2:
+            expand_dims = W.ndim - shift.ndim
+            shift = shift.view(*shift.shape, *([1] * expand_dims))
+        elif shift.ndim > W.ndim - 2:
+            raise ValueError("shift.ndim is not consistent")
+
+        # Identity in color space
+        n_c = W.shape[-1]
+        eye = torch.eye(n_c, dtype=W.dtype, device=W.device)
+
+        # Apply shift
+        W_out = W + shift * eye
+
         return U, W_out
 
 
@@ -214,12 +307,12 @@ class Normalize(torch.nn.Module):
         ----------
         state : (U, W)
             U : gauge links (B, ..., D, N, N) or (B, D, ..., N, N)
-            W : Wilson-like field (B, C, ..., N, N)
+            W : gauge loops (B, C, ..., N, N)
 
         Returns
         -------
         (U, W_out) : Tuple
-            Gauge field unchanged, updated feature field.
+            Gauge links unchanged, updated gauge loops.
         """
         U, W = state
         n_c = W.shape[-1]
