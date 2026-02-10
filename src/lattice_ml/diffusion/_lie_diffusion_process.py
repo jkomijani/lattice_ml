@@ -94,8 +94,8 @@ class SUnDiffusionProcess(torch.nn.Module):
         # Predict the score at (t, x_t).
         score = self.score_fn(t, x_t)
 
-        # Compute loss: implicit score matching weighted by noise variance.
-        loss = implicit_score_matching(score, eps, noise_std)
+        # Compute loss: implicit score matching weighted by noise standard dev.
+        loss = implicit_score_matching_with_sdev_weight(score, eps, noise_std)
 
         # contribution from t = 0 if loss_c0 > 0
         if self.training_config.loss_c0 > 0:
@@ -316,7 +316,7 @@ class TrainingConfiguration(pydantic.BaseModel):
 
 
 # =============================================================================
-def implicit_score_matching(
+def implicit_score_matching_with_variance_weight(
     score: torch.Tensor,
     eps: torch.Tensor,
     noise_std: torch.Tensor
@@ -346,3 +346,28 @@ def implicit_score_matching(
     fluctuation = torch.mean(eps * eps.conj()).real - (n_c**2 - 1) / n_c**2
 
     return (loss - fluctuation) * n_c
+
+
+# =============================================================================
+def implicit_score_matching_with_sdev_weight(
+    score: torch.Tensor,
+    eps: torch.Tensor,
+    noise_std: torch.Tensor
+) -> torch.Tensor:
+    """Compute the implicit score matching loss.
+
+    This computes a weighted mean squared error (MSE) between the predicted and
+    the empirical conditional score at a diffusion time. The MSE is weighted by
+    the effective (cumulative) noise standard deviation at the diffusion time.
+    The pure noise contribution is excluded from the loss.
+
+    Args:
+        score (torch.Tensor): Predicted score, shape (batch_size, ...).
+        eps (torch.Tensor): Gaussian noise scaled by the standard deviation.
+        noise_std (torch.Tensor): Standard deviation of the cumulative noise.
+
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
+    loss = torch.mean((score.conj() * (noise_std * score + 2 * eps)).real)
+    return loss
