@@ -14,6 +14,7 @@ from ._trainer import Trainer
 from ._noise_schedule import InverseTimeNoiseSchedule
 
 from .gauge._randn_xxx_like import randn_special_unitary_like
+from .gauge._randn_xxx_like import randn_traceless_antihermitian_like
 from .gauge._lie_sdeint import integrate_sde
 
 
@@ -110,11 +111,15 @@ class SUnDiffusionProcess(torch.nn.Module):
     def run_for_training(self, y_0: torch.Tensor, t_eval: torch.Tensor, t_0=0):
         """Simulates the forward diffusion process for training purposes.
 
+        Applies a discretized random walk in the Lie algebra with variance
+        given by self.sigma_schedule, mapped to the group via the matrix
+        exponential.
+
         Args:
-            y_0 (torch.Tensor): The initial state of the system.
+            y_0 (torch.Tensor): The initial state of the system at time `t_0`.
             t_eval (torch.Tensor): A 1d or 0d tensor containing the evaluation
                    times. If 1d, its length must match the batch size of `y_0`.
-            t_0 (float): Initial time (default is 0).
+            t_0 (float): The initial time for the simulation. Default is 0.
 
         Returns:
             A tuple containing
@@ -127,15 +132,23 @@ class SUnDiffusionProcess(torch.nn.Module):
         # Expand t_eval dimensions to match y_0
         t_eval = t_eval.view(-1, *[1] * (y_0.ndim - 1))
 
-        # Compute the cumulative noise from 0 to t_intermediate
-        std = self.sigma_schedule.cumulative(t_0, t_eval)
-        n_steps = self.n_random_walk_steps
-        randn_grp, randn_alg = randn_special_unitary_like(y_0, std, n_steps)
+        # Time step for discretized diffusion
+        h = (t_eval - t_0) / self.n_random_walk_steps
 
-        # Simulate the diffusion process
-        y_t = randn_grp @ y_0
+        cum_randn_alg = 0
+        y_t = y_0
 
-        return y_t, randn_alg / std, std
+        # Discretized random walk in the Lie algebra
+        for m in range(self.n_random_walk_steps):
+            std = self.sigma_schedule.cumulative(t_0 + m * h, t_0 + (m+1) * h)
+            randn_alg = std * randn_traceless_antihermitian_like(y_t)
+            y_t = torch.matrix_exp(randn_alg) @ y_t
+            cum_randn_alg = cum_randn_alg + randn_alg
+
+        # Total noise scale over the full interval
+        cum_std = self.sigma_schedule.cumulative(t_0, t_eval)
+
+        return y_t, cum_randn_alg / cum_std, cum_std
 
     def forward(
         self,
