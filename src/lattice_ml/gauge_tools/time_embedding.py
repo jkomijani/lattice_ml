@@ -23,16 +23,16 @@ class TimeEmbeddedWeight(torch.nn.Module):
         weight_shape (tuple of int): Shape of the output weight tensor,
             excluding batch dimension.
         hidden_dim (int): Hidden dimension of the MLP (default 32).
-        max_freq (int): Maximum frequencey in the time encoder (default 32).
+        max_freq (int | None): Maximum frequencey in the sinusoidal encoder if
+            provided. Otherwise, a dense econder is used (default is None).
             Overlooked if `time_encoder` is provided.
-        time_encoder (torch.nn.Module): Module that encodes time.
-            Defaults to `SinusoidalEncoder(hidden_dim, max_freq=max_freq)`.
+        time_encoder (torch.nn.Module): Module that encodes time if provided.
     """
     def __init__(
         self,
         weight_shape: Tuple[int],
         hidden_dim: int = 32,
-        max_freq: int = 32,
+        max_freq: int | None = None,
         time_encoder: torch.nn.Module = None
     ):
         super().__init__()
@@ -41,7 +41,10 @@ class TimeEmbeddedWeight(torch.nn.Module):
         n_weight = int(torch.tensor(weight_shape).prod())
 
         if time_encoder is None:
-            time_encoder = SinusoidalEncoder(hidden_dim, max_freq=max_freq)
+            if max_freq is None:
+                time_encoder = DenseEncoder(hidden_dim)
+            else:
+                time_encoder = SinusoidalEncoder(hidden_dim, max_freq=max_freq)
 
         self.time_encoder = time_encoder
         time_n_embed = self.time_encoder.n_embed
@@ -153,6 +156,36 @@ class SinusoidalEncoder(torch.nn.Module):
 
         out_shape = (*t.shape, self.n_embed, *(1,) * self.inner_ndim)
         return encoded_t.reshape(*out_shape)
+
+
+class DenseEncoder(torch.nn.Module):
+    """Implements a dense encoding.
+
+    Args:
+        n_embed (int): Length of the code vector.
+    """
+
+    def __init__(self, n_embed: int):
+
+        super().__init__()
+
+        self.n_embed = n_embed
+
+        self.mlp = torch.nn.Sequential(
+            torch.nn.Linear(1, 4), torch.nn.SiLU(),
+            torch.nn.Linear(4, n_embed), torch.nn.SiLU()
+        )
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """Computes the dense encoding of t.
+
+        Args:
+            t (torch.Tensor): The input tensor, e.g., representing time.
+
+        Returns:
+            torch.Tensor: A tensor of original shape `(*t.shape, n_embed)`.
+        """
+        return self.mlp(3.14 * t.unsqueeze(-1))
 
 
 # Keep for legacy
