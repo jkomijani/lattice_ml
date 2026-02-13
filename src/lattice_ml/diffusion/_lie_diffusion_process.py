@@ -94,8 +94,12 @@ class SUnDiffusionProcess(torch.nn.Module):
         # Predict the score at (t, x_t).
         score = self.score_fn(t, x_t)
 
-        # Compute loss: implicit score matching weighted by noise standard dev.
-        loss = implicit_score_matching_with_sdev_weight(score, eps, noise_std)
+        # Compute loss: implicit score matching
+        if self.training_config.variance_weight_for_time:
+            score_matching = implicit_score_matching_with_variance_weight
+        else:
+            score_matching = implicit_score_matching_with_sdev_weight
+        loss = score_matching(score, eps, noise_std)
 
         # contribution from t = 0 if loss_c0 > 0
         if self.training_config.loss_c0 > 0:
@@ -308,6 +312,7 @@ class TrainingConfiguration(pydantic.BaseModel):
 
     loss_c0: float = 0
     force0_fn: Callable | None = None
+    variance_weight_for_time: bool = True
 
     def update(self, **kwargs):
         """Update the attributes."""
