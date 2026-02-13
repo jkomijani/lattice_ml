@@ -23,7 +23,7 @@ class InverseTimeNoiseSchedule(torch.nn.Module):
     time, and its cumulative value between two time points.
     """
 
-    EPS = 1e-4  # Small constant to regulate the divergence at t = 1
+    EPS = 1e-8  # Small constant to regulate the divergence at t = 1
 
     def __init__(self, sigma_0: float = 1.0):
         """Initialize the noise standard deviation scheduler.
