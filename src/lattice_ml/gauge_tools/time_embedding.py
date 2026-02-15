@@ -24,7 +24,7 @@ class TimeEmbeddedWeight(torch.nn.Module):
             excluding batch dimension.
         hidden_dim (int): Hidden dimension of the MLP (default 32).
         max_freq (int | None): Maximum frequencey in the sinusoidal encoder if
-            provided. Otherwise, a dense econder is used (default is None).
+            not None (default is 32.0). Otherwise, a dense econder is used.
             Overlooked if `time_encoder` is provided.
         time_encoder (torch.nn.Module): Module that encodes time if provided.
     """
@@ -32,7 +32,7 @@ class TimeEmbeddedWeight(torch.nn.Module):
         self,
         weight_shape: Tuple[int],
         hidden_dim: int = 32,
-        max_freq: int | None = None,
+        max_freq: int | None = 32.0,
         time_encoder: torch.nn.Module = None
     ):
         super().__init__()
