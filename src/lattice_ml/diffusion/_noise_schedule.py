@@ -44,7 +44,7 @@ class InverseTimeNoiseSchedule(torch.nn.Module):
         Returns:
             torch.Tensor: Standard deviation of noise at time `t`.
         """
-        return self.sigma_0 / (1 + self.EPS - t) ** 0.5
+        return self.sigma_0 / (1 - t + self.EPS) ** 0.5
 
     def cumulative(self, t_0: torch.Tensor, t_1: torch.Tensor) -> torch.Tensor:
         """Compute the cumulative noise std between two times `t_0` and `t_1`.
