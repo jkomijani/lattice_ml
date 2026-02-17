@@ -56,9 +56,8 @@ class InverseTimeNoiseSchedule(torch.nn.Module):
         Returns:
             torch.Tensor: Cumulative noise standard deviation.
         """
-        t_max = 1 + self.EPS
         return self.sigma_0 * torch.sqrt(
-            torch.log((t_max - t_0) / (t_max - t_1)).abs()
+            torch.log((1 - t_0 + self.EPS) / (1 - t_1 + self.EPS)).abs()
         )
 
 
