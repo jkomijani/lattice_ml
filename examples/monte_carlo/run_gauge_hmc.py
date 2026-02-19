@@ -28,7 +28,7 @@ import torch
 
 from lattice_ml.monte_carlo import SUnHMC
 from lattice_ml.gauge_tools import (
-    WilsonGaugeAction,
+    WilsonGaugeAction, StringGaugeAction,
     compute_mean_normalized_trace_wilson_mxn_loop
 )
 
@@ -44,12 +44,12 @@ if torch.cuda.is_available():
 
 # =============================================================================
 def main(
-    beta: int = 3,
-    lat_shape: Tuple[int, ...] = (4, 4, 4, 4),
-    num_parallel_chains: int = 1024,
+    beta: int = 1,
+    lat_shape: Tuple[int, ...] = (16, 16),
+    num_parallel_chains: int = 1,
     num_samples_per_chain: int = 1,
-    num_thermal_traj: int = 100,
-    num_leapfrog_steps: int = 15,
+    num_thermal_traj: int = 10000,
+    num_leapfrog_steps: int = 10,
     save_fname: str = None
 ):
     """Run Hybrid Monte Carlo and generate SU(3) gauge configurations.
@@ -113,14 +113,15 @@ def main(
     group. This provides a "warm" start where link variables are already valid
     SU(3) elements and broadly distributed over configuration space.
     """
-    action = WilsonGaugeAction(beta=beta)
+    # action = WilsonGaugeAction(beta=beta)
+    action = StringGaugeAction(beta=beta)
 
     gauge_field_shape = (*lat_shape, len(lat_shape))
     prior = UniformSUnPrior(n=3, shape=gauge_field_shape)
 
     hmc = SUnHMC(
         lambda t, q: action.algebra_force(q),
-        t_span=(0, 1),
+        t_span=(0, 0.1),
         num_steps=num_leapfrog_steps,
         action=action
     )

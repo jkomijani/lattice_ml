@@ -19,6 +19,7 @@ __all__ = [
     'compute_avg_trace_wilson_mxn_loop',  # for legacy
     'compute_wilson_1x1_loop',
     'compute_planar_wilson_1x1_loop',
+    'compute_planar_string_1x1_loop',
     'compute_planar_wilson_1x1_loop_response',
     'parallel_transport'
 ]
@@ -200,7 +201,85 @@ def compute_planar_wilson_1x1_loop(
     y_nu = torch.roll(x_nu, -1, dims=prefix_dims + mu)
     z_mu = torch.roll(x_mu, -1, dims=prefix_dims + nu)
 
-    w_11 = matmul(matmul(x_mu, y_nu), matmul(x_nu, z_mu).adjoint())
+    s_11 = matmul(matmul(x_mu, y_nu), matmul(x_nu, z_mu).adjoint())
+
+    return s_11
+
+def compute_planar_string_1x1_loop(
+    x: torch.Tensor,
+    mu: int,
+    nu: int,
+    prefix_dims: int = 1,
+    sites_before_link: bool = True
+):
+    """
+    Compute 1×1 String loops in the specified mu-nu plane for all sites.
+
+    The loop goes from the sites along the mu direction, then nu direction,
+    and returns along the opposite mu and nu directions to close the plaquette.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Tensor containing the gauge links. After any batch and channel axes,
+        the spatial lattice axes come first (if sites_before_link=True),
+        followed by the link direction axis, and then the matrix components.
+    mu : int
+        The index of the first link direction.
+    nu : int
+        The index of the second link direction.
+    prefix_dims : int, default=1
+        Number of leading batch and channel dimensions in the tensor.
+        For example, if x.shape = (batch, channel, Lx, Ly, Lz, Lt, mu, Nc, Nc),
+        then prefix_dims=2. If only a single batch dimension, prefix_dims=1.
+    sites_before_link : bool, default=True
+        Whether the spatial lattice axes come before the link axis.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of 1×1 String loops in the mu–nu plane.
+        Shape is the same as `x`, except the link-direction axis is removed.
+    """
+    # Extract the links using unbind
+    link_axis = -3 if sites_before_link else prefix_dims
+    links = torch.unbind(x, dim=link_axis)
+
+    #     f e  
+    #    *< <* 
+    #   gv   ^d
+    #   hv   ^c
+    #    @=>>* 
+    #     a b  
+
+    x_mu = links[mu] # a'
+    x_nu = links[nu] # h
+
+    # Calculate the links, p: plus t:minus
+    xpmu_mu = torch.roll(x_mu, -1, dims=prefix_dims + mu) # b  Means x plus mu in mu direction
+    xpnu_mu = torch.roll(x_mu, -1, dims=prefix_dims + nu) # f
+    xpmu_nu = torch.roll(x_nu, -1, dims=prefix_dims + mu) # c'
+    xpnu_nu = torch.roll(x_nu, -1, dims=prefix_dims + nu) # g'
+    
+    # Apply boundary conditions
+    n_c = x.shape[-1]
+    eye = torch.eye(n_c)
+
+    # String boundary conditions: Set the surface x_mu = L_mu to identity.
+    idmu: List = [slice(None)] * x_mu.ndim
+    idmu[prefix_dims + mu] = -1
+    xpmu_mu[tuple(idmu)] = eye
+
+    idnu: List = [slice(None)] * x_nu.ndim
+    idnu[prefix_dims + nu] = -1
+    xpnu_nu[tuple(idnu)] = eye
+
+    xpmupnu_mu = torch.roll(xpmu_mu, -1, dims=prefix_dims + nu) # e'
+    xpmupnu_nu = torch.roll(xpnu_nu, -1, dims=prefix_dims + mu) # d
+
+    # abcdefgh
+    w_11 = matmul((matmul(matmul(x_mu.adjoint(), xpmu_mu), matmul(xpmu_nu.adjoint(), xpmupnu_nu))),
+                  (matmul(matmul(xpmupnu_mu.adjoint(), xpnu_mu), matmul(xpnu_nu.adjoint(), x_nu))))
 
     return w_11
 
