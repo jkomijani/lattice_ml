@@ -97,6 +97,9 @@ class PairedIterableDataset(IterableDataset):
         self.dataset0 = dataset0
         self.dataset1 = dataset1
 
+    def __len__(self):
+        return min(len(self.dataset0), len(self.dataset1))
+
     def __iter__(self):
         iter_x0 = iter(self.dataset0)
         iter_x1 = iter(self.dataset1)
@@ -112,6 +115,9 @@ class DatasetToIterable(IterableDataset):
     def __init__(self, dataset: Dataset, batch_size: int):
         self.dataset = dataset
         self.batch_size = batch_size
+
+    def __len__(self):
+        return len(self.dataset)
 
     def __iter__(self):
         for i in range(0, len(self.dataset), self.batch_size):
@@ -143,6 +149,9 @@ class IIDPriorDataset(IterableDataset):
         self.prior = prior
         self.batch_size = batch_size
         self.num_batches = num_batches
+
+    def __len__(self):
+        return self.batch_size * self.num_batches
 
     def __iter__(self):
         # Generate num_batches independent sample batches
