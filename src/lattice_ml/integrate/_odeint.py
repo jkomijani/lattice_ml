@@ -164,6 +164,7 @@ def odeint(
     return y
 
 
+# =============================================================================
 def _integrate_with_corrector(
     ode_step: Callable,
     func: Callable,
@@ -217,6 +218,7 @@ def _integrate_with_corrector(
     return tuple(out_eval)
 
 
+# =============================================================================
 def _integrate_with_eval(
     ode_step: Callable,
     func: Callable,
@@ -239,50 +241,54 @@ def _integrate_with_eval(
 
     See `odeint` for parameter details.
     """
-    if t_eval[0] < torch.min(time_grid) or t_eval[0] > torch.max(time_grid):
-        raise ValueError("t_eval must be monotonic and within time_grid.")
+    if len(time_grid) < 2:
+        raise ValueError("time_grid must contain at least two points.")
 
-    for i in range(len(t_eval) - 1):
-        if torch.round((t_eval[i+1] - t_eval[i]) / step_size) < 1:
-            raise ValueError("Increament in t_eval is smaller than step size!")
+    if len(t_eval) == 0:
+        return tuple()
+
+    # Compute a robust tolerance for floating-point comparisons
+    tol = compute_tolerance(time_grid)
+
+    # Ensure t_eval lies within time_grid and increments are at least step_size
+    check_t_eval(time_grid, t_eval, tol)
 
     out_eval = []  # Stores evaluated states or fn_eval outputs
     ind_eval = 0  # Index for current evaluation time
+    n_eval = len(t_eval)
 
-    # Take care of the initial point
-    if time_grid[0] == t_eval[0]:
+    # Store initial point if it matches t_eval[0]
+    if abs(time_grid[0] - t_eval[0]) <= tol:
         out_eval.append(y if fn_eval is None else fn_eval(y))
         ind_eval += 1
 
+    # Main integration loop
     for t in time_grid[:-1]:
         # Stop once all evaluation times have been processed
-        if len(t_eval) <= ind_eval:
+        if ind_eval >= n_eval:
             break
 
         # Distance from current grid time to next evaluation time
         delta_t = t_eval[ind_eval] - t
 
-        # Detect whether t_eval falls within the current step interval.
-        # Condition holds if:
-        #   step_size > 0 and delta_t <= step_size, or
-        #   step_size < 0 and delta_t >= step_size.
-        if step_size * (delta_t - step_size) <= 0:
-            # Take a (partial) step to exactly reach t_eval & recoder result
-            y_eval_ = ode_step(func, t, y, delta_t, *args)
-            out_eval.append(y_eval_ if fn_eval is None else fn_eval(y_eval_))
+        # If t_eval lies within this step, take a partial step and record
+        if delta_t / step_size <= 1 + tol:
+            y = ode_step(func, t, y, delta_t, *args)
+            out_eval.append(y if fn_eval is None else fn_eval(y))
             ind_eval += 1
 
-        # Advance one full step unless the partial step already did so.
-        # If delta_t == step_size, the partial step exactly equals one full
-        # grid increment, so reuse y_eval_ instead of integrating again
-        if delta_t == step_size:
-            y = y_eval_
+            # Advance remaining portion of the step if any
+            remaining_step = step_size - delta_t
+            if abs(remaining_step) > tol:
+                y = ode_step(func, t + delta_t, y, remaining_step, *args)
         else:
+            # Otherwise, take a regular full step
             y = ode_step(func, t, y, step_size, *args)
 
     return tuple(out_eval)
 
 
+# =============================================================================
 def _integrate_with_loss(
     ode_step: Callable,
     func: Callable,
@@ -361,3 +367,42 @@ def rk4_step(func, t, y, dt, *args):
     k_3 = func(t + eps, y + eps * k_2, *args)
     k_4 = func(t + dt, y + dt * k_3, *args)
     return y + (k_1 + 2 * k_2 + 2 * k_3 + k_4) * (dt / 6)
+
+
+# =============================================================================
+def compute_tolerance(time_grid: Union[torch.Tensor, np.ndarray]):
+    """
+    Compute a scalar tolerance for floating-point comparisons
+    based on the magnitude and precision of a time grid.
+
+    Returns 10 * eps * max(1, max(|time_grid|)), where eps is
+    the machine epsilon of the grid's dtype.
+    """
+
+    if isinstance(time_grid, torch.Tensor):
+        scale = float(torch.abs(time_grid).max())
+        eps = torch.finfo(time_grid.dtype).eps
+    else:
+        scale = float(np.abs(time_grid).max())
+        eps = np.finfo(time_grid.dtype).eps
+
+    return 10.0 * eps
+
+
+def check_t_eval(time_grid, t_eval, tol):
+    """
+    Ensure t_eval lies within time_grid and increments are at least step_size.
+    Works for increasing or decreasing monotonic grids.
+    """
+    t_min = float(time_grid.min())
+    t_max = float(time_grid.max())
+    step_size = float(time_grid[1] - time_grid[0])
+
+    for i in range(len(t_eval)):
+        if not (t_min <= t_eval[i] <= t_max):
+            raise ValueError("t_eval must lie within the time_grid.")
+        if i == 0:
+            continue
+        dt_ratio = (t_eval[i] - t_eval[i - 1]) / step_size
+        if dt_ratio < 1 - tol:
+            raise ValueError("Increment in t_eval is smaller than step size!")
