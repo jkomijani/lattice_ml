@@ -96,7 +96,8 @@ import torch
 __all__ = [
     "link_to_prelink",
     "prelink_to_link",
-    "prelink_to_left_right_pair"
+    "prelink_to_left_right_pair",
+    "reduce_prelink_symmetry_to_global"
 ]
 
 
@@ -305,11 +306,39 @@ def prelink_to_link(
             dim_nu = prefix_dims + nu  # axis corresponding to direction nu
             len_nu = prelink_mu.shape[dim_nu]
             link_mu = torch.narrow(link_mu, dim_nu, 0, len_nu - 1)
-
         links_stack[mu] = link_mu
 
     # Restore original layout with link-direction axis
     return torch.stack(links_stack, dim=link_axis)
+
+
+# =============================================================================
+def reduce_prelink_symmetry_to_global(V: torch.Tensor, **kwargs):
+    """
+    Reduce the semi-global prelink symmetry to a global one.
+
+    This function composes the maps
+
+        V → U = prelink_to_link(V)
+        U → V' = link_to_prelink(U)
+
+    and returns the reconstructed prelinks V'.
+
+    While `prelink_to_link(link_to_prelink(U))` is the identity on links,
+    the reverse composition
+
+        link_to_prelink(prelink_to_link(V))
+
+    is generally *not* the identity on prelinks. Instead, it fixes the
+    integration convention used to construct prelinks from links (e.g.,
+    by choosing a reference origin), thereby removing the residual
+    semi-global gauge freedom of the prelink representation.
+
+    As a result, the returned tensor transforms only under a single
+    global gauge transformation rather than the original semi-global
+    symmetry.
+    """
+    return link_to_prelink(prelink_to_link(V))
 
 
 # =============================================================================
