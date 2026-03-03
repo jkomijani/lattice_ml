@@ -110,7 +110,11 @@ def compute_sealed_staples(
     The sealed staples are the natural gauge-invariant building blocks
     entering the Wilson gauge action in the prelink representation.
     """
-    U = prelink_to_link(V)
+    U = prelink_to_link(
+        V,
+        prefix_dims=prefix_dims,
+        sites_before_link=sites_before_link
+    )
     staples = compute_staples(
         U,
         prefix_dims=prefix_dims,

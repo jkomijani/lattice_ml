@@ -72,7 +72,7 @@ class WilsonPrelinkAction:
             Per-batch action values.
         """
         bsize = V.shape[0]
-        S = compute_sealed_staples(V)
+        S = compute_sealed_staples(V, sites_before_link=self.sites_before_link)
 
         trace = compute_normalized_trace(S).real.reshape(bsize, -1).sum(dim=1)
         # Notes:
