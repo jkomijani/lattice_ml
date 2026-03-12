@@ -2,7 +2,6 @@
 
 from . import diffusion
 from . import functions
-from . import flow_matching
 from . import gauge_tools
 from . import integrate
 from . import linalg
