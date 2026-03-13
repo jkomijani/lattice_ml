@@ -10,6 +10,8 @@ import torch
 
 from .._eig import eigh
 
+from torch.linalg import svd
+
 
 __all__ = ["svd", "SVDResult"]
 
@@ -76,7 +78,7 @@ class SVDResult:
         }
 
 
-def svd(matrix):
+def _svd(matrix):
     r"""
     Return singular value decomposition of the input complex, square matrix.
 
@@ -168,6 +170,59 @@ def slow_svd(matrix):
     vh = (naive_d + torch.diag_embed(fixer)) @ naive_v.adjoint()
 
     return SVDResult(U=u, S=s, Vh=vh)
+
+
+# =============================================================================
+def extract_row_unitary(matrix):
+    """
+    Recover a unitary matrix by orthonormalizing the rows of a row-scaled
+    unitary matrix.
+
+    The input is assumed to have the form
+
+        A = S Vh
+
+    where
+
+        S  – diagonal matrix (typically singular values)
+        Vh – unitary matrix (V†)
+
+    This function removes the scaling by performing a Gram–Schmidt
+    orthonormalization on the rows of `matrix`, returning an estimate of Vh.
+
+    Rows are processed from bottom to top because the singular values are
+    assumed to be ordered from smallest to largest. Rows associated with
+    larger singular values typically have better numerical precision, so
+    they are fixed first and used to orthogonalize the less reliable rows.
+
+    Parameters
+    ----------
+    matrix : torch.Tensor
+        Tensor of shape (..., n, n) whose rows are assumed to be scaled
+        orthogonal vectors.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of the same shape containing a unitary matrix approximating Vh.
+    """
+    n = matrix.shape[-1]
+
+    for ind_a in reversed(range(n)):
+        a = matrix[..., ind_a, :]
+
+        for ind_b in reversed(range(ind_a + 1, n)):
+            b = matrix[..., ind_b, :]
+
+            coef_ab = torch.sum(a.conj() * b, dim=-1, keepdim=True)
+            coef_bb = torch.sum(b.conj() * b, dim=-1, keepdim=True)
+
+            a = a - (coef_ab / coef_bb) * b
+
+        norm = torch.linalg.vector_norm(a, dim=-1, keepdim=True)
+        matrix[..., ind_a, :] = a / norm
+
+    return matrix
 
 
 # =============================================================================
