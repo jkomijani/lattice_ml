@@ -7,6 +7,7 @@ import torch
 
 __all__ = [
     "InverseTimeNoiseSchedule",
+    "VPInverseTimeNoiseSchedule",
     "ConstantNoiseSchedule",
     "ExponentialNoiseSchedule",
     "CosineNoiseSchedule"
@@ -59,6 +60,43 @@ class InverseTimeNoiseSchedule(torch.nn.Module):
         return self.sigma_0 * torch.sqrt(
             torch.log((1 - t_0 + self.EPS) / (1 - t_1 + self.EPS)).abs()
         )
+
+
+# =============================================================================
+class VPInverseTimeNoiseSchedule(torch.nn.Module):
+    """
+    Noise standard deviation scheduler derived from an inverse-time variance
+    law: Var(t) = 2 / (1 - t) in a Variance Preserving (VP) setting.
+
+    This scheduler provides both the instantaneous noise std as a function of
+    time, and its cumulative value between two time points.
+    """
+
+    EPS = 1e-8  # Small constant to regulate the divergence at t = 1
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """Compute the instantaneous noise standard deviation at time `t`.
+
+        Args:
+            t (torch.Tensor): Time tensor with values in (0, 1).
+
+        Returns:
+            torch.Tensor: Standard deviation of noise at time `t`.
+        """
+        return (2 / (1 - t + self.EPS)) ** 0.5
+
+    def cumulative(self, t_0: torch.Tensor, t_1: torch.Tensor) -> torch.Tensor:
+        """Compute the cumulative noise std between two times `t_0` and `t_1`.
+
+        Args:
+            t_0 (torch.Tensor): Start time tensor.
+            t_1 (torch.Tensor): End time tensor. Note: `t_1 >= t_0`.
+
+        Returns:
+            torch.Tensor: Cumulative noise standard deviation.
+        """
+        eps = self.EPS
+        return torch.sqrt(1 - (1 - t_1 + eps)**2 / (1 - t_0 + eps)**2)
 
 
 # =============================================================================

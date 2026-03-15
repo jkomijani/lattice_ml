@@ -148,8 +148,12 @@ def integrate_sde(
     y = y0
 
     # Integrate over the time grid using the chosen method
-    for t in time_grid[:-1]:
-        y = sde_step(func, t, y, step_size, noise_scale, *args)
+    if callable(noise_scale):
+        for t in time_grid[:-1]:
+            y = sde_step(func, t, y, step_size, noise_scale(t), *args)
+    else:
+        for t in time_grid[:-1]:
+            y = sde_step(func, t, y, step_size, noise_scale, *args)
 
     return y
 
