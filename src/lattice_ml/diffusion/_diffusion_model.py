@@ -29,15 +29,21 @@ class DiffusionModel(torch.nn.Module):
     - Generate samples by reversing the diffusion (`reverse`).
     """
 
-    def __init__(self, score_fn: Callable, diffuser: Callable | None = None):
+    def __init__(
+        self,
+        score_fn: Callable,
+        diffuser: Callable | None = None,
+        as_score_plus_x: bool = False
+    ):
         """
         Initializes the diffusion process with a score function.
 
         Args:
             score_fn (Callable): A neural network for the score function.
             diffuser (Callable | None): Defines the diffusion process. If not
-                provided, defaults to a VP diffuser with inverse time noise
-                schedule.
+                provided, defaults to an instance of `VPDiffuser`.
+            as_score_plus_x (bool): If True, treats the provided score function
+                as `score + x`.
         """
         if diffuser is None:
             diffuser = VPDiffuser()
@@ -45,6 +51,7 @@ class DiffusionModel(torch.nn.Module):
         super().__init__()
         self.score_fn = score_fn
         self.diffuser = diffuser
+        self.as_score_plus_x = as_score_plus_x
         self.trainer = Trainer(self)
 
     def training_step(self, batch, batch_idx=None):
@@ -56,14 +63,22 @@ class DiffusionModel(torch.nn.Module):
         t = torch.rand((bsize,), device=x_0.device)
 
         # Run the process to time t & get the injected `noise/std` and also std
-        x_t, eps, noise_std = self.diffuser(x_0=x_0, t_0=0, t=t)
+        x_t, noise, noise_scale, signal_scale = self.diffuser(x_0, t_0=0, t=t)
 
         # Predict the score at (t, x_t).
         score = self.score_fn(t, x_t)
 
         # Compute loss: implicit score matching
-        score_matching = implicit_score_matching_with_variance_weight
-        loss = score_matching(score, eps, noise_std)
+        if self.as_score_plus_x:
+            # The evaluated score should be treated as score + x_t
+            score_plus_x = score
+            loss = implicit_score_plus_x_matching(
+                score_plus_x, x_t, noise, noise_scale, signal_scale
+            )
+        else:
+            loss = implicit_score_matching_with_variance_weight(
+                score, noise, noise_scale
+            )
 
         return loss
 
@@ -109,7 +124,7 @@ class DiffusionModel(torch.nn.Module):
             assert t >= t_0, "`t_eval` must monotonically increase."
 
             # Run the process to time t
-            x_eval[ind], _, _ = self.diffuser(x_0=x_0, t_0=t_0, t=t)
+            x_eval[ind], _, _, _ = self.diffuser(x_0, t_0=t_0, t=t)
 
             # Update the state for the next round
             x_0, t_0 = x_eval[ind], t
@@ -153,9 +168,11 @@ class DiffusionModel(torch.nn.Module):
 
         # Only pass t_eval if it's not scalar
         if t_eval.ndim > 0:
-            solver_kwargs["t_eval"] = t_eval
+            kwargs["t_eval"] = t_eval
 
-        return self.diffuser.odeint(self.score_fn, t_span, x_0, **kwargs)
+        return self.diffuser.odeint(
+            self.score_fn, t_span, x_0, self.as_score_plus_x, **kwargs
+        )
 
 
 # =============================================================================
@@ -209,22 +226,24 @@ class VPDiffuser(torch.nn.Module):
         # Expand t_eval dimensions to match x_0
         t = t.view(-1, *[1] * (x_0.ndim - 1))
 
-        # Compute accumulated noise standard deviation
-        std = self.sigma_schedule.cumulative(t_0, t)
+        # Compute accumulated noise standard deviation and its complementary
+        noise_scale = self.sigma_schedule.noise_scale(t_0, t)
+        signal_scale = self.sigma_schedule.signal_scale(t_0, t)
 
         # Sample from normal distribution
-        eps = torch.randn_like(x_0)
+        noise = torch.randn_like(x_0)
 
         # Closed-form solution
-        x_t = torch.sqrt(1 - std**2) * x_0 + std * eps
+        x_t = signal_scale * x_0 + noise_scale * noise
 
-        return x_t, eps, std
+        return x_t, noise, noise_scale, signal_scale
 
     def odeint(
         self,
         score_fn: Callable,
         t_span: Sequence[float],
         x_0: torch.Tensor,
+        as_score_plus_x: bool = False,
         **solver_kwargs
     ):
         r"""
@@ -247,6 +266,8 @@ class VPDiffuser(torch.nn.Module):
             score_fn (Callable): Function approximating the score.
             t_span (Sequence[float, float]): Integration interval.
             x_0 (torch.Tensor): Initial state.
+            as_score_plus_x (bool): If True, treats the provided score function
+                as `score + x`.
 
             **solver_kwargs:
                 Additional arguments passed to :func:`odeint`, including:
@@ -259,8 +280,8 @@ class VPDiffuser(torch.nn.Module):
              torch.Tensor: The final state of the system.
               (see :func:`odeint` for exact behavior).
         """
-        if hasattr(score_fn, "score_plus_x_fn"):
-            score_plus_x_fn = score_fn.score_plus_x_fn
+        if as_score_plus_x:
+            score_plus_x_fn = score_fn
         else:
             def score_plus_x_fn(t, x_t):
                 return x_t + score_fn(t, x_t)
@@ -271,6 +292,39 @@ class VPDiffuser(torch.nn.Module):
             return coeff * score_plus_x_fn(t, x_t)
 
         return odeint(drift_fn, t_span, x_0, **solver_kwargs)
+
+
+# =============================================================================
+def implicit_score_plus_x_matching(
+    score_plus_x: torch.Tensor,
+    x_t: torch.Tensor,
+    noise: torch.Tensor,
+    noise_scale: torch.Tensor,
+    signal_scale: torch.Tensor
+) -> torch.Tensor:
+    """Compute the implicit score matching loss applied on score_plus_x.
+
+    This computes a weighted mean squared error (MSE) between the predicted and
+    the empirical conditional score at a diffusion time. The MSE is weighted by
+    the variance of the accumulated noise at the diffusion time divided by
+    sqrt of one minus its power.
+
+    Args:
+        score_plus_x (torch.Tensor): Predicted score plus `x_t`.
+        x_t (torch.Tensor): The state of the system.
+        noise (torch.Tensor): The non-scaled noise injected to `x_t`.
+        noise_scale (torch.Tensor): The scale of the cumulative noise.
+        signal_scale (torch.Tensor): The scale of the original signal in `x_t`.
+
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
+    # Residual between predicted and conditional scores (variance-weighted)
+    w = 1 / signal_scale
+    res = w * (score_plus_x * noise_scale + (noise - x_t * noise_scale))
+    loss = torch.mean(res * res.conj()).real
+
+    return loss
 
 
 # =============================================================================
