@@ -72,7 +72,7 @@ class VPInverseTimeNoiseSchedule(torch.nn.Module):
     time, and its cumulative value between two time points.
     """
 
-    EPS = 1e-8  # Small constant to regulate the divergence at t = 1
+    EPS = 1e-4  # Small constant to regulate the divergence at t = 1
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         """Compute the instantaneous noise standard deviation at time `t`.
@@ -85,7 +85,7 @@ class VPInverseTimeNoiseSchedule(torch.nn.Module):
         """
         return (2 / (1 - t + self.EPS)) ** 0.5
 
-    def cumulative(self, t_0: torch.Tensor, t_1: torch.Tensor) -> torch.Tensor:
+    def noise_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
         """Compute the cumulative noise std between two times `t_0` and `t_1`.
 
         Args:
@@ -97,6 +97,27 @@ class VPInverseTimeNoiseSchedule(torch.nn.Module):
         """
         eps = self.EPS
         return torch.sqrt(1 - (1 - t_1 + eps)**2 / (1 - t_0 + eps)**2)
+
+    def signal_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
+        """Compute the signal scaling factor between two times `t_0` and `t_1`.
+
+        This quantity represents the complementary to the standard deviation of
+        the cumulative noise, ensuring a variance-preserving decomposition:
+
+            signal_scale(t0, t1)^2 + cumulative(t0, t1)^2 = 1
+
+        It can be interpreted as the fraction of the original signal that
+        remains after noise has been accumulated from `t_0` to `t_1`.
+
+        Args:
+            t_0 (torch.Tensor): Start time tensor.
+            t_1 (torch.Tensor): End time tensor. Note: `t_1 >= t_0`.
+
+        Returns:
+            torch.Tensor: Signal scaling factor between `t_0` and `t_1`.
+        """
+        eps = self.EPS
+        return (1 - t_1 + eps) / (1 - t_0 + eps)
 
 
 # =============================================================================
