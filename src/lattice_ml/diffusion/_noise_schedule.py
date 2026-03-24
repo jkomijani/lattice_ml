@@ -85,7 +85,7 @@ class VPInverseTimeNoiseSchedule(torch.nn.Module):
         """
         return (2 / (1 - t + self.EPS)) ** 0.5
 
-    def noise_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
+    def cumulative_noise_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
         """Compute the cumulative noise std between two times `t_0` and `t_1`.
 
         Args:
@@ -98,16 +98,14 @@ class VPInverseTimeNoiseSchedule(torch.nn.Module):
         eps = self.EPS
         return torch.sqrt(1 - (1 - t_1 + eps)**2 / (1 - t_0 + eps)**2)
 
-    def signal_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
+    def cumulative_signal_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
         """Compute the signal scaling factor between two times `t_0` and `t_1`.
 
-        This quantity represents the complementary to the standard deviation of
-        the cumulative noise, ensuring a variance-preserving decomposition:
+        This factor represents the fraction of the original signal that remains
+        after noise has been accumulated from `t_0` to `t_1`, satisfying:
 
-            signal_scale(t0, t1)^2 + cumulative(t0, t1)^2 = 1
-
-        It can be interpreted as the fraction of the original signal that
-        remains after noise has been accumulated from `t_0` to `t_1`.
+            cumulative_signal_scale(t0, t1)^2
+            + cumulative_noise_scale(t0, t1)^2 = 1
 
         Args:
             t_0 (torch.Tensor): Start time tensor.

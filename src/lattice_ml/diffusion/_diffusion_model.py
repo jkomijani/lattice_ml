@@ -14,7 +14,6 @@ from ._trainer import Trainer
 from ._noise_schedule import VPInverseTimeNoiseSchedule
 
 
-
 __all__ = ["DiffusionModel", "VPDiffuser"]
 
 
@@ -41,7 +40,7 @@ class DiffusionModel(torch.nn.Module):
         Args:
             score_fn (Callable): A neural network for the score function.
             diffuser (Callable | None): Defines the diffusion process. If not
-                provided, defaults to an instance of `VPDiffuser`.
+                provided, defaults to the default instance of `VPDiffuser`.
             as_score_plus_x (bool): If True, treats the provided score function
                 as `score + x`.
         """
@@ -62,8 +61,8 @@ class DiffusionModel(torch.nn.Module):
         # Choose a random diffusion time per sample, uniformly in [0, 1].
         t = torch.rand((bsize,), device=x_0.device)
 
-        # Run the process to time t & get the injected `noise/std` and also std
-        x_t, noise, noise_scale, signal_scale = self.diffuser(x_0, t_0=0, t=t)
+        # Run the process to time t & get the context of the diffusion
+        x_t, diffusion_context = self.diffuser(x_0, t_0=0, t=t)
 
         # Predict the score at (t, x_t).
         score = self.score_fn(t, x_t)
@@ -73,11 +72,13 @@ class DiffusionModel(torch.nn.Module):
             # The evaluated score should be treated as score + x_t
             score_plus_x = score
             loss = implicit_score_plus_x_matching(
-                score_plus_x, x_t, noise, noise_scale, signal_scale
+                score_plus_x, diffusion_context
             )
         else:
             loss = implicit_score_matching_with_variance_weight(
-                score, noise, noise_scale
+                score,
+                diffusion_context['noise'],
+                diffusion_context['noise_scale']
             )
 
         return loss
@@ -124,7 +125,7 @@ class DiffusionModel(torch.nn.Module):
             assert t >= t_0, "`t_eval` must monotonically increase."
 
             # Run the process to time t
-            x_eval[ind], _, _, _ = self.diffuser(x_0, t_0=t_0, t=t)
+            x_eval[ind] = self.diffuser(x_0, t_0=t_0, t=t)[0]
 
             # Update the state for the next round
             x_0, t_0 = x_eval[ind], t
@@ -204,7 +205,8 @@ class VPDiffuser(torch.nn.Module):
         Simulates the forward diffusion process.
 
         The process starts from the initial state `x_0` at time `t_0` and
-        evolves the states until the terminal time `t`.
+        evolves the states until the terminal time `t` by adding noise to the
+        state.
 
         Args:
             x_0 (torch.Tensor): The initial state of the system at time `t_0`.
@@ -215,28 +217,53 @@ class VPDiffuser(torch.nn.Module):
             At least one of `t_0` or `t` must be an instace of `torch.Tensor`.
             If a 1d tensor, their lengths must match the batch size of `x_0`.
 
+        In addition to the state at time `t`, this method computes and returns
+        other useful quantities. Note that
+
+            [x_t, z_t].T = A  [signal, noise].T
+
+        where
+                |signal_scale    noise_scale |
+            A = |                            |
+                |-noise_scale    signal_scale|
+
+        with `det(A) = 1`. Quantities `x_t` and `z_t` are complementary states.
+        Unlike the state `x_t`, the complementary state `z_t` mainly contains
+        the noise at small diffusion times and mainly the signal at later
+        times.
+
         Returns
         -------
         torch.Tensor, torch.Tensor, torch.Tensor
             A tuple containing:
             - `x_t`: the final diffused states of the system,
-            - `eps`: the noise samples used in the diffusion process,
-            - `std`: the (exact) standard deviation of the noise samples.
+            - `diffusion_context`: dictionary containing:
+                - `complementary_state`: complementary component to `x_t`,
+                - `noise`: noise samples used in the diffusion,
+                - `noise_scale`: weight of the noise in `x_t`,
+                - `signal_scale`: weight of the signal in `x_t`.
         """
         # Expand t_eval dimensions to match x_0
         t = t.view(-1, *[1] * (x_0.ndim - 1))
 
         # Compute accumulated noise standard deviation and its complementary
-        noise_scale = self.sigma_schedule.noise_scale(t_0, t)
-        signal_scale = self.sigma_schedule.signal_scale(t_0, t)
+        noise_scale = self.sigma_schedule.cumulative_noise_scale(t_0, t)
+        signal_scale = self.sigma_schedule.cumulative_signal_scale(t_0, t)
 
         # Sample from normal distribution
         noise = torch.randn_like(x_0)
 
         # Closed-form solution
         x_t = signal_scale * x_0 + noise_scale * noise
+        z_t = -noise_scale * x_0 + signal_scale * noise
 
-        return x_t, noise, noise_scale, signal_scale
+        diffusion_context = {
+            'complementary_state': z_t,
+            'noise': noise,
+            'noise_scale': noise_scale,
+            'signal_scale': signal_scale
+        }
+        return x_t, diffusion_context
 
     def odeint(
         self,
@@ -297,31 +324,35 @@ class VPDiffuser(torch.nn.Module):
 # =============================================================================
 def implicit_score_plus_x_matching(
     score_plus_x: torch.Tensor,
-    x_t: torch.Tensor,
-    noise: torch.Tensor,
-    noise_scale: torch.Tensor,
-    signal_scale: torch.Tensor
+    diffusion_context: dict
 ) -> torch.Tensor:
     """Compute the implicit score matching loss applied on score_plus_x.
 
     This computes a weighted mean squared error (MSE) between the predicted and
-    the empirical conditional score at a diffusion time. The MSE is weighted by
-    the variance of the accumulated noise at the diffusion time divided by
-    sqrt of one minus its power.
+    the empirical conditional score. The MSE is weighted by the variance of the
+    accumulated noise relative to the remaining signal scale.
+
+    Mathematically:
+        res = complementary_state + score_plus_x * (noise_scale / signal_scale)
+        loss = mean(|res|^2)
 
     Args:
-        score_plus_x (torch.Tensor): Predicted score plus `x_t`.
-        x_t (torch.Tensor): The state of the system.
-        noise (torch.Tensor): The non-scaled noise injected to `x_t`.
-        noise_scale (torch.Tensor): The scale of the cumulative noise.
-        signal_scale (torch.Tensor): The scale of the original signal in `x_t`.
+        score_plus_x (torch.Tensor): Predicted score plus the state `x_t`.
+        diffusion_context (dict): Dictionary containing quantities from
+            the forward diffusion step:
+            - complementary_state (torch.Tensor): Complementary to `x_t`.
+            - noise_scale (torch.Tensor): Scale of the cumulative noise.
+            - signal_scale (torch.Tensor): Scale of the signal in `x_t`.
+            - Optional keys like `noise` can also be included.
 
     Returns:
         torch.Tensor: Scalar loss value.
     """
-    # Residual between predicted and conditional scores (variance-weighted)
-    w = 1 / signal_scale
-    res = w * (score_plus_x * noise_scale + (noise - x_t * noise_scale))
+    z_t = diffusion_context['complementary_state']
+    noise_scale = diffusion_context['noise_scale']
+    signal_scale = diffusion_context['signal_scale']
+
+    res = z_t + score_plus_x * (noise_scale / signal_scale)
     loss = torch.mean(res * res.conj()).real
 
     return loss
