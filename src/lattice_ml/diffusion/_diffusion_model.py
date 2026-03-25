@@ -12,9 +12,10 @@ from lattice_ml.integrate import odeint
 
 from ._trainer import Trainer
 from ._noise_schedule import VPInverseTimeNoiseSchedule
+from ._noise_schedule import SubVPInverseTimeNoiseSchedule
 
 
-__all__ = ["DiffusionModel", "VPDiffuser"]
+__all__ = ["DiffusionModel", "VPDiffuser", "SubVPDiffuser"]
 
 
 # =============================================================================
@@ -182,11 +183,11 @@ class VPDiffuser(torch.nn.Module):
     Implements a variance preserving diffusion process as
 
     .. math::
-        \frac{d x(t)}{dt} = - \frac{1}{2}\sigma^2(t) x(t) + \sigma(t) \eta(t)
+        \frac{d x(t)}{dt} = - \gamma(t) x(t) + \sigma(t) \eta(t)
+        \sigma(t) = \sqrt{2 \gamma(t)}
 
-    By default, we use `\sigma(t) = \sqrt{2 / (1 - t)}`.
+    By default, we use :math:`\gamma(t) = 1 / (1 - t)`.
     """
-    vanishing_drift_term = False
 
     def __init__(self, sigma_schedule: Callable | None = None):
         """Initializes the diffusion process with a score function.
@@ -315,8 +316,121 @@ class VPDiffuser(torch.nn.Module):
 
         def drift_fn(t, x_t):
             """Compute the drift fucntion for the ODE form of the process."""
-            coeff = -0.5 * self.sigma_schedule(t)**2
+            coeff = -0.5 * self.sigma_schedule.sigma_square(t)
             return coeff * score_plus_x_fn(t, x_t)
+
+        return odeint(drift_fn, t_span, x_0, **solver_kwargs)
+
+
+# =============================================================================
+class SubVPDiffuser(torch.nn.Module):
+    r"""
+    Implements a sub variance preserving diffusion process as
+
+    .. math::
+        \frac{d x(t)}{dt} = - \gamma(t) x(t) + \sigma(t) \eta(t)
+        \sigma(t) = \sqrt{2 \gamma(t) (1 - e^{-\int \gamma(s) ds})}
+
+    By default, we use :math:`\gamma(t) = 1 / (1 - t)`.
+    """
+
+    def __init__(self, sigma_schedule: Callable | None = None):
+        """Initializes the diffusion process with a score function.
+
+        Args:
+            sigma_schedule (Callable): Defines the time-dependent noise scale.
+                (Default is :class:`VPInverseTimeNoiseSchedule()`.)
+        """
+        super().__init__()
+        if sigma_schedule is None:
+            sigma_schedule = SubVPInverseTimeNoiseSchedule()
+        self.sigma_schedule = sigma_schedule
+
+    def forward(self, x_0: torch.Tensor, t_0: torch.Tensor, t: torch.Tensor):
+        """
+        Simulates the forward diffusion process.
+
+        The process starts from the initial state `x_0` at time `t_0` and
+        evolves the states until the terminal time `t` by adding noise to the
+        state.
+
+        Args:
+            x_0 (torch.Tensor): The initial state of the system at time `t_0`.
+            t_0 (torch.Tensor): A 0d or 1d tensor of the initial times.
+            t (torch.Tensor): A 0d or 1d tensor of the terminal times.
+
+        Note:
+            At least one of `t_0` or `t` must be an instace of `torch.Tensor`.
+            If a 1d tensor, their lengths must match the batch size of `x_0`.
+
+        In addition to the state at time `t`, this method computes and returns
+        other useful quantities. Note that
+
+            [x_t, z_t].T = A  [signal, noise].T
+
+        where
+                |signal_scale    noise_scale    |
+            A = |                               |
+                |-noise_scale    1 + noise_scale|
+
+        with `det(A) = 1`. Quantities `x_t` and `z_t` are complementary states.
+        Unlike the state `x_t`, the complementary state `z_t` mainly contains
+        the noise at small diffusion times and mainly the signal at later
+        times.
+
+        Returns
+        -------
+        torch.Tensor, torch.Tensor, torch.Tensor
+            A tuple containing:
+            - `x_t`: the final diffused states of the system,
+            - `diffusion_context`: dictionary containing:
+                - `complementary_state`: complementary component to `x_t`,
+                - `noise`: noise samples used in the diffusion,
+                - `noise_scale`: weight of the noise in `x_t`,
+                - `signal_scale`: weight of the signal in `x_t`.
+        """
+        # Expand t_eval dimensions to match x_0
+        t = t.view(-1, *[1] * (x_0.ndim - 1))
+
+        # Compute accumulated noise standard deviation and its complementary
+        noise_scale = self.sigma_schedule.cumulative_noise_scale(t_0, t)
+        signal_scale = self.sigma_schedule.cumulative_signal_scale(t_0, t)
+
+        # Sample from normal distribution
+        noise = torch.randn_like(x_0)
+
+        # Closed-form solution
+        x_t = signal_scale * x_0 + noise_scale * noise
+        z_t = -noise_scale * x_0 + (1 + noise_scale) * noise
+
+        diffusion_context = {
+            'complementary_state': z_t,
+            'noise': noise,
+            'noise_scale': noise_scale,
+            'signal_scale': signal_scale
+        }
+        return x_t, diffusion_context
+
+    def odeint(
+        self,
+        score_fn: Callable,
+        t_span: Sequence[float],
+        x_0: torch.Tensor,
+        as_score_plus_x: bool = False,
+        **solver_kwargs
+    ):
+        """Integrate the ODE associated with the diffusion process."""
+
+        if as_score_plus_x:
+            score_plus_x_fn = score_fn
+        else:
+            def score_plus_x_fn(t, x_t):
+                return x_t + score_fn(t, x_t)
+
+        def drift_fn(t, x_t):
+            """Compute the drift fucntion for the ODE form of the process."""
+            coeff = -0.5 * self.sigma_schedule.sigma_square(t)
+            return -x_t + coeff * score_plus_x_fn(t, x_t)
 
         return odeint(drift_fn, t_span, x_0, **solver_kwargs)
 
