@@ -132,7 +132,7 @@ def odeint(
 
     # Determine number of steps from step size if not explicitly given
     if num_steps is None:
-        num_steps = max(1, int(abs((t1 - t0) / step_size)))
+        num_steps = max(1, int(abs((t1 - t0) / step_size) + 1 - 1e-6))
 
     # Use the appropriate time grid depending on tensor type
     if isinstance(y0, np.ndarray):
