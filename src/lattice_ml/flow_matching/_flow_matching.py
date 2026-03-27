@@ -7,8 +7,6 @@ import torch
 from lattice_ml.diffusion import Trainer
 from lattice_ml.functions import pow_special_unitary_group_
 
-from normflow.nn import RQSplineWithGrad
-
 
 __all__ = ["FlowMatchingModel", "SUnFlowMatchingModel"]
 
@@ -21,35 +19,32 @@ class FlowMatchingModel(torch.nn.Module):
 
     The interpolation is defined as
 
-        X_t = τ(t) X_0 + (1 - τ(t)) X_1,
+        X_t = (1 - τ(t)) X_0 + τ(t) X_1,
 
     where t ∈ [0, 1] is a scalar (or batched) flow time. The function τ(t)
     parameterizes time and may be the identity or a nonlinear map.
     """
 
-    def __init__(self, dynamics_fn, num_rqs_knots=None):
+    def __init__(self, dynamics_fn, flow_schedule=None):
         """
         Initialize the flow matching model.
 
         Parameters
         ----------
         dynamics_fn : callable
-            The dynamics function of the flow. Must have a `.parameters()`
+            The dynamics function of the flow. It must have a `parameters()`
             method for use with PyTorch optimizers.
-        num_rqs_knots : int, optional
-            Number of knots in the Rational Quadratic Spline used to model τ(t)
-            in the interpolation formula. If provided it must be larger than 2.
-            If None (default), a linear map is used.
+        flow_schedule : callable, optional
+            A callable that parameterizes time with range and domain in [0, 1].
+            A possible instance: `normflow.nn.RQSplineWithGrad(8,smooth=True)`.
+            If not provided, it defaults to a linear map.
         """
         super().__init__()
         self.dynamics_fn = dynamics_fn
 
-        if num_rqs_knots is None:
-            self.tau_func = LinearMapWithGrad()
-        elif num_rqs_knots > 2:
-            self.tau_func = RQSplineWithGrad(num_rqs_knots, smooth=True)
-        else:
-            raise ValueError("num_rqs_knots must be None or larger than 2.")
+        if flow_schedule is None:
+            flow_schedule = LinearMapWithGrad()
+        self.flow_schedule = flow_schedule
 
         # Components for training
         self.trainer = Trainer(self)
@@ -81,15 +76,15 @@ class FlowMatchingModel(torch.nn.Module):
 
         # Choose a random flow time per sample, uniformly in [0, 1].
         t = torch.rand((bsize,), device=x_0.device)
-        tau, dtau_dt = self.tau_func(t)
+        tau, dtau_dt = self.flow_schedule(t)
 
         # τ(t) and dτ/dt are broadcast over spatial.
         tau = tau.reshape(shape)
         dtau_dt = dtau_dt.reshape(shape)
 
         # Flow the data to time t
-        x_t = tau * x_0 + (1 - tau) * x_1
-        x_dot = (x_0 - x_1) * dtau_dt
+        x_t = (1 - tau) * x_0 + tau * x_1
+        x_dot = (x_1 - x_0) * dtau_dt
 
         # Predict flow using the learned dynamics at (t, x_t)
         deterministic_flow = self.dynamics_fn(t, x_t)
@@ -99,6 +94,9 @@ class FlowMatchingModel(torch.nn.Module):
         loss = torch.mean(res ** 2)
 
         return loss
+
+    def forward(self):
+        """Forward pass."""
 
 
 # =============================================================================
@@ -114,29 +112,22 @@ class SUnFlowMatchingModel(torch.nn.Module):
     where t ∈ [0, 1] is a scalar (or batched) flow time. The function τ(t)
     parameterizes time and may be the identity or a nonlinear map.
     """
-    def __init__(self, algebra_dynamics_fn, num_rqs_knots=None):
+    def __init__(self, algebra_dynamics_fn, flow_schedule=None):
         """
-        Initialize the flow matching model.
-
-        Parameters
-        ----------
         algebra_dynamics_fn : callable
-            The Lie algebra dynamics function of the flow. Must have a
-            `.parameters()` method for use with PyTorch optimizers.
-        num_rqs_knots : int, optional
-            Number of knots in the Rational Quadratic Spline used to model τ(t)
-            in the interpolation formula. If provided it must be larger than 2.
-            If None (default), a linear map is used.
+            The Lie algebra dynamics function of the flow. It must have a
+            `parameters()` method for use with PyTorch optimizers.
+        flow_schedule : callable, optional
+            A callable that parameterizes time with range and domain in [0, 1].
+            A possible instance: `normflow.nn.RQSplineWithGrad(8,smooth=True)`.
+            If not provided, it defaults to a linear map.
         """
         super().__init__()
         self.algebra_dynamics_fn = algebra_dynamics_fn
 
-        if num_rqs_knots is None:
-            self.tau_func = LinearMapWithGrad()
-        elif num_rqs_knots > 2:
-            self.tau_func = RQSplineWithGrad(num_rqs_knots, smooth=True)
-        else:
-            raise ValueError("num_rqs_knots must be None or larger than 2.")
+        if flow_schedule is None:
+            flow_schedule = LinearMapWithGrad()
+        self.flow_schedule = flow_schedule
 
         # Components for training
         self.trainer = Trainer(self)
@@ -169,7 +160,7 @@ class SUnFlowMatchingModel(torch.nn.Module):
 
         # Choose a random flow time per sample, uniformly in [0, 1].
         t = torch.rand((bsize,), device=x_0.device)
-        tau, dtau_dt = self.tau_func(t)
+        tau, dtau_dt = self.flow_schedule(t)
 
         # τ(t) and dτ/dt are broadcast over spatial and eigenvalues & group dim
         tau = tau.reshape(shape0)
@@ -192,6 +183,9 @@ class SUnFlowMatchingModel(torch.nn.Module):
         loss = torch.mean(res * res.conj()).real
 
         return loss
+
+    def forward(self):
+        """Forward pass."""
 
 
 # =============================================================================
