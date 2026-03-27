@@ -150,7 +150,6 @@ class IIDPriorDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx):
-        print("I am called with idx", idx)
         samples = self.prior.sample(1)
         return (samples[0],)
 
