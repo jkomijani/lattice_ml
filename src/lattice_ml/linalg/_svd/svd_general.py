@@ -11,9 +11,6 @@ import torch
 from .._eig import eigh
 from .svd_result import SVDResult
 
-from torch.linalg import svd
-
-
 __all__ = ["svd"]
 
 
@@ -79,19 +76,18 @@ class DeprecatedSVDResult:
         }
 
 
-def _svd(matrix):
-    r"""
-    Return singular value decomposition of the input complex, square matrix.
-
-    The singular value decomposition of matrix :math:`M` is
-
-    .. math::
-
-         M = U S V^\dagger
-
-    If :math:`S^{-1}` exists, then :math:`U V^\dagger` is unique, otherwise
-    it is not.
+# =============================================================================
+def svd(matrix: torch.Tensor) -> SVDResult:
     """
+    Compute the singular value decomposition of the complex square matrix.
+
+    Args:
+        matrix (torch.Tensor): Input tensor of shape (..., n, n).
+
+    Returns:
+        SVDResult: Structured SVD result.
+    """
+
     # First obtain S^2 and U
     s_sq, u = eigh(matrix @ matrix.adjoint())
 
