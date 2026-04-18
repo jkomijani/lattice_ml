@@ -1,12 +1,17 @@
 # Copyright (c) 2023 Javad Komijani
 
+"""Computes eigenvalues and eigenvectors of 3x3 normal matrices."""
+
+from typing import Callable
 import torch
 
 from .generic import fix_phase, eyes_like
 
+__all__ = ["eigvals3x3", "eign3x3"]
+
 
 # =============================================================================
-def eigvals3x3(matrix, return_invariants=False):
+def eigvals3x3(matrix, return_invariants=False, descending=False):
     r"""Return eigenvalues of 3x3 matrices using a closed form expression.
 
     To obtain the eigenvalues, we solve the characteristic equation:
@@ -34,6 +39,9 @@ def eigvals3x3(matrix, return_invariants=False):
     return_invariants : boolean
         in addition to the eigenvalues, return parameters mu, theta and phi;
         see the discription of algorithm below. (Default is False.)
+
+    descending: bool
+        controls the sorting order of eigenvalues. (Default is False.)
     """
 
     assert matrix.shape[-2:] == (3, 3), "matrix is supposed to be 3x3"
@@ -42,12 +50,14 @@ def eigvals3x3(matrix, return_invariants=False):
 
     b = torch.mean(matrix.diagonal(dim1=-1, dim2=-2), dim=-1)
 
-    c = (-matrix[..., 0, 0] * matrix[..., 1, 1]
+    c = (
+        - matrix[..., 0, 0] * matrix[..., 1, 1]
         + matrix[..., 0, 1] * matrix[..., 1, 0]
         - matrix[..., 0, 0] * matrix[..., 2, 2]
         + matrix[..., 0, 2] * matrix[..., 2, 0]
         - matrix[..., 1, 1] * matrix[..., 2, 2]
-        + matrix[..., 1, 2] * matrix[..., 2, 1]) / 3
+        + matrix[..., 1, 2] * matrix[..., 2, 1]
+    ) / 3
 
     d = torch.det(matrix)
 
@@ -56,7 +66,7 @@ def eigvals3x3(matrix, return_invariants=False):
 
     delta = torch.sqrt(q*q - p*p*p)
 
-    r_1 = b 
+    r_1 = b
     r_2 = (q + delta)**(1/3.)
     r_3 = p / r_2
 
@@ -83,31 +93,29 @@ def eigvals3x3(matrix, return_invariants=False):
     w2 = (-1 - 1j * 3**0.5) / 2  # w = exp(i * 4 pi /3)
 
     eigvals = torch.stack(
-               [r_1 + r_2 + r_3,
-                r_1 + r_2 * w1 + r_3 * w2,
-                r_1 + r_2 * w2 + r_3 * w1
-               ],
-               dim=-1
-               )
+       [r_1 + r_2 + r_3, r_1 + r_2 * w1 + r_3 * w2, r_1 + r_2 * w2 + r_3 * w1],
+       dim=-1
+    )
 
-    _, sorted_ind = torch.sort(eigvals.real, dim=-1)
+    _, sorted_ind = torch.sort(eigvals.real, dim=-1, descending=descending)
     eigvals = eigvals.gather(-1, sorted_ind)
 
     if return_invariants:
         return eigvals, (r_1, r_2, r_3, p, q, delta)
-    else:
-        return eigvals
+    return eigvals
 
 
 # =============================================================================
-def eign3x3(matrix,
-        func_4_eigvals = eigvals3x3,
-        subtract_trace = True,
-        method_4_nullspace = 'direct'
-        ):
+def eign3x3(
+    matrix: torch.Tensor,
+    func_4_eigvals: Callable = eigvals3x3,
+    descending: bool = False,
+    subtract_trace: bool = True,
+    method_4_nullspace: str = 'direct'
+):
     """
     Return eigenvalues and eigenvectors of 3x3 normal matrices.
-    
+
     A matrix is normal if and only if there exists a diagonal matrix of
     eigenvalues a unitary matrix of eigenvectors, meaning the eigenvectors can
     be orthogonalized.
@@ -152,9 +160,21 @@ def eign3x3(matrix,
     ----------
     matrix : tensor
         can be a single matrix or a batch of matrices.
+
+    func_4_eigvals: Callable
+        function for computing eigenvalues. (Default is `eigvals3x3`.)
+
+    descending: bool
+        controls the sorting order of eigenvalues. (Default is False.)
+
+    subtract_trace: bool = True
+        whether to subtract trace before computions. (Default is True.)
+
+    method_4_nullspace: str
+        method used for computing the nullspace. (Default is 'direct'.)
     """
     # For benchmarking see
-    # test_and_studies/eig_3x3/eig_decomposition_3x3_benchmarking.html 
+    # test_and_studies/eig_3x3/eig_decomposition_3x3_benchmarking.html
 
     # We assume eigvals are sorted. There are three cases:
     #     1. all eigenvalues are different
@@ -183,7 +203,7 @@ def eign3x3(matrix,
         mu = torch.mean(matrix.diagonal(dim1=-1, dim2=-2), dim=-1).unsqueeze(-1)
         matrix = matrix - mu.unsqueeze(-1) * eye
 
-    eigvals = func_4_eigvals(matrix)
+    eigvals = func_4_eigvals(matrix, descending=descending)
 
     for k in [0, 2]:
         indices = func_4_ind(k)
@@ -198,9 +218,7 @@ def eign3x3(matrix,
 
     if subtract_trace:
         return mu + eigvals, eigvecs
-    else:
-        return eigvals, eigvecs
-
+    return eigvals, eigvecs
 
 
 # =============================================================================
@@ -208,7 +226,7 @@ def nullspace3x3(matrix, indices=[0, 1, 2], tol=1e-14):
     """Return the (right) null space for 3x3 matrices with a zero eigenvalue:
 
     .. math::
-       
+
          M X = 0
 
     This function returns only one vector of the null space even if there are
@@ -247,20 +265,21 @@ def nullspace3x3(matrix, indices=[0, 1, 2], tol=1e-14):
     # transform col_a and col_b to make them perpendicular to col_c
     col_a = col_a - coef_a.unsqueeze(-1) * col_c
     col_b = col_b - coef_b.unsqueeze(-1) * col_c
-    
+
     # col_a and col_b are parallel since the matrix has a null space
     nullspace = orthonormal_to_parallel_vectors(
             col_a, col_b, indices=indices, tol=tol
             )
-    nullspace[:, indices[2]] = -coef_a * nullspace[:, indices[0]] \
-                               -coef_b * nullspace[:, indices[1]]
+    nullspace[:, indices[2]] = (
+        -coef_a * nullspace[:, indices[0]] - coef_b * nullspace[:, indices[1]]
+    )
 
     nullnorm = torch.linalg.vector_norm(nullspace, dim=-1, keepdim=True)
     nullspace = nullspace / nullnorm
 
     cond = (c_sq.ravel() <= tol)  # c_sq = |c.c|
     if torch.sum(cond) > 0:
-        nullspace[:, indices[0]][cond] = 0 
+        nullspace[:, indices[0]][cond] = 0
         nullspace[:, indices[1]][cond] = 0
         nullspace[:, indices[2]][cond] = 1
 
@@ -272,7 +291,7 @@ def nullspace3x3_from_cross_product(matrix, indices=[0, 1, 2], tol=1e-14):
     """Return the (right) null space for 3x3 matrices with a zero eigenvalue:
 
     .. math::
-       
+
          M X = 0
 
     This function returns only one vector of the null space even if there are
@@ -289,7 +308,7 @@ def nullspace3x3_from_cross_product(matrix, indices=[0, 1, 2], tol=1e-14):
     normal matrices, such as Hermitian and unitary matrices.
     Here we directly obtain the right eigenvectors, so that the method can be
     used for any matrices. However, if the cross product fails....
-    """                                                                         
+    """
     a = matrix[..., indices[0], :].view(-1, 3)  # first picked row
     b = matrix[..., indices[1], :].view(-1, 3)  # second picked row
 
