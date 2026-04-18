@@ -1,4 +1,4 @@
-# Copyright (c) 2023-2025 Javad Komijani
+# Copyright (c) 2023-2026 Javad Komijani
 
 """
 A module for computing singular value decomposition of complex square matrices.
@@ -9,15 +9,16 @@ from typing import Optional
 import torch
 
 from .._eig import eigh
+from .svd_result import SVDResult
 
 from torch.linalg import svd
 
 
-__all__ = ["svd", "SVDResult"]
+__all__ = ["svd"]
 
 
 @dataclass
-class SVDResult:
+class DeprecatedSVDResult:
     """
     Container for the outputs of `svd`.
 
@@ -244,7 +245,7 @@ def append_suvh(svd_):
     rdet = torch.det(uvh)**(1 / uvh.shape[-1])  # root of determinant
     # We now make determinant of uvh unity:
     uvh = uvh / rdet.reshape(*rdet.shape, 1, 1)
-    return SVDResult(
+    return DeprecatedSVDResult(
         U=svd_.U, S=svd_.S, Vh=svd_.Vh, rdet_angle=rdet, sUVh=uvh
     )
 
@@ -257,6 +258,6 @@ def append_su(svd_, matrix=None):
     det = torch.det(svd_.U @ svd_.Vh if matrix is None else matrix)
     rdet_angle = torch.angle(det) / svd_.U.shape[-1]  # r: rooted
     s_u = svd_.U * torch.exp(-1j * rdet_angle.reshape(*rdet_angle.shape, 1, 1))
-    return SVDResult(
+    return DeprecatedSVDResult(
         U=svd_.U, S=svd_.S, Vh=svd_.Vh, rdet_angle=rdet_angle, sU=s_u
         )
