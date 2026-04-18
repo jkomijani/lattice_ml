@@ -76,6 +76,23 @@ class DeprecatedSVDResult:
         }
 
 
+def eigh_with_descending_eigvals(matrix: torch.Tensor):
+    """
+    Compute the eigenvalue decomposition of a Hermitian matrix with eigenvalues
+    ordered in descending order.
+
+    Falls back to manual reordering if the backend does not support
+    the `descending` argument.
+    """
+    try:
+        w, v = eigh(matrix, descending=True)
+    except TypeError:
+        w, v = eigh(matrix)
+        w = torch.flip(w, dims=(-1,))
+        v = torch.flip(v, dims=(-1,))
+    return w, v
+
+
 # =============================================================================
 def svd(matrix: torch.Tensor) -> SVDResult:
     """
@@ -89,7 +106,7 @@ def svd(matrix: torch.Tensor) -> SVDResult:
     """
 
     # First obtain S^2 and U
-    s_sq, u = eigh(matrix @ matrix.adjoint())
+    s_sq, u = eigh_with_descending_eigvals(matrix @ matrix.adjoint())
 
     # V can be obtained by multiplying S^{-1} U^\dagger and matrix
     s = torch.sqrt(s_sq)
@@ -142,8 +159,9 @@ def slow_svd(matrix):
     not unique anymore. We use a particular presciption to handle this
     situation.
     """
-    s_sq, u = eigh(matrix @ matrix.adjoint())
-    _, naive_v = eigh(matrix.adjoint() @ matrix)  # v = naive_v @ D.adjoint()
+    s_sq, u = eigh_with_descending_eigvals(matrix @ matrix.adjoint())
+    _, naive_v = eigh_with_descending_eigvals(matrix.adjoint() @ matrix)
+    # Note: V = naive_v @ D.adjoint()
 
     s = torch.sqrt(s_sq)
     s[s_sq < 0] = 0  # to remove possible roundoff error
