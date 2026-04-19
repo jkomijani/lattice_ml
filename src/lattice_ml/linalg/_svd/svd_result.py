@@ -20,44 +20,23 @@ This decomposition is used to construct:
       U_polar = U @ Vh
 
 - The special unitary projection:
-      U_SU = argmax_{X ∈ SU(n)} ReTr (X† M)
+      U_{SU(n)} = argmax_{X ∈ SU(n)} ReTr (X† M)
 
   which is obtained by applying a diagonal phase correction matrix D:
 
-      U_SU = U @ D @ Vh
+      U_{SU(n)} = U @ D @ Vh
 
-  where D is a diagonal unitary matrix chosen such that det(U_SU) = 1.
+  where D is a diagonal unitary matrix chosen such that det(U_{SU(n)}) = 1,
+  while minimally adjusting phase.
 
 Features
 --------
 - Lazy, cached access to commonly used derived quantities:
-    * Polar unitary factor (U @ Vh)
+    * Polar unitary factor (U @ Vh); this one is not cached
     * Special unitary projection (SU(n))
     * Diagonal phase correction matrix
-    * Sigma matrix in the original basis
+    * Sigma matrix
 
-- Differentiable SU(n) projection via implicit constraint solving:
-    * Enforces det = 1 through a scalar Lagrange multiplier
-    * Compatible with PyTorch autograd
-
-- Designed for batched tensor inputs and use in optimization pipelines
-
-Notes
------
-- All operations support batched inputs with shape (..., n, n)
-- Cached properties are computed on first access and stored
-- The SU(n) projection preserves unitarity while minimally adjusting phase
-
-Typical Use
------------
-1. Compute SVD of a matrix
-2. Construct SVDResult
-3. Access:
-    - `.unitary_factor` for U(n) projection
-    - `.special_unitary_factor` for SU(n) projection
-    - `.diagonal_phase` for phase correction
-
-This module is intended for use in differentiable linear algebra workflows.
 """
 
 # pylint: disable=invalid-name, arguments-differ
@@ -82,25 +61,25 @@ class SVDResult:
     where:
         - U  ∈ ℂ^{n×n} is unitary (left singular vectors)
         - S  ∈ ℝ⁺^{n} is the vector of singular values
-        - Vh ∈ ℂ^{n×n} is unitary
+        - Vh ∈ ℂ^{n×n} is unitary (the dagger of right signular vectors V)
 
     This class also provides cached derived quantities, such SU(n) projections.
 
     Notes
     -----
     - All tensors may be batched (..., n, n) or (..., n)
-    - Lazy properties cache expensive matrix constructions
+    - Lazy properties cache expensive matrix constructions after first access
     - Designed for use in differentiable linear algebra pipelines
 
     Cached Attributes
     ------------------
-    _unitary : torch.Tensor
-        Polar unitary factor U @ Vh
     _s_unitary : torch.Tensor
         Projection of unitary factor onto SU(n)
+    _diagonal_phase: torch.Tensor
+        The diagonal phase matrix used in projection onto SU(n). We olny save
+        the diagonal terms and we use `D` to denote the full matrix.
     _sigma_matrix : torch.Tensor
-        Representation of Σ in the right-singular-vector basis:
-            Σ = Vh† @ diag(S) @ Vh
+        The Σ matrix defined as `Σ = V @ diag(D @ S) @ V†`.
 
     Attributes
     ----------
@@ -126,7 +105,6 @@ class SVDResult:
     S: torch.Tensor
     Vh: torch.Tensor
 
-    _unitary: torch.Tensor = field(default=None, init=False, repr=False)
     _s_unitary: torch.Tensor = field(default=None, init=False, repr=False)
     _diagonal_phase: torch.Tensor = field(default=None, init=False, repr=False)
     _sigma_matrix: torch.Tensor = field(default=None, init=False, repr=False)
@@ -166,9 +144,7 @@ class SVDResult:
     @property
     def unitary_factor(self):
         """Return the projection onto U(n), i.e., U @ Vh."""
-        if self._unitary is None:
-            self._unitary = self.U @ self.Vh
-        return self._unitary
+        return self.U @ self.Vh  # no need to be cached
 
     @property
     def special_unitary_factor(self):
@@ -207,7 +183,6 @@ class SVDResult:
 
     def clear_cache(self) -> None:
         """Clear cached quantities, but keep core SVD components (U, S, Vh)."""
-        self._unitary = None
         self._s_unitary = None
         self._diagonal_phase = None
         self._sigma_matrix = None
