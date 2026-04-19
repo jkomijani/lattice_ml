@@ -187,10 +187,19 @@ class SVDResult:
         return self._diagonal_phase
 
     @property
-    def sigma_matrix(self):
-        """Return Σ in the original basis: `Σ = V @ diag(S) @ V†`."""
+    def sigma_matrix_factor(self):
+        """Return the Σ factor: `Σ = V @ diag(D @ S) @ V†`.
+
+        Notes:
+            1. Using X to denote the projection onto SU(n), the original matrix
+               M can be factorized as `M = X Σ`
+            2. Because `Im(D S) = λ I`, where λ is the Lagrange multiplier
+               enforcing det = 1 in SU(n) projection.
+            3. From (2), we conclude Σ is Hermitian up to an additive imaginary
+               component as: `Σ = H + i λ I`, where H is a Hermitian matrix.
+        """
         if self._sigma_matrix is None:
-            D = self.diagonal_phase  # note that `Im(D S) ∝ I`
+            D = self.diagonal_phase_factor
             self._sigma_matrix = (
                 self.Vh.adjoint() @ ((D * self.S)[..., None] * self.Vh)
             )
