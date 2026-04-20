@@ -4,6 +4,8 @@
 A module for computing singular value decomposition of complex square matrices.
 """
 
+# pylint: disable=invalid-name
+
 from dataclasses import dataclass
 from typing import Optional
 import torch
@@ -14,6 +16,30 @@ from .svd_result import SVDResult
 __all__ = ["svd"]
 
 
+# =============================================================================
+def svd(matrix: torch.Tensor, backend: str = "custom") -> SVDResult:
+    """
+    Compute the singular value decomposition of the complex square matrix.
+
+    Args:
+        matrix (torch.Tensor): Input tensor of shape (..., n, n).
+        backend (str, optional): Which implementation to use:
+            - "custom": Uses a custom SVD implementation (default).
+            - "torch": Uses torch.linalg.svd.
+
+    Returns:
+        SVDResult: Structured SVD result.
+    """
+    if backend == "custom":
+        return custom_svd(matrix)
+    elif backend == "torch":
+        U, S, Vh = torch.linalg.svd(matrix)
+        return SVDResult(U=U, S=S, Vh=Vh)
+    else:
+        raise ValueError(f"Unknown backend: {backend}")
+
+
+# =============================================================================
 @dataclass
 class DeprecatedSVDResult:
     """
@@ -32,7 +58,6 @@ class DeprecatedSVDResult:
 
     Optional fields default to None, allowing partial initialization.
     """
-    # pylint: disable=invalid-name
     U: torch.Tensor
     S: torch.Tensor
     Vh: torch.Tensor
@@ -76,6 +101,7 @@ class DeprecatedSVDResult:
         }
 
 
+# =============================================================================
 def eigh_with_descending_eigvals(matrix: torch.Tensor):
     """
     Compute the eigenvalue decomposition of a Hermitian matrix with eigenvalues
@@ -94,7 +120,7 @@ def eigh_with_descending_eigvals(matrix: torch.Tensor):
 
 
 # =============================================================================
-def svd(matrix: torch.Tensor) -> SVDResult:
+def custom_svd(matrix: torch.Tensor) -> SVDResult:
     """
     Compute the singular value decomposition of the complex square matrix.
 
