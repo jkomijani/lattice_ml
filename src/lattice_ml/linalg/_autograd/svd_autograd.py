@@ -37,15 +37,15 @@ class SVD(torch.autograd.Function):
     """
 
     @classmethod
-    def apply_wrapper(clc, matrix):
-        u, s, vh = clc.apply(matrix)
+    def apply_wrapper(clc, matrix: torch.Tensor, backend: str = "custom"):
+        u, s, vh = clc.apply(matrix, backend)
         return SVDResult(U=u, S=s, Vh=vh)
 
     @staticmethod
-    def forward(ctx, matrix):
-        svd_ = svd(matrix)
-        ctx.save_for_backward(svd_.U, svd_.S, svd_.Vh)
-        return svd_.U, svd_.S, svd_.Vh
+    def forward(ctx, matrix: torch.Tensor, backend: str = "custom"):
+        svd_result = svd(matrix, backend)
+        ctx.save_for_backward(svd_result.U, svd_result.S, svd_result.Vh)
+        return svd_result.U, svd_result.S, svd_result.Vh
 
     @staticmethod
     def backward(ctx, grad_u, grad_s, grad_vh):
@@ -70,7 +70,7 @@ class SVD(torch.autograd.Function):
                 + nabla_plus * (uh_grad_u - vh_grad_v)
                 ) @ vh
 
-        return grad_matrix
+        return grad_matrix, None
 
 
 # =============================================================================
