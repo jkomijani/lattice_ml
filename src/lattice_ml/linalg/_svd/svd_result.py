@@ -428,7 +428,10 @@ class SolveLambdaSUN(torch.autograd.Function):
 
             f(λ, σ, θ) = 0
 
-        where `f(λ, σ, θ) = sum_j arcsin(λ / σ_j) - θ`.
+        where
+
+           f(λ, σ, θ) = sum_j arcsin(λ / σ_j) - θ
+
         Starting from:
 
             dλ df/dλ + dσ df/dσ + dθ df/dθ = 0
@@ -446,15 +449,16 @@ class SolveLambdaSUN(torch.autograd.Function):
         eps = ctx.eps
 
         # invert with numerical safety
-        x = lam[..., None] / singular_values.clamp_min(eps)
+        r = 1 / singular_values.clamp_min(eps)
+        x = lam[..., None] * r
         denom = torch.sqrt(torch.clamp(1 - x**2, min=eps**2))
 
         # Let us scale the derivatives for clarity, the scaling drops
-        lam_df_dlam = (x / denom).sum(dim=-1)  # indeed: λ ∂f/∂λ
-        lam_df_dsigma = -x**2 / denom  # indeed: λ ∂f/∂σ_j
-        lam_df_dtheta = -lam  # indeed λ ∂f/∂θ
+        df_dlam = (r / denom).sum(dim=-1)  # ∂f/∂λ
+        df_dsigma = -r * x / denom  # ∂f/∂σ_j
+        df_dtheta = -1  # ∂f/∂θ
 
-        grad_sigma = - (grad_lam / lam_df_dlam)[..., None] * lam_df_dsigma  # σ̄
-        grad_theta = - (grad_lam / lam_df_dlam) * lam_df_dtheta  # θ̄
+        grad_sigma = - df_dsigma * (grad_lam / df_dlam)[..., None]  # σ̄
+        grad_theta = - df_dtheta * (grad_lam / df_dlam)  # θ̄
 
         return grad_sigma, grad_theta, None, None
