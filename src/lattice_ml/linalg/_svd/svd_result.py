@@ -11,20 +11,20 @@ Overview
 --------
 Given a matrix M ∈ ℂ^{n×n}, its SVD is:
 
-    M = U @ diag(S) @ Vh
+    M = U @ S @ V†
 
-where U and Vh are unitary and S contains non-negative singular values.
+where U and V are unitary and S contains non-negative singular values.
 This decomposition is used to construct:
 
 - The polar (unitary) factor:
-      U_polar = U @ Vh
+      U_polar = U @ V†
 
 - The special unitary projection:
       U_{SU(n)} = argmax_{X ∈ SU(n)} ReTr (X† M)
 
   which is obtained by applying a diagonal phase correction matrix D:
 
-      U_{SU(n)} = U @ D @ Vh
+      U_{SU(n)} = U @ D† @ V†
 
   where D is a diagonal unitary matrix chosen such that det(U_{SU(n)}) = 1,
   while minimally adjusting phase.
@@ -32,7 +32,7 @@ This decomposition is used to construct:
 Features
 --------
 - Lazy, cached access to commonly used derived quantities:
-    * Polar unitary factor (U @ Vh); this one is not cached
+    * Polar unitary factor (U @ V†); this one is not cached
     * Special unitary projection (SU(n))
     * Diagonal phase correction matrix
     * Sigma matrix
@@ -56,12 +56,12 @@ class SVDResult:
 
     A matrix M is decomposed as:
 
-        M = U @ diag(S) @ Vh
+        M = U @ S @ V†
 
     where:
         - U  ∈ ℂ^{n×n} is unitary (left singular vectors)
         - S  ∈ ℝ⁺^{n} is the vector of singular values
-        - Vh ∈ ℂ^{n×n} is unitary (the dagger of right signular vectors V)
+        - V† ∈ ℂ^{n×n} is unitary (right signular vectors)
 
     This class also provides cached derived quantities, such SU(n) projections.
 
@@ -79,16 +79,13 @@ class SVDResult:
         The diagonal phase matrix used in projection onto SU(n). We olny save
         the diagonal terms and we use `D` to denote the full matrix.
     _sigma_matrix : torch.Tensor
-        The Σ matrix defined as `Σ = V @ diag(D @ S) @ V†`.
+        The Σ matrix defined as `Σ = V @ (D @ S) @ V†`.
 
     Attributes
     ----------
-    U : torch.Tensor
-        Left singular vectors (..., n, n)
-    S : torch.Tensor
-        Singular values (..., n)
-    Vh : torch.Tensor
-        Right singular vectors (Hermitian transpose) (..., n, n)
+    U (torch.Tensor): Left singular vectors (..., n, n)
+    S (torch.Tensor): Singular values (..., n)
+    Vh (torch.Tensor): Right singular vectors (..., n, n)
 
     Example
     -------
@@ -143,7 +140,7 @@ class SVDResult:
 
     @property
     def unitary_factor(self):
-        """Return the projection onto U(n), i.e., U @ Vh."""
+        """Return the projection onto U(n), i.e., U @ V†."""
         return self.U @ self.Vh  # no need to be cached
 
     @property
@@ -164,11 +161,11 @@ class SVDResult:
 
     @property
     def sigma_matrix_factor(self):
-        """Return the Σ factor: `Σ = V @ diag(D @ S) @ V†`.
+        """Return the Σ factor: `Σ = V @ (D @ S) @ V†`.
 
         Notes:
             1. Using X to denote the projection onto SU(n), the original matrix
-               M can be factorized as `M = X Σ`
+               M can be factorized as `M = X Σ`.
             2. Because `Im(D S) = λ I`, where λ is the Lagrange multiplier
                enforcing det = 1 in SU(n) projection.
             3. From (2), we conclude Σ is Hermitian up to an additive imaginary
@@ -195,7 +192,7 @@ def project_to_special_unitary_from_svd(svd_result: SVDResult, n_iter=8):
 
     The solution is obtained by correcting the unitary (polar) factor with an
     optimal diagonal phase matrix D:
-        X = U @ D @ Vh
+        X = U @ D† @ V†
 
     where:
         D = diag(e^{iθ_1}, ..., e^{iθ_n}) ∈ U(1)^n
@@ -207,7 +204,7 @@ def project_to_special_unitary_from_svd(svd_result: SVDResult, n_iter=8):
     The phases θ_j are determined via a scalar Lagrange multiplier λ solving:
         sum_j arcsin(λ / σ_j) = θ
 
-    where σ_j are the singular values and θ = -arg det(U @ Vh).
+    where σ_j are the singular values and θ = arg det(U @ V†).
 
     The optimal phases satisfy:
         sin(θ_j) = λ / σ_j
@@ -244,13 +241,13 @@ def project_to_special_unitary_from_svd(svd_result: SVDResult, n_iter=8):
     det_phase = torch.angle(torch.det(U_polar))
 
     # Step 3: solve for angles
-    angles = compute_optimal_phase_angles(svd_result.S, -det_phase, n_iter)
+    angles = compute_optimal_phase_angles(svd_result.S, det_phase, n_iter)
 
     # Step 4: construct diagonal correction
     D = torch.exp(1j * angles)
 
     # Step 5: reconstruct SU(N) matrix
-    return svd_result.U @ (D[..., None] * svd_result.Vh), D
+    return svd_result.U @ (D[..., None].conj() * svd_result.Vh), D
 
 
 def naive_project_to_special_unitary_from_svd(svd_result: SVDResult):
