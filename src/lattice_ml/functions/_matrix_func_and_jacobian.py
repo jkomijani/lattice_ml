@@ -8,6 +8,14 @@ import torch
 
 from lattice_ml.linalg import eigh, eigu, inverse_eign, reciprocal
 
+__all__ = [
+    "matrix_exp1jh_and_jacobian",
+    "matrix_angleu_and_jacobian",
+    "inverse_eign_and_jacobian",
+    "commutator_and_jacobian",
+    "product_to_antihermitian_and_jacobian"
+]
+
 
 # =============================================================================
 class MatrixFunctionTemplate(ABC):
@@ -144,6 +152,10 @@ class MatrixAngleU(MatrixFunctionTemplate):
         f_eigvals = torch.angle(eigvals)
         fp_eigvals = -1j * eigvals.conj()
         return f_eigvals, fp_eigvals
+
+
+matrix_exp1jh_and_jacobian = MatrixExp1jh()
+matrix_angleu_and_jacobian = MatrixAngleU()
 
 
 # =============================================================================
@@ -283,6 +295,52 @@ def commutator_and_jacobian(mat1, mat2):
     mat2_t = mat2.transpose(-2, -1)
 
     # J = I ⊗ Qᵀ − Q ⊗ I
+    jac = kronecker_product(eye, mat2_t) - kronecker_product(mat2, eye)
+
+    return mat, jac
+
+
+def product_to_antihermitian_and_jacobian(mat1, mat2):
+    """
+    Compute an anti-Hermitian matrix from a product of two Hermitian matrices,
+    and also compute its Jacobian w.r.t. the first argument.
+
+    The computation proceeds in two steps:
+        1. Form the product: `M = mat1 @ mat2`
+        2. Project to the anti-Hermitian part: `res = M - M†`
+
+    For Hermitian inputs, this is equivalent to the commutator:
+        res = mat1 @ mat2 - mat2 @ mat1
+
+    Using:
+        vec(M - M†) = vec(mat1 @ mat2) - vec((mat1 @ mat2)†),
+
+    and the identities:
+        vec(mat1 @ mat2) = (I ⊗ mat2ᵀ) vec(mat1)
+        vec((mat1 @ mat2)†) = (mat2 ⊗ I) vec(mat1),
+
+    the Jacobian is:
+        J = I ⊗ mat2ᵀ − mat2 ⊗ I
+
+    Args:
+        mat1 (torch.Tensor): Hermitian matrix of shape (..., n, n).
+        mat2 (torch.Tensor): Hermitian matrix of shape (..., n, n).
+
+    Returns:
+        torch.Tensor: Anti-Hermitian matrix M - M†.
+        torch.Tensor: Jacobian ∂vec(M - M†) / ∂vec(mat1).
+    """
+    # Step 1: product
+    mat = mat1 @ mat2
+
+    # Step 2: anti-Hermitian projection
+    mat = mat - mat.adjoint()
+
+    # Identity and transpose for vec identity
+    eye = eyes_like(mat1)
+    mat2_t = mat2.transpose(-2, -1)
+
+    # Jacobian: J = I ⊗ mat2ᵀ − mat2 ⊗ I
     jac = kronecker_product(eye, mat2_t) - kronecker_product(mat2, eye)
 
     return mat, jac
