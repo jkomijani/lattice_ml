@@ -75,6 +75,8 @@ class SVDResult:
     ------------------
     _s_unitary : torch.Tensor
         Projection of unitary factor onto SU(n)
+    _det_anlge: torch.Tensor
+        The angle of the matrix determinant.
     _diagonal_phase: torch.Tensor
         The diagonal phase matrix used in projection onto SU(n). We olny save
         the diagonal terms and we use `D` to denote the full matrix.
@@ -103,6 +105,7 @@ class SVDResult:
     Vh: torch.Tensor
 
     _s_unitary: torch.Tensor = field(default=None, init=False, repr=False)
+    _det_angle: torch.Tensor = field(default=None, init=False, repr=False)
     _diagonal_phase: torch.Tensor = field(default=None, init=False, repr=False)
     _sigma_matrix: torch.Tensor = field(default=None, init=False, repr=False)
 
@@ -160,6 +163,18 @@ class SVDResult:
         return self._diagonal_phase
 
     @property
+    def det_angle(self):
+        """Return the angle of the matrix determinant."""
+        if self._det_angle is None:
+            self._det_angle = torch.angle(torch.det(self.unitary_factor))
+        return self._det_angle
+
+    @property
+    def rdet_angle(self):
+        """Return the rooted angle of the matrix determinant."""
+        return self.det_angle / self.U.shape[-1]
+
+    @property
     def sigma_matrix_factor(self):
         """Return the Σ factor: `Σ = V @ (D @ S) @ V†`.
 
@@ -182,6 +197,7 @@ class SVDResult:
         """Clear cached quantities, but keep core SVD components (U, S, Vh)."""
         self._s_unitary = None
         self._diagonal_phase = None
+        self._det_angle = None
         self._sigma_matrix = None
 
 
