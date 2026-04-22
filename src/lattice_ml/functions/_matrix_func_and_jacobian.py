@@ -252,6 +252,21 @@ def commutator_and_jacobian(mat1, mat2):
         vec(AB)_{iN+j} = (A ⊗ I)_{iN+j, lN+k} vec(B)_{lN+k}
         vec(AB)_{iN+j} = (I ⊗ Bᵀ)_{iN+j, lN+k} vec(A)_{lN+k}
 
+    Interpretation (real vs complex, constrained spaces)
+    ----------------------------------------------------
+    - The Jacobian is algebraically valid for both real and complex matrices.
+
+    - For complex matrices, the full Jacobian depends on the intended notion of
+      derivative: complex (holomorphic) view vs real view, where there are two
+      real degrees of freedom for each complex variable.
+
+    - For constrained matrices (e.g., symmetric, Hermitian), the true degrees
+      of freedom are reduced. Then, quantities like det(J) must be computed on
+      a restricted Jacobian to avoide double-counted volume factors.
+
+    - This function was primarily developed with Hermitian P and Q in mind;
+      care is required when applying it outside this setting.
+
     Args:
         mat1 (torch.Tensor): Tensor P of shape (..., n, n).
         mat2 (torch.Tensor): Tensor Q of shape (..., n, n).
