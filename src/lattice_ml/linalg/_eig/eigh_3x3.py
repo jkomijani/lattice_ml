@@ -5,16 +5,27 @@
 import torch
 import numpy as np
 
-from .eig_3x3 import eign3x3
+from .eig_3x3 import eign3x3, eigvals3x3
 
 __all__ = ["eigvalsh3x3", "eigh3x3"]
 
 
 # =============================================================================
-def eigh3x3(matrix, **kwargs):
+def eigh3x3(matrix, use_eigvalsh3x3=True, **kwargs):
     """Computes eigenvalues and eigenvectors of 3x3 Hermitian matrices."""
-    u, v = eign3x3(matrix, func_4_eigvals=eigvalsh3x3, **kwargs)
+    if use_eigvalsh3x3:
+        func_4_eigvals = eigvalsh3x3
+    else:
+        func_4_eigvals = eigvalsh3x3_from_eigvals3x3
+    u, v = eign3x3(matrix, func_4_eigvals=func_4_eigvals, **kwargs)
     return u.real, v
+
+
+def eigvalsh3x3_from_eigvals3x3(matrix, descending=False):
+    """
+    Using the `eigvals3x3` and reporting the real part seems more precise!
+    """
+    return eigvals3x3(matrix, descending=descending).real
 
 
 # =============================================================================
