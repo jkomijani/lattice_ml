@@ -200,8 +200,10 @@ def eign3x3(
     eye = eyes_like(matrix)
 
     if subtract_trace:
-        mu = torch.mean(matrix.diagonal(dim1=-1, dim2=-2), dim=-1).unsqueeze(-1)
+        mu = torch.mean(matrix.diagonal(dim1=-1, dim2=-2), dim=-1)[..., None]
         matrix = matrix - mu.unsqueeze(-1) * eye
+    else:
+        mu = 0
 
     eigvals = func_4_eigvals(matrix, descending=descending)
 
@@ -209,9 +211,11 @@ def eign3x3(
         indices = func_4_ind(k)
         eigval = eigvals[..., k:k+1].unsqueeze(-1)
         eigvecs[..., k] = func_4_nullspace(
-                matrix - eigval * eye,
-                indices=indices
-                )
+            matrix - eigval * eye,
+            indices=indices,
+            tol=spectral_tol(mu + eigvals).ravel()
+        )
+
     eigvecs[..., 1] = cross_product(eigvecs[..., 2], eigvecs[..., 0]).conj()
 
     eigvecs = fix_phase(eigvecs)
@@ -222,7 +226,7 @@ def eign3x3(
 
 
 # =============================================================================
-def nullspace3x3(matrix, indices=[0, 1, 2], tol=1e-14):
+def nullspace3x3(matrix, indices=(0, 1, 2), tol=1e-14):
     """Return the (right) null space for 3x3 matrices with a zero eigenvalue:
 
     .. math::
@@ -247,10 +251,22 @@ def nullspace3x3(matrix, indices=[0, 1, 2], tol=1e-14):
     problem, we can switch to another method that uses cross-product of the
     first and second rows (yes, rows and not columns). But, we do not do it
     here because that method can fail too.
+
+    Strategy:
+    - Primary: assumes the third column is not near zero.
+    - Fallback: handles near-zero third column case.
+
+    Args:
+        matrix (Tensor): (..., 3, 3) input matrix.
+        indices (list[int]): permutation of [0, 1, 2] for column ordering.
+        tol (float | 1D torch.Tensor): tolerance for detecting zero columns.
+
+    Returns:
+        Tensor: (..., 3) normalized right null vector such that M X = 0.
     """
 
-    indices_flag = (0 in indices) and (1 in indices) and (2 in indices)
-    assert indices_flag, "indices must be a permutation of [0, 1, 2]"
+    assert matrix.shape[-2:] == (3, 3)
+    assert set(indices) == {0, 1, 2}, "indices must be permutation of [0,1,2]"
 
     # col_a, col_b, and col_c are distinct columns of matrix
     col_a = matrix[..., indices[0]].view(-1, 3)
@@ -266,10 +282,11 @@ def nullspace3x3(matrix, indices=[0, 1, 2], tol=1e-14):
     col_a = col_a - coef_a.unsqueeze(-1) * col_c
     col_b = col_b - coef_b.unsqueeze(-1) * col_c
 
+    # PRIMARY NULL VECTOR: c does not vanish, a & b are parallel
     # col_a and col_b are parallel since the matrix has a null space
     nullspace = orthonormal_to_parallel_vectors(
-            col_a, col_b, indices=indices, tol=tol
-            )
+        col_a, col_b, indices=indices, tol=tol
+    )
     nullspace[:, indices[2]] = (
         -coef_a * nullspace[:, indices[0]] - coef_b * nullspace[:, indices[1]]
     )
@@ -277,8 +294,9 @@ def nullspace3x3(matrix, indices=[0, 1, 2], tol=1e-14):
     nullnorm = torch.linalg.vector_norm(nullspace, dim=-1, keepdim=True)
     nullspace = nullspace / nullnorm
 
-    cond = (c_sq.ravel() <= tol)  # c_sq = |c.c|
-    if torch.sum(cond) > 0:
+    # FALLBACK: c vanishes
+    cond = (c_sq <= tol).ravel()  # c_sq = |c.c|
+    if torch.any(cond) > 0:
         nullspace[:, indices[0]][cond] = 0
         nullspace[:, indices[1]][cond] = 0
         nullspace[:, indices[2]][cond] = 1
@@ -287,7 +305,7 @@ def nullspace3x3(matrix, indices=[0, 1, 2], tol=1e-14):
 
 
 # =============================================================================
-def nullspace3x3_from_cross_product(matrix, indices=[0, 1, 2], tol=1e-14):
+def nullspace3x3_from_cross_product(matrix, indices=(0, 1, 2), tol=1e-14):
     """Return the (right) null space for 3x3 matrices with a zero eigenvalue:
 
     .. math::
@@ -308,6 +326,14 @@ def nullspace3x3_from_cross_product(matrix, indices=[0, 1, 2], tol=1e-14):
     normal matrices, such as Hermitian and unitary matrices.
     Here we directly obtain the right eigenvectors, so that the method can be
     used for any matrices. However, if the cross product fails....
+
+    Args:
+        matrix (Tensor): (..., 3, 3) input matrix.
+        indices (list[int]): permutation of [0, 1, 2] for column ordering.
+        tol (float | 1D torch.Tensor): tolerance for detecting zero columns.
+
+    Returns:
+        Tensor: (..., 3) normalized right null vector such that M X = 0.
     """
     a = matrix[..., indices[0], :].view(-1, 3)  # first picked row
     b = matrix[..., indices[1], :].view(-1, 3)  # second picked row
@@ -317,7 +343,7 @@ def nullspace3x3_from_cross_product(matrix, indices=[0, 1, 2], tol=1e-14):
     nullnorm = torch.linalg.vector_norm(nullspace, dim=-1, keepdim=True)
     nullspace = nullspace / nullnorm
 
-    cond = (nullnorm.ravel() <= tol)  # nullnorm = |a x b|
+    cond = (nullnorm.ravel() <= tol ** 0.5)  # nullnorm = |a x b|
     if torch.sum(cond) > 0:  # if nullnorm is zero at least for one case
         # The following three command lines assume the matrix is normal
         a = matrix[..., indices[0]].view(-1, 3)  # 1st picked column (not row)
@@ -336,7 +362,10 @@ def nullspace3x3_from_cross_product(matrix, indices=[0, 1, 2], tol=1e-14):
 
 
 # =============================================================================
-def cross_product(vec1, vec2):
+cross_product = torch.linalg.cross
+
+
+def _cross_product(vec1, vec2):  # use torch.linalg.cross
     """Return cross product of three dimensional vectors vec1 & vec2
     (over the last axis).
     """
@@ -348,10 +377,39 @@ def cross_product(vec1, vec2):
 
 
 # =============================================================================
-def orthonormal_to_parallel_vectors(vec1, vec2, indices=[0, 1, 2], tol=1e-14):
-    """Return an orthornormal vector to three dimensional vectors vec1 & vec2
-    that are assumed to be parallel.
+def orthonormal_to_parallel_vectors(vec1, vec2, indices=(0, 1, 2), tol=1e-14):
     """
+    Construct a normalized vector orthogonal to two parallel 3D vectors.
+
+    This routine assumes that vec1 and vec2 are nearly parallel. It constructs
+    an orthogonal direction by projecting their overlap structure and forming
+    a normalized 2D complement inside the coordinate subspace defined by
+    `indices`.
+
+    Parameters
+    ----------
+    vec1, vec2 : (..., 3) tensors
+        Input vectors assumed to be approximately parallel.
+
+    indices : list of int
+        Permutation of [0, 1, 2] defining which components are used internally
+        for reconstruction.
+
+    tol : float or 1D torch.Tensor
+        Threshold used to detect degenerate or near-zero configurations.
+
+    Returns
+    -------
+    vec3 : (..., 3) tensor
+        Unit vector orthogonal (in the constructed sense) to vec1 and vec2.
+        The result is normalized.
+
+    Notes
+    -----
+    - Works best when vec1 ∥ vec2 up to numerical precision.
+    - Fails gracefully when both vectors are near-zero (falls back to basis).
+    """
+
     x = torch.sum(vec1.conj() * vec2, dim=-1)
     y = torch.sum(vec1.conj() * vec1, dim=-1)
     z = torch.sqrt(x.conj() * x + y * y).real  # z = 0 -> x = y = 0 & vec1 = 0
@@ -360,9 +418,42 @@ def orthonormal_to_parallel_vectors(vec1, vec2, indices=[0, 1, 2], tol=1e-14):
     vec3[..., indices[0]] = -x / z
     vec3[..., indices[1]] = y / z
 
-    cond = (z.real <= tol).ravel()
-    if torch.sum(cond) > 0:
+    cond = z.ravel() <= tol
+    if torch.any(cond) > 0:
         vec3[..., indices[0]].view(-1)[cond] = 1
         vec3[..., indices[1]].view(-1)[cond] = 0
 
     return vec3
+
+
+# =============================================================================
+def spectral_tol(eigvals: torch.Tensor) -> torch.Tensor:
+    """
+    Compute a dtype- and scale-aware tolerance from eigenvalues.
+
+    The goal is to identify vectors whose components satisfy:
+        |v_i| ~ eps * |A|
+
+    where eps is the machine-precision. Therefore, in squared-norm space:
+        |v|^2 ~ eps^2 * |A|^2
+
+    We approximate |A| using the spectral radius (max |eigenvalue|).
+
+    Args:
+        eigvals (Tensor): eigenvalues of the matrix.
+
+    Returns:
+        Tensor: tolerance in squared-norm space.
+    """
+    dtype = eigvals.dtype
+    eps = torch.finfo(dtype).eps
+    tiny = torch.finfo(dtype).tiny
+
+    # spectral radius proxy for |A|
+    scale = eigvals.abs().amax(dim=-1)
+
+    # squared-norm threshold for machine-noise-level vectors
+    tol = (100 * eps ** 2) * (scale ** 2)
+
+    # Prevent underflow when extremely small
+    return torch.clamp(tol, min=100 * tiny)
