@@ -93,7 +93,7 @@ class ADSimplifiedSVD(SVD):
         grad_s = torch.diag_embed(grad_s)  # for matrix operations
         grad_matrix = u @ (grad_s + nabla_plus * uh_grad_u_times2) @ vh
 
-        return grad_matrix
+        return grad_matrix, None
 
 
 # =============================================================================
