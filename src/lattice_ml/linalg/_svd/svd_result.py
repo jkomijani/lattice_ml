@@ -20,7 +20,7 @@ This decomposition is used to construct:
       U_polar = U @ V†
 
 - The special unitary projection:
-      U_{SU(n)} = argmax_{X ∈ SU(n)} ReTr (X† M)
+      U_{SU(n)} = argmax_{Q ∈ SU(n)} ReTr (Q† M)
 
   which is obtained by applying a diagonal phase correction matrix D:
 
@@ -179,8 +179,8 @@ class SVDResult:
         """Return the Σ factor: `Σ = V @ (D @ S) @ V†`.
 
         Notes:
-            1. Using X to denote the projection onto SU(n), the original matrix
-               M can be factorized as `M = X Σ`.
+            1. Using Q to denote the projection onto SU(n), the original matrix
+               M can be factorized as `M = Q Σ`.
             2. Because `Im(D S) = λ I`, where λ is the Lagrange multiplier
                enforcing det = 1 in SU(n) projection.
             3. From (2), we conclude Σ is Hermitian up to an additive imaginary
@@ -204,18 +204,18 @@ class SVDResult:
 # =============================================================================
 def project_to_special_unitary_from_svd(svd_result: SVDResult, n_iter=8):
     """
-    Project the input onto SU(n) by solving `argmax_{X ∈ SU(n)} Re Tr(X† M)`.
+    Project the input onto SU(n) by solving `argmax_{Q ∈ SU(n)} Re Tr(Q† M)`.
 
     The solution is obtained by correcting the unitary (polar) factor with an
     optimal diagonal phase matrix D:
-        X = U @ D† @ V†
+        Q = U @ D† @ V†
 
     where:
         D = diag(e^{iθ_1}, ..., e^{iθ_n}) ∈ U(1)^n
 
     is chosen such that:
-        - det(X) = 1 (special unitary constraint)
-        - X is optimal for the above variational problem
+        - det(Q) = 1 (special unitary constraint)
+        - Q is optimal for the above variational problem
 
     The phases θ_j are determined via a scalar Lagrange multiplier λ solving:
         sum_j arcsin(λ / σ_j) = θ
