@@ -102,7 +102,11 @@ class ProjectDataAndGrad2SUn(ProjectGrad2SUn):
         - The same input u corrected for numerical errors
         """
         # Save u for use in the backward pass
-        u = naive_project_onto_su3(u)  # correct for small deviation from SU(n)
+        n = u.shape[-1]
+        if n == 3:
+            u = naive_project_onto_su3(u)
+        else:
+            print("OOPS: not implemented")
         ctx.save_for_backward(u)
         return u
 
