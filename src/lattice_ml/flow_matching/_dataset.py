@@ -125,33 +125,39 @@ class DatasetToIterable(IterableDataset):
             yield batch  # already a tuple
 
 
-class IIDPriorDataset(Dataset):
+class IIDPriorDataset(IterableDataset):
     """
-    Dataset that generates batches of i.i.d. samples from a prior distribution.
+    IterableDataset that generates batches of i.i.d. samples from a prior
+    distribution.
 
     Parameters
     ----------
     prior : object
         Distribution-like object with a `.sample(batch_size)` method that
         returns a batch of random samples (e.g., SU(n) matrices).
-    num_samples : int
-        The total size of dataset in one epoch.
+    batch_size : int
+        Number of samples per batch.
+    num_batches : int, optional (default=1)
+        Total number of batches to generate when iterating over the dataset.
 
     Yields
     ------
     tuple of torch.Tensor
-        A tuple containing one random sample.
+        A tuple containing one batch of random samples.
     """
-    def __init__(self, prior, num_samples: int):
+    def __init__(self, prior, batch_size: int, num_batches: int = 1):
         self.prior = prior
-        self.num_samples = num_samples
+        self.batch_size = batch_size
+        self.num_batches = num_batches
 
     def __len__(self):
-        return self.num_samples
+        return self.batch_size * self.num_batches
 
-    def __getitem__(self, idx):
-        samples = self.prior.sample(1)
-        return (samples[0],)
+    def __iter__(self):
+        # Generate num_batches independent sample batches
+        for _ in range(self.num_batches):
+            samples = self.prior.sample(self.batch_size)
+            yield (samples,)  # wrap in tuple to match DataLoader conventions
 
 
 class ProcessDataset(IterableDataset):
