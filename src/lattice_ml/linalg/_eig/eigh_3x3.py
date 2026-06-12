@@ -1,19 +1,35 @@
 # Copyright (c) 2023 Javad Komijani
 
+"""Computes eigenvalues and eigenvectors of 3x3 Hermitian matrices."""
+
 import torch
 import numpy as np
 
-from .eig_3x3 import eign3x3
+from .eig_3x3 import eign3x3, eigvals3x3
+
+__all__ = ["eigvalsh3x3", "eigh3x3"]
 
 
 # =============================================================================
-def eigh3x3(matrix, **kwargs):
-    u, v = eign3x3(matrix, func_4_eigvals = eigvalsh3x3, **kwargs)
+def eigh3x3(matrix, use_eigvalsh3x3=True, **kwargs):
+    """Computes eigenvalues and eigenvectors of 3x3 Hermitian matrices."""
+    if use_eigvalsh3x3:
+        func_4_eigvals = eigvalsh3x3
+    else:
+        func_4_eigvals = eigvalsh3x3_from_eigvals3x3
+    u, v = eign3x3(matrix, func_4_eigvals=func_4_eigvals, **kwargs)
     return u.real, v
 
 
+def eigvalsh3x3_from_eigvals3x3(matrix, descending=False):
+    """
+    Using the `eigvals3x3` and reporting the real part seems more precise!
+    """
+    return eigvals3x3(matrix, descending=descending).real
+
+
 # =============================================================================
-def eigvalsh3x3(matrix, return_invariants=False):
+def eigvalsh3x3(matrix, return_invariants=False, descending=False):
     r"""
     Return eigenvalues of 3x3 hermitian matrices using closed form expressions.
 
@@ -21,14 +37,16 @@ def eigvalsh3x3(matrix, return_invariants=False):
     ----------
     matrix : tensor
         can be a single matrix or a batch of matrices.
-        We assume `matrix` is hermition (over last two dimensions),
-        otherwise we treat it similar to pytorch by discarding the
-        upper diagonal terms.
+        We assume `matrix` is hermition (over last two dimensions), otherwise
+        we treat it similar to pytorch by discarding the upper diagonal terms.
 
     return_invariants : boolean
         in addition to the eigenvalues, return parameters mu, theta and phi;
         see the discription of algorithm below. (Default is False.)
-    
+
+    descending: bool
+        controls the sorting order of eigenvalues. (Default is False.)
+
     We now give the algorithm for eigenvalue determination of 3x3 Hermitian
     matrices.
 
@@ -83,7 +101,7 @@ def eigvalsh3x3(matrix, return_invariants=False):
     # H = [[a,       x - I y,  s - I t]
     #      [x + I y,    b,     p - I q]
     #      [s + I t, p + I q,    c    ]]
-    
+
     a = torch.real(matrix[..., 0, 0])
     b = torch.real(matrix[..., 1, 1])
     c = torch.real(matrix[..., 2, 2])
@@ -103,12 +121,14 @@ def eigvalsh3x3(matrix, return_invariants=False):
     a = a - mu
     b = b - mu
     # c = c - mu  # no need to calculate c, which is set to -(a + b)
-    
+
     theta = torch.sqrt(a*a + b*b + a*b + x*x + y*y + s*s + t*t + p*p + q*q)
 
     # minus_det is minus determinant of (H - \mu I)
-    minus_det = a * (p*p + q*q) + b * (s*s + t*t) \
-       + (a + b) * (a*b - x*x - y*y) - 2*(p*s*x + q*t*x - q*s*y + p*t*y)
+    minus_det = (
+        a * (p*p + q*q) + b * (s*s + t*t)
+        + (a + b) * (a*b - x*x - y*y) - 2*(p*s*x + q*t*x - q*s*y + p*t*y)
+    )
 
     argument = minus_det / theta**3 * (27**0.5 / 2)
     phi = torch.asin(argument) / 3  # phi \in [-pi/6, pi/6]
@@ -120,13 +140,13 @@ def eigvalsh3x3(matrix, return_invariants=False):
     phi[argument > 1] = np.pi/6
     phi[argument < -1] = -np.pi/6
 
-    eigvals = mu.unsqueeze(-1) \
-            + (2/3**0.5) * theta.unsqueeze(-1) \
-              * torch.sin(
-                   torch.stack([phi - 2*np.pi/3, phi, phi + 2*np.pi/3], dim=-1)
-                )  # does not have contribution from mu
+    if descending:
+        phistk = torch.stack([phi + 2*np.pi/3, phi, phi - 2*np.pi/3], dim=-1)
+    else:
+        phistk = torch.stack([phi - 2*np.pi/3, phi, phi + 2*np.pi/3], dim=-1)
+
+    eigvals = mu[..., None] + (2/3**0.5) * theta[..., None] * torch.sin(phistk)
 
     if return_invariants:
         return eigvals, (mu, theta, phi)
-    else:
-        return eigvals
+    return eigvals

@@ -12,8 +12,10 @@ such as in quantum computing, signal processing, or manifold optimization.
 """
 
 import torch
+from torch.nn.functional import normalize
 
-__all__ = ["project_grad_sun"]
+
+__all__ = ["project_grad_sun", "project_data_and_grad_sun"]
 
 
 class ProjectGrad2SUn(torch.autograd.Function):
@@ -73,6 +75,42 @@ class ProjectGrad2SUn(torch.autograd.Function):
         return g @ u
 
 
+class ProjectDataAndGrad2SUn(ProjectGrad2SUn):
+    """
+    Same as ProjectGrad2SUn, but additionally corrects small numerical
+    deviations from SU(n) in the forward pass due to numerical errors.
+
+    Forward:
+        Projects u back onto SU(n).
+
+    Backward:
+        Same Lie-algebra projection as ProjectGrad2SUn:
+            g = anti_hermitian_traceless(grad_u @ u†)
+            grad = g @ u
+    """
+
+    @staticmethod
+    def forward(ctx, u: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass: identity mapping.
+
+        Parameters:
+        - ctx: context object for saving variables for backward pass
+        - u: input matrix (should be special unitary up to numerical errors)
+
+        Returns:
+        - The same input u corrected for numerical errors
+        """
+        # Save u for use in the backward pass
+        n = u.shape[-1]
+        if n == 3:
+            u = naive_project_onto_su3(u)
+        else:
+            print("OOPS: not implemented")
+        ctx.save_for_backward(u)
+        return u
+
+
 def anti_hermitian_traceless(x: torch.Tensor) -> torch.Tensor:
     """
     Project the input onto the space of traceless anti-Hermitian matrices.
@@ -99,4 +137,35 @@ def anti_hermitian_traceless(x: torch.Tensor) -> torch.Tensor:
     return x - (trace / n) * eye
 
 
+def naive_project_onto_su3(y: torch.Tensor) -> torch.Tensor:
+    """
+    Naively projects a 3x3 complex matrix to SU(3) by orthonormalizing rows.
+
+    This function compute the SU(3) matrix Q that approximately maximizes
+    `ReTr(Q† M)` for the input matrix M. This method works well if M is close
+    to a unitary matrix. It first orthonormalizes the first two rows, then
+    reconstructs the third row to enforce unitarity and determinant = 1.
+    """
+    # Normalize matrix to ensure determinant is 1 (special unitary)
+    y = y / torch.linalg.det(y)[..., None, None] ** (1/3.)
+
+    # Unbind rows for further calculations
+    y_0, y_1, _ = torch.unbind(y, dim=-2)
+
+    # Normalize the first row
+    y_0 = normalize(y_0, dim=-1)
+
+    # Orthonormalize second row against the first
+    vdot = torch.sum(y_0.conj() * y_1, dim=-1, keepdim=True)
+    y_1 = normalize(y_1 - y_0 * vdot, dim=-1)
+
+    # Reconstruct third row as complex conjugate of cross product of first two
+    y_2 = torch.linalg.cross(y_0, y_1).conj()
+
+    y = torch.stack((y_0, y_1, y_2), dim=-2)
+
+    return y
+
+
 project_grad_sun = ProjectGrad2SUn.apply
+project_data_and_grad_sun = ProjectDataAndGrad2SUn.apply

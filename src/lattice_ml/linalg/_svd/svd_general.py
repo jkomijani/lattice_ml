@@ -1,23 +1,47 @@
-# Copyright (c) 2023-2025 Javad Komijani
+# Copyright (c) 2023-2026 Javad Komijani
 
 """
 A module for computing singular value decomposition of complex square matrices.
 """
+
+# pylint: disable=invalid-name
 
 from dataclasses import dataclass
 from typing import Optional
 import torch
 
 from .._eig import eigh
+from .svd_result import SVDResult
 
-from torch.linalg import svd
-
-
-__all__ = ["svd", "SVDResult"]
+__all__ = ["svd"]
 
 
+# =============================================================================
+def svd(matrix: torch.Tensor, backend: str = "custom") -> SVDResult:
+    """
+    Compute the singular value decomposition of the complex square matrix.
+
+    Args:
+        matrix (torch.Tensor): Input tensor of shape (..., n, n).
+        backend (str, optional): Which implementation to use:
+            - "custom": Uses a custom SVD implementation (default).
+            - "torch": Uses torch.linalg.svd.
+
+    Returns:
+        SVDResult: Structured SVD result.
+    """
+    if backend == "custom":
+        return custom_svd(matrix)
+    elif backend == "torch":
+        U, S, Vh = torch.linalg.svd(matrix)
+        return SVDResult(U=U, S=S, Vh=Vh)
+    else:
+        raise ValueError(f"Unknown backend: {backend}")
+
+
+# =============================================================================
 @dataclass
-class SVDResult:
+class DeprecatedSVDResult:
     """
     Container for the outputs of `svd`.
 
@@ -34,7 +58,6 @@ class SVDResult:
 
     Optional fields default to None, allowing partial initialization.
     """
-    # pylint: disable=invalid-name
     U: torch.Tensor
     S: torch.Tensor
     Vh: torch.Tensor
@@ -78,21 +101,38 @@ class SVDResult:
         }
 
 
-def _svd(matrix):
-    r"""
-    Return singular value decomposition of the input complex, square matrix.
-
-    The singular value decomposition of matrix :math:`M` is
-
-    .. math::
-
-         M = U S V^\dagger
-
-    If :math:`S^{-1}` exists, then :math:`U V^\dagger` is unique, otherwise
-    it is not.
+# =============================================================================
+def eigh_with_descending_eigvals(matrix: torch.Tensor):
     """
+    Compute the eigenvalue decomposition of a Hermitian matrix with eigenvalues
+    ordered in descending order.
+
+    Falls back to manual reordering if the backend does not support
+    the `descending` argument.
+    """
+    try:
+        w, v = eigh(matrix, descending=True)
+    except TypeError:
+        w, v = eigh(matrix)
+        w = torch.flip(w, dims=(-1,))
+        v = torch.flip(v, dims=(-1,))
+    return w, v
+
+
+# =============================================================================
+def custom_svd(matrix: torch.Tensor) -> SVDResult:
+    """
+    Compute the singular value decomposition of the complex square matrix.
+
+    Args:
+        matrix (torch.Tensor): Input tensor of shape (..., n, n).
+
+    Returns:
+        SVDResult: Structured SVD result.
+    """
+
     # First obtain S^2 and U
-    s_sq, u = eigh(matrix @ matrix.adjoint())
+    s_sq, u = eigh_with_descending_eigvals(matrix @ matrix.adjoint())
 
     # V can be obtained by multiplying S^{-1} U^\dagger and matrix
     s = torch.sqrt(s_sq)
@@ -145,8 +185,9 @@ def slow_svd(matrix):
     not unique anymore. We use a particular presciption to handle this
     situation.
     """
-    s_sq, u = eigh(matrix @ matrix.adjoint())
-    _, naive_v = eigh(matrix.adjoint() @ matrix)  # v = naive_v @ D.adjoint()
+    s_sq, u = eigh_with_descending_eigvals(matrix @ matrix.adjoint())
+    _, naive_v = eigh_with_descending_eigvals(matrix.adjoint() @ matrix)
+    # Note: V = naive_v @ D.adjoint()
 
     s = torch.sqrt(s_sq)
     s[s_sq < 0] = 0  # to remove possible roundoff error
@@ -244,7 +285,7 @@ def append_suvh(svd_):
     rdet = torch.det(uvh)**(1 / uvh.shape[-1])  # root of determinant
     # We now make determinant of uvh unity:
     uvh = uvh / rdet.reshape(*rdet.shape, 1, 1)
-    return SVDResult(
+    return DeprecatedSVDResult(
         U=svd_.U, S=svd_.S, Vh=svd_.Vh, rdet_angle=rdet, sUVh=uvh
     )
 
@@ -257,6 +298,6 @@ def append_su(svd_, matrix=None):
     det = torch.det(svd_.U @ svd_.Vh if matrix is None else matrix)
     rdet_angle = torch.angle(det) / svd_.U.shape[-1]  # r: rooted
     s_u = svd_.U * torch.exp(-1j * rdet_angle.reshape(*rdet_angle.shape, 1, 1))
-    return SVDResult(
+    return DeprecatedSVDResult(
         U=svd_.U, S=svd_.S, Vh=svd_.Vh, rdet_angle=rdet_angle, sU=s_u
         )
