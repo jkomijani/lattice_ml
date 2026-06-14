@@ -169,7 +169,7 @@ class VPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
 
     .. math::
         \gamma(t) = \frac{1}{1 - t + \epsilon}, \quad
-        \sigma^2(t) = 2\gamma(t),
+        \sigma^2(t) = 2 \gamma(t),
 
     and :math:`\epsilon > 0` prevents divergence as :math:`t \to 1`.
     """
@@ -180,48 +180,17 @@ class VPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
         return 1 / (1 - t + self.EPS)
 
     def sigma(self, t: torch.Tensor) -> torch.Tensor:
-        """
-        Return the instantaneous noise coefficient at time `t`.
-
-        Args:
-            t (torch.Tensor): Time tensor with values in (0, 1).
-
-        Returns:
-            torch.Tensor: Standard deviation of noise at time `t`.
-        """
         return (2 * self.gamma(t)) ** 0.5
 
     def sigma_square(self, t: torch.Tensor) -> torch.Tensor:
-        """
-        Return the square of instantaneous noise coefficient at time `t`.
-
-        Args:
-            t (torch.Tensor): Time tensor with values in (0, 1).
-        """
         return 2 * self.gamma(t)
 
-    def transition_noise_std(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        """
-        Return the accumulated noise standard deviation for the transition
-        from `t_0` to `t_1`.
+    def transition_mean_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
+        return (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
 
-        Args:
-            t_0 (torch.Tensor): Start time tensor.
-            t_1 (torch.Tensor): End time tensor. Note: `t_1 >= t_0`.
-        """
+    def transition_noise_std(self, t_0: torch.Tensor, t_1: torch.Tensor):
         eps = self.EPS
         return torch.sqrt(1 - (1 - t_1 + eps)**2 / (1 - t_0 + eps)**2)
-
-    def transition_mean_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        """
-        Return the mean scale factor for the transition from `t_0` to `t_1`,
-        i.e. the signal attenuation factor over the transition.
-
-        Args:
-            t_0 (torch.Tensor): Start time tensor.
-            t_1 (torch.Tensor): End time tensor. Note: `t_1 >= t_0`.
-        """
-        return (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
 
 
 # =============================================================================
@@ -238,7 +207,7 @@ class SubVPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
 
     .. math::
         \gamma(t) = \frac{1}{1 - t + \epsilon}, \quad
-        \sigma^2(t) = 2\gamma(t) (1 - e^{-\int_0^t \gamma(s) ds}),
+        \sigma^2(t) = 2 \gamma(t) (1 - e^{-\int_0^t \gamma(s) ds}),
 
     and :math:`\epsilon > 0` prevents divergence as :math:`t \to 1`.
     """
@@ -246,50 +215,17 @@ class SubVPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
     EPS = 1e-8  # Small constant to regulate the divergence at t = 1
 
     def gamma(self, t: torch.Tensor) -> torch.Tensor:
-        """
-        Return the drift coefficient at time `t`.
-
-        Args:
-            t (torch.Tensor): Time tensor with values in (0, 1).
-        """
         return 1 / (1 - t + self.EPS)
 
     def sigma(self, t: torch.Tensor) -> torch.Tensor:
-        """
-        Return the instantaneous noise coefficient at time `t`.
-
-        Args:
-            t (torch.Tensor): Time tensor with values in (0, 1).
-        """
         return (2 * self.gamma(t) * self.transition_noise_std(0, t)) ** 0.5
 
     def sigma_square(self, t: torch.Tensor) -> torch.Tensor:
-        """
-        Return the square of instantaneous noise coefficient at time `t`.
-
-        Args:
-            t (torch.Tensor): Time tensor with values in (0, 1).
-        """
         return 2 * self.gamma(t) * self.transition_noise_std(0, t)
 
     def transition_mean_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        """
-        Return the mean scale factor for the transition from `t_0` to `t_1`,
-        i.e. the signal attenuation factor over the transition.
-
-        Args:
-            t_0 (torch.Tensor): Start time tensor.
-            t_1 (torch.Tensor): End time tensor. Note: `t_1 >= t_0`.
-        """
         return (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
 
     def transition_noise_std(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        """
-        Return the accumulated noise standard deviation for the transition
-        from `t_0` to `t_1`.
-
-        Args:
-            t_0 (torch.Tensor): Start time tensor.
-            t_1 (torch.Tensor): End time tensor. Note: `t_1 >= t_0`.
-        """
-        return (t_1 - t_0) / (1 - t_0 + self.EPS)
+        factor = (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
+        return torch.sqrt(t_1**2 - (factor * t_0)**2) / (1 + self.EPS)
