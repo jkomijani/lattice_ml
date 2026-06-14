@@ -11,8 +11,8 @@ import torch
 from lattice_ml.integrate import odeint
 
 from ._trainer import Trainer
-from ._noise_schedule import VPInverseTimeNoiseSchedule
-from ._noise_schedule import SubVPInverseTimeNoiseSchedule
+from ._sde_schedule import VPScheduleWithInverseTimeGamma
+from ._sde_schedule import SubVPScheduleWithInverseTimeGamma
 
 
 __all__ = ["DiffusionModel", "VPDiffuser", "SubVPDiffuser"]
@@ -189,17 +189,17 @@ class VPDiffuser(torch.nn.Module):
     By default, we use :math:`\gamma(t) = 1 / (1 - t)`.
     """
 
-    def __init__(self, sigma_schedule: Callable | None = None):
+    def __init__(self, sde_schedule: Callable | None = None):
         """Initializes the diffusion process with a score function.
 
         Args:
-            sigma_schedule (Callable): Defines the time-dependent noise scale.
-                (Default is :class:`VPInverseTimeNoiseSchedule()`.)
+            sde_schedule (Callable): Defines the time-dependent functions of
+            the SDE. (Default is :class:`VPScheduleWithInverseTimeGamma()`.)
         """
         super().__init__()
-        if sigma_schedule is None:
-            sigma_schedule = VPInverseTimeNoiseSchedule()
-        self.sigma_schedule = sigma_schedule
+        if sde_schedule is None:
+            sde_schedule = VPScheduleWithInverseTimeGamma()
+        self.sde_schedule = sde_schedule
 
     def forward(self, x_0: torch.Tensor, t_0: torch.Tensor, t: torch.Tensor):
         """
@@ -248,8 +248,8 @@ class VPDiffuser(torch.nn.Module):
         t = t.view(-1, *[1] * (x_0.ndim - 1))
 
         # Compute accumulated noise standard deviation and its complementary
-        noise_scale = self.sigma_schedule.cumulative_noise_scale(t_0, t)
-        signal_scale = self.sigma_schedule.cumulative_signal_scale(t_0, t)
+        noise_scale = self.sde_schedule.transition_noise_std(t_0, t)
+        signal_scale = self.sde_schedule.transition_mean_scale(t_0, t)
 
         # Sample from normal distribution
         noise = torch.randn_like(x_0)
@@ -316,7 +316,7 @@ class VPDiffuser(torch.nn.Module):
 
         def drift_fn(t, x_t):
             """Compute the drift fucntion for the ODE form of the process."""
-            coeff = -0.5 * self.sigma_schedule.sigma_square(t)
+            coeff = -0.5 * self.sde_schedule.sigma_square(t)
             return coeff * score_plus_x_fn(t, x_t)
 
         return odeint(drift_fn, t_span, x_0, **solver_kwargs)
@@ -334,17 +334,17 @@ class SubVPDiffuser(torch.nn.Module):
     By default, we use :math:`\gamma(t) = 1 / (1 - t)`.
     """
 
-    def __init__(self, sigma_schedule: Callable | None = None):
+    def __init__(self, sde_schedule: Callable | None = None):
         """Initializes the diffusion process with a score function.
 
         Args:
-            sigma_schedule (Callable): Defines the time-dependent noise scale.
-                (Default is :class:`VPInverseTimeNoiseSchedule()`.)
+            sde_schedule (Callable): Defines the time-dependent functions of
+            the SDE. (Default is :class:`SubVPScheduleWithInverseTimeGamma()`.)
         """
         super().__init__()
-        if sigma_schedule is None:
-            sigma_schedule = SubVPInverseTimeNoiseSchedule()
-        self.sigma_schedule = sigma_schedule
+        if sde_schedule is None:
+            sde_schedule = SubVPScheduleWithInverseTimeGamma()
+        self.sde_schedule = sde_schedule
 
     def forward(self, x_0: torch.Tensor, t_0: torch.Tensor, t: torch.Tensor):
         """
@@ -393,8 +393,8 @@ class SubVPDiffuser(torch.nn.Module):
         t = t.view(-1, *[1] * (x_0.ndim - 1))
 
         # Compute accumulated noise standard deviation and its complementary
-        noise_scale = self.sigma_schedule.cumulative_noise_scale(t_0, t)
-        signal_scale = self.sigma_schedule.cumulative_signal_scale(t_0, t)
+        noise_scale = self.sde_schedule.transition_noise_std(t_0, t)
+        signal_scale = self.sde_schedule.transition_mean_scale(t_0, t)
 
         # Sample from normal distribution
         noise = torch.randn_like(x_0)
@@ -429,7 +429,7 @@ class SubVPDiffuser(torch.nn.Module):
 
         def drift_fn(t, x_t):
             """Compute the drift fucntion for the ODE form of the process."""
-            coeff = -0.5 * self.sigma_schedule.sigma_square(t)
+            coeff = -0.5 * self.sde_schedule.sigma_square(t)
             return -x_t + coeff * score_plus_x_fn(t, x_t)
 
         return odeint(drift_fn, t_span, x_0, **solver_kwargs)
