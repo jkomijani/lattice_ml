@@ -215,7 +215,7 @@ class VPDiffuser(torch.nn.Module):
             t (torch.Tensor): A 0d or 1d tensor of the terminal times.
 
         Note:
-            At least one of `t_0` or `t` must be an instace of `torch.Tensor`.
+            At least one of `t_0` or `t` must be an instance of `torch.Tensor`.
             If a 1d tensor, their lengths must match the batch size of `x_0`.
 
         In addition to the state at time `t`, this method computes and returns
@@ -360,7 +360,7 @@ class SubVPDiffuser(torch.nn.Module):
             t (torch.Tensor): A 0d or 1d tensor of the terminal times.
 
         Note:
-            At least one of `t_0` or `t` must be an instace of `torch.Tensor`.
+            At least one of `t_0` or `t` must be an instance of `torch.Tensor`.
             If a 1d tensor, their lengths must match the batch size of `x_0`.
 
         In addition to the state at time `t`, this method computes and returns
