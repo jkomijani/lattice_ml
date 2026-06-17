@@ -168,7 +168,7 @@ class VPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
     where:
 
     .. math::
-        \gamma(t) = \frac{1}{1 - t + \epsilon}, \quad
+        \gamma(t) = \frac{\gamma_0}{1 - t + \epsilon}, \quad
         \sigma^2(t) = 2 \gamma(t),
 
     and :math:`\epsilon > 0` prevents divergence as :math:`t \to 1`.
@@ -176,8 +176,10 @@ class VPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
 
     EPS = 1e-8  # Small constant to regulate the divergence at t = 1
 
+    gamma_0 = 1
+
     def gamma(self, t: torch.Tensor) -> torch.Tensor:
-        return 1 / (1 - t + self.EPS)
+        return self.gamma_0 / (1 - t + self.EPS)
 
     def sigma(self, t: torch.Tensor) -> torch.Tensor:
         return (2 * self.gamma(t)) ** 0.5
@@ -186,11 +188,11 @@ class VPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
         return 2 * self.gamma(t)
 
     def transition_mean_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        return (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
+        return ((1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)) ** self.gamma_0
 
     def transition_noise_std(self, t_0: torch.Tensor, t_1: torch.Tensor):
         eps = self.EPS
-        return torch.sqrt(1 - (1 - t_1 + eps)**2 / (1 - t_0 + eps)**2)
+        return torch.sqrt(1 - self.transition_mean_scale(t_0, t_1)**2)
 
 
 # =============================================================================
