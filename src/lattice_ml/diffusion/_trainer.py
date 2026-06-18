@@ -11,6 +11,7 @@ import torch
 import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from torch.nn.utils import clip_grad_norm_
 from tqdm import tqdm
 import numpy as np
 import pydantic
@@ -120,8 +121,13 @@ class Trainer:
         self.config.update(**kwargs)
 
         parameters = self.model.parameters()
-        out = self.config.configure_optimizers(parameters)
-        self.optimizer, self.scheduler = out
+        hyperparam = self.config.hyperparam
+        self.optimizer = self.config.optimizer_class(parameters, **hyperparam)
+
+        if self.config.scheduler_class is None:
+            self.scheduler = None
+        else:
+            self.scheduler = self.config.scheduler_class(self.optimizer)
 
     def run_training(self, training_dataloader, n_epochs: int, **config):
         """Run the training workflow (distributed or non-distributed).
@@ -193,8 +199,10 @@ class Trainer:
 
             loss = self.training_epoch()
             self.logger.log_epoch(self.current_epoch, {'loss': loss})
+
             if self.scheduler is not None:
-                self.scheduler.step()
+                if not self.config.scheduler_per_batch:
+                    self.scheduler.step()
 
         self.save_checkpoint(save_checkpoint_path)
 
@@ -265,7 +273,14 @@ class Trainer:
 
             self.optimizer.zero_grad()  # clears old gradients from last steps
             loss.backward()
+
+            if self.config.clip_grad_norm:
+                clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
             self.optimizer.step()
+
+            if self.scheduler is not None and self.config.scheduler_per_batch:
+                self.scheduler.step()
 
             bsize = batch[0].shape[0]
             loss_sum += bsize * loss.detach()
@@ -305,21 +320,13 @@ class TrainingConfiguration(pydantic.BaseModel):
     optimizer_class: Callable = torch.optim.AdamW
     scheduler_class: Callable | None = None
     hyperparam: Dict = {}
+    clip_grad_norm: bool = False
+    scheduler_per_batch: bool = False  # True/False: step every batch/epoch
 
     def update(self, **kwargs):
         """Update the attributes."""
         for key, value in kwargs.items():
             setattr(self, key, value)
-
-    def configure_optimizers(self, parameters):
-        """Define and return optimizer (and scheduler)."""
-        optimizer = self.optimizer_class(parameters, **self.hyperparam)
-        if self.scheduler_class is None:
-            scheduler = None
-        else:
-            scheduler = self.scheduler_class(optimizer)
-
-        return optimizer, scheduler
 
 
 # =============================================================================
@@ -540,7 +547,11 @@ class CSVLogger:
 
     def log_epoch(self, epoch: int, metrics: Dict):
         """Log metrics for given epoch."""
-        metrics = {k: self._reduce(v).item() for k, v in metrics.items()}
+
+        def reduce_to_float(x):
+            return self._reduce(x).item() if isinstance(x, torch.Tensor) else x
+
+        metrics = {k: reduce_to_float(v) for k, v in metrics.items()}
         entry = {"epoch": epoch, **metrics}
 
         if self.buffer and self.buffer[-1]["epoch"] == epoch:

@@ -118,7 +118,7 @@ def symplectic_odeint(
 
     # Determine number of steps from step size if not explicitly given
     if num_steps is None:
-        num_steps = max(1, int(abs((t1 - t0) / step_size)))
+        num_steps = max(1, int(abs((t1 - t0) / step_size) + 1 - 1e-6))
 
     time_grid = torch.linspace(t0, t1, 1 + num_steps, device=q0.device)
 
@@ -228,7 +228,7 @@ def lie_symplectic_odeint(
 
     # Determine number of steps from step size if not explicitly given
     if num_steps is None:
-        num_steps = max(1, int(abs((t1 - t0) / step_size)))
+        num_steps = max(1, int(abs((t1 - t0) / step_size) + 1 - 1e-6))
 
     time_grid = torch.linspace(t0, t1, 1 + num_steps, device=p0.device)
 
@@ -318,7 +318,7 @@ def u1_symplectic_odeint(
 
     # Determine number of steps from step size if not explicitly given
     if num_steps is None:
-        num_steps = max(1, int(abs((t1 - t0) / step_size)))
+        num_steps = max(1, int(abs((t1 - t0) / step_size) + 1 - 1e-6))
 
     time_grid = torch.linspace(t0, t1, 1 + num_steps, device=p0.device)
 
