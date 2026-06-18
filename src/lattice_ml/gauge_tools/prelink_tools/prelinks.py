@@ -105,7 +105,8 @@ __all__ = [
 def link_to_prelink(
     U: torch.Tensor,
     prefix_dims: int = 1,
-    sites_before_link: bool = True
+    sites_before_link: bool = True,
+    transverse_boundary_mode: str = 'zero'
 ) -> torch.Tensor:
     """
     Build the link prepotentials (prelinks) from gauge links.
@@ -136,6 +137,12 @@ def link_to_prelink(
         Number of leading batch/channel dimensions in the tensor.
     sites_before_link : bool, default=True
         If True, the spatial lattice axes precede the link direction axis.
+    transverse_boundary_mode : {'zero', 'periodic'}, default='zero'
+        Boundary condition applied to the transverse directions when extending
+        the lattice: 'zero' zero-pads the transverse directions and 'periodic'
+        extends the transverse directions periodically.
+        Use 'zero' for the prelink parametrization
+        and 'periodic' for the holonomy parametrization.
 
     Returns
     -------
@@ -184,7 +191,7 @@ def link_to_prelink(
     prelinks_stack: list[torch.Tensor] = [None] * spatial_ndim
 
     # Step 0: Fix gauge freedom using origin Polyakov loop in mu=0
-    V0 = calc_origin_polyakov(links_stack[0], prefix_dims)
+    V0 = calc_origin_polyakov(links_stack[0], prefix_dims).adjoint()
     prelinks_stack[0] = V0  # initial value for first axis
 
     # Recursive integration: lines → planes → cubes → hypercubes
@@ -237,7 +244,11 @@ def link_to_prelink(
             V0 = torch.narrow(V0, extended_dim, 0, V0.shape[extended_dim] - 1)
 
     # Stack prelinks along the link direction to form full V tensor
-    V = torch.stack(pad_to_max_shape(prelinks_stack), dim=link_axis)
+    pad_value = 0 if transverse_boundary_mode == 'zero' else 'periodic'
+    V = torch.stack(
+        pad_to_max_shape(prelinks_stack, pad_value=pad_value),
+        dim=link_axis
+    )
     return V
 
 
@@ -329,16 +340,14 @@ def reduce_prelink_symmetry_to_global(V: torch.Tensor, **kwargs):
 
         link_to_prelink(prelink_to_link(V))
 
-    is generally *not* the identity on prelinks. Instead, it fixes the
-    integration convention used to construct prelinks from links (e.g.,
-    by choosing a reference origin), thereby removing the residual
-    semi-global gauge freedom of the prelink representation.
+    is generally not the identity on prelinks. Instead, it fixes the convention
+    used to construct prelinks from links (by choosing a reference origin),
+    removing the residual semi-global gauge freedom of the prelinks.
 
-    As a result, the returned tensor transforms only under a single
-    global gauge transformation rather than the original semi-global
-    symmetry.
+    As a result, the returned tensor transforms only under a single global
+    gauge transformation rather than the original semi-global symmetry.
     """
-    return link_to_prelink(prelink_to_link(V))
+    return link_to_prelink(prelink_to_link(V, **kwargs), **kwargs)
 
 
 # =============================================================================
@@ -430,8 +439,9 @@ def prelink_to_left_right_pair(
 # =============================================================================
 def integrate_prelink_along_axis(
     U: torch.Tensor,
-    V0: torch.Tensor,
-    dim_mu: int
+    V_init: torch.Tensor,
+    dim_mu: int,
+    n_steps: int = None,
 ) -> torch.Tensor:
     """
     Integrate prelinks along a given axis from a specified origin.
@@ -444,37 +454,43 @@ def integrate_prelink_along_axis(
     Parameters
     ----------
     U : torch.Tensor
-        Tensor of links.
+        Tensor of links in mu direction.
 
-    V0 : torch.Tensor
+    V_init : torch.Tensor
         Initial prelink value at index 0 along `dim_mu`.
         Shape must match U with the `dim_mu` axis removed.
 
     dim_mu : int
-        Axis along which to integrate.
+        Axis along which to integrate (inclduing batch axes).
+
+    n_steps : int or None, default=None
+        Number of integration steps. Defaults to U.shape[dim_mu].
 
     Returns
     -------
     torch.Tensor
-        Prelink tensor V of shape as U, except the size along `dim_mu` is N+1.
+        Prelink tensor V of shape as U, except the size along `dim_mu`
+        is always n_steps + 1.
     """
 
     # Length along integration axis
     N = U.shape[dim_mu]
+    if n_steps is None:
+        n_steps = N
 
-    # Construct V shape (extend dim_mu by +1)
+    # Construct V shape
     V_shape = list(U.shape)
-    V_shape[dim_mu] = N + 1
+    V_shape[dim_mu] = n_steps + 1
 
     V = torch.zeros(V_shape, dtype=U.dtype, device=U.device)
 
-    # Set initial value V[..., 0, :, :] = V0
+    # Set initial value V[..., 0, :, :] = V_init
     idx0 = [slice(None)] * V.ndim
     idx0[dim_mu] = 0
-    V[tuple(idx0)] = V0
+    V[tuple(idx0)] = V_init
 
     # Forward group integration
-    for i in range(N):
+    for i in range(n_steps):
         # Prepare index slices for current, next prelink, & corresponding link
         idx_current = [slice(None)] * V.ndim
         idx_next = [slice(None)] * V.ndim
@@ -519,7 +535,7 @@ def calc_origin_polyakov(
     )
     # shape: [batch..., n0, Nc, Nc]
 
-    mu_axis = prefix_dims  # Spatial mmu=0 axis
+    mu_axis = prefix_dims  # Spatial mu=0 axis
 
     # Ordered product along mu=0
     result = line.select(mu_axis, 0)
@@ -569,17 +585,37 @@ def select_spatial_cut(
 
 # =============================================================================
 def pad_to_max_shape(tensor_list, pad_value=0):
-    """
-    Pad all tensors in a list to the same shape along each axis
-    by concatenating zeros.
+    r"""
+    Pad all tensors in a list to the same shape along each axis.
+
+    In ``prelinks_stack``, each directional component ``prelinks_stack[mu]``
+    has size (N_mu + 1) along its own axis mu but may differ in size along
+    transverse directions. This function pads them to a common shape, and the
+    resulting stacked tensor is referred to as V.
+
+    The choice of padding mode matters depending on how V is subsequently used:
+
+    - For prelink-to-link computations (forward differences along axis mu),
+      the transverse padded boundary sites of V_mu are never accessed, so any
+      padding value (including zero) is harmless.
+
+    - For the prelink holonomy q_{0,mu}(x) = V_0(x) V_mu(x)^\dagger, both
+      components of V are evaluated at the *same* site x. At sites that fall
+      in the padded region of either V_0 or V_mu, a zero pad would yield a
+      zero matrix instead of a valid group element. Periodic padding is correct
+      here because the physical gauge links are periodic, and the padded
+      boundary value of V_mu along a transverse direction nu should reflect
+      the periodicity of the underlying link configuration.
 
     Parameters
     ----------
     tensor_list : list[torch.Tensor]
         List of tensors to pad.
 
-    pad_value : scalar, default=0
-        Value to pad with.
+    pad_value : scalar or "periodic", default=0
+        If "periodic", padding wraps values from the beginning of each axis
+        (circular padding via `torch.nn.functional.pad` with mode="circular").
+        If a scalar, that constant value is used instead.
 
     Returns
     -------
@@ -593,15 +629,40 @@ def pad_to_max_shape(tensor_list, pad_value=0):
 
     padded_list = []
     for t in tensor_list:
-        pad_sizes = []
-        # Compute how many zeros to add at the end of each dimension
-        for s, ms in zip(t.shape, max_shape):
-            pad_sizes.append(ms - s)
+        # Compute how many elements to add at the end of each dimension
+        pad_sizes = [ms - s for s, ms in zip(t.shape, max_shape)]
+
         # Prepare padding in PyTorch format (last dimension first)
         pad_flat = []
         for p in reversed(pad_sizes):
             pad_flat.extend([0, p])
-        padded_list.append(
-            torch.nn.functional.pad(t, pad_flat, value=pad_value)
-        )
+
+        if pad_value == "periodic":
+            for dim, p in enumerate(pad_sizes):
+                if p > 0:
+                    t = _circular_pad_along_dim(t, dim, p)
+            padded_list.append(t)
+        else:
+            padded_list.append(
+                torch.nn.functional.pad(t, pad_flat, value=pad_value)
+            )
     return padded_list
+
+
+def _circular_pad_along_dim(t: torch.Tensor, dim: int, p: int) -> torch.Tensor:
+    """Circularly pad tensor `t` by `p` elements at the end of dimension `dim`.
+
+    Works around PyTorch's limit of 3 spatial dimensions for circular padding
+    by reshaping to 3D (merging all dims before and after `dim`), padding, and
+    restoring the original shape.
+    """
+    shape = t.shape
+    n_before = 1
+    for s in shape[:dim]:
+        n_before *= s
+    n_after = 1
+    for s in shape[dim + 1:]:
+        n_after *= s
+    t = t.reshape(n_before, shape[dim], n_after)
+    t = torch.nn.functional.pad(t, [0, 0, 0, p], mode="circular")
+    return t.reshape(*shape[:dim], shape[dim] + p, *shape[dim + 1:])

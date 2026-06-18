@@ -219,7 +219,10 @@ def compute_sealed_prelinks(
         sealed_prelinks_stack[mu] = diff
 
     # Stack along the link axis; pad to maximum spatial shape if necessary
-    out = torch.stack(pad_to_max_shape(sealed_prelinks_stack), dim=link_axis)
+    out = torch.stack(
+        pad_to_max_shape(sealed_prelinks_stack, pad_value=0),
+        dim=link_axis
+    )
     return out
 
 
