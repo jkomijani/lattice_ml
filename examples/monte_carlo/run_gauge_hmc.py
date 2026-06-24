@@ -26,15 +26,14 @@ from typing import Tuple
 import time
 import torch
 
+from normflow.prior import UniformSUnPrior
+
 from lattice_ml.monte_carlo import SUnHMC
+from lattice_ml.functions import naive_project_onto_su3
 from lattice_ml.gauge_tools import (
     WilsonGaugeAction,
     compute_mean_normalized_trace_wilson_mxn_loop
 )
-
-from lattice_ml.functions import naive_project_onto_su3
-
-from normflow.prior import UniformSUnPrior
 
 
 if torch.cuda.is_available():
@@ -44,7 +43,8 @@ if torch.cuda.is_available():
 
 # =============================================================================
 def main(
-    beta: int = 3,
+    n_c: int = 3,
+    beta: float = 6.0,
     lat_shape: Tuple[int, ...] = (4, 4, 4, 4),
     num_parallel_chains: int = 1024,
     num_samples_per_chain: int = 1,
@@ -52,11 +52,14 @@ def main(
     num_leapfrog_steps: int = 15,
     save_fname: str = None
 ):
-    """Run Hybrid Monte Carlo and generate SU(3) gauge configurations.
+    """Run Hybrid Monte Carlo and generate SU(n_c) gauge configurations.
 
     Parameters
     ----------
-    beta : int, default=3
+    n_c : int, default=3
+        Number of gauge colors.
+
+    beta : float, default=6.0
         Inverse gauge coupling β appearing in the Wilson gauge action.
 
     lat_shape : Tuple[int, ...], default=(4,4,4,4)
@@ -88,10 +91,10 @@ def main(
         Final gauge configurations after thermalization.
 
         Shape:
-            (num_parallel_chains, *lat_shape, ndim, 3, 3)
+            (num_parallel_chains, *lat_shape, ndim, n_c, n_c)
 
         where `ndim = len(lat_shape)` is the number of spacetime directions and
-        matrices are SU(3) link variables.
+        matrices are SU(n_c) link variables.
 
     Side Effects
     ------------
@@ -101,22 +104,25 @@ def main(
 
     Notes
     -----
-    - Gauge fields are projected back onto SU(3) after every trajectory using
-      a naive projection method to control numerical drift.
+    - For SU(3) theory, gauge fields are projected back onto SU(3) after every
+      trajectory using a naive projection method to control numerical drift.
     - The returned tensor is cloned and made contiguous for safe use with
       multi-worker PyTorch DataLoaders.
 
     Initialization
     --------------
     Initial gauge configurations are sampled from `UniformSUnPrior`, which
-    draws SU(n) matrices uniformly with respect to the Haar measure on the
+    draws SU(n_c) matrices uniformly with respect to the Haar measure on the
     group. This provides a "warm" start where link variables are already valid
-    SU(3) elements and broadly distributed over configuration space.
+    SU(n_c) elements and broadly distributed over configuration space.
     """
+    assert n_c == 3, f"Projection to SU({n_c}) is not available!"
+
     action = WilsonGaugeAction(beta=beta)
 
     gauge_field_shape = (*lat_shape, len(lat_shape))
-    prior = UniformSUnPrior(n=3, shape=gauge_field_shape)
+
+    prior = UniformSUnPrior(n=n_c, shape=gauge_field_shape)
 
     hmc = SUnHMC(
         lambda t, q: action.algebra_force(q),
@@ -133,7 +139,7 @@ def main(
         x, is_accepted = hmc.step(x)
         acc_rate = torch.sum(is_accepted).item() / len(is_accepted)
         x = naive_project_onto_su3(x)
-        print(f"{k}\t{acc_rate:.2f}\t", analyize(x))
+        print(f"{k}\t{acc_rate:.2f}\t", analyze(x))
 
     print(f"Total thermalization time: {time.time() - t_0}")
 
@@ -148,7 +154,7 @@ def main(
     return x
 
 
-def analyize(x):
+def analyze(x):
     """Estimate the average plaquette and its statistical error."""
     w_1x1 = compute_mean_normalized_trace_wilson_mxn_loop(x, 1, 1)
     w_1x1_mean = w_1x1.mean()
@@ -170,6 +176,7 @@ if __name__ == '__main__':
 
     # CLI arguments
     add("--lat_shape", type=int, nargs='+')
+    add("--n_c", type=int)
     add("--beta", type=float)
     add("--num_parallel_chains", type=int)
     add("--num_samples_per_chain", type=int)
