@@ -16,4 +16,5 @@ from .wilson_loops_u1 import *
 from .wilson_staples import *
 from .wilson_staples_u1 import *
 
+from .holonomy_tools import *
 from .prelink_tools import *

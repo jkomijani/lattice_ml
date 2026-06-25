@@ -1,0 +1,213 @@
+# Created by Javad Komijani, 2026
+
+"""Hybrid Monte Carlo (HMC) driver for SU(3) lattice gauge theory.
+
+This script generates gauge-field configurations using Hamiltonian Monte Carlo
+with the Wilson holonomy action. It supports running many independent Markov
+chains in parallel on CPU or GPU via PyTorch.
+
+Main features
+-------------
+- SU(3) holonomy gauge-field sampling using HMC
+- Wilson plaquette holonomy action
+- Parallel independent chains
+- Projection back to SU(3) after each trajectory
+- Basic plaquette monitoring during thermalization
+
+Notes
+-----
+- Only a single configuration per chain is currently returned.
+- Multi-sample collection per chain is not yet implemented.
+- Designed for research / experimentation rather than production runs.
+"""
+
+
+from typing import Tuple
+import time
+import torch
+
+from normflow.prior import UniformSUnPrior
+
+from lattice_ml.monte_carlo import SUnHMC
+from lattice_ml.functions import naive_project_onto_su3
+from lattice_ml.gauge_tools import (
+    WilsonHolonomyAction,
+    holonomy_to_link,
+    compute_mean_normalized_trace_wilson_mxn_loop
+)
+
+
+if torch.cuda.is_available():
+    torch.set_default_device('cuda')
+    torch.set_default_dtype(torch.float32)
+
+
+# =============================================================================
+def main(
+    n_c: int = 3,
+    beta: float = 6.0,
+    lat_shape: Tuple[int, ...] = (4, 4, 4, 4),
+    num_parallel_chains: int = 1024,
+    num_samples_per_chain: int = 1,
+    num_thermal_traj: int = 100,
+    num_leapfrog_steps: int = 15,
+    save_fname: str = None
+):
+    """Run Hybrid Monte Carlo and generate SU(n_c) gauge configurations.
+
+    Parameters
+    ----------
+    n_c : int, default=3
+        Number of gauge colors.
+
+    beta : float, default=6.0
+        Inverse gauge coupling β appearing in the Wilson gauge action.
+
+    lat_shape : Tuple[int, ...], default=(4,4,4,4)
+        Lattice dimensions. Length determines number of spacetime dimensions.
+        Example: (Nt, Nx, Ny, Nz) for a 4D lattice.
+        Note that the extended lattice shape would be:
+            ext_lat_shape = tuple(n + 1 for n in lat_shape)
+
+    num_parallel_chains : int, default=1024
+        Number of independent Markov chains evolved in parallel. Each chain
+        produces one gauge configuration.
+
+    num_samples_per_chain : int, default=1
+        Number of configurations to collect per chain after thermalization.
+        Currently only `1` is supported (multi-sample not implemented).
+
+    num_thermal_traj : int, default=100
+        Number of HMC trajectories used for thermalization before returning
+        configurations.
+
+    num_leapfrog_steps : int, default=15
+        Number of leapfrog integration steps per HMC trajectory.
+
+    save_fname : str or None, default=None
+        If provided, the resulting tensor of gauge fields is saved to this path
+        using `torch.save`.
+
+    Returns
+    -------
+    x : torch.Tensor
+        Final holonomy configurations after thermalization.
+
+        Shape:
+            (num_parallel_chains, *ext_lat_shape, ndim-1, n_c, n_c)
+
+        where `ndim = len(lat_shape)` is the number of spacetime directions and
+        matrices are SU(n_c) holonomy variables.
+
+    Side Effects
+    ------------
+    - Prints acceptance rate and plaquette estimate during thermalization.
+    - May move computation to GPU if CUDA is available.
+    - Optionally writes configurations to disk.
+
+    Notes
+    -----
+    - For SU(3) theory, gauge fields are projected back onto SU(3) after every
+      trajectory using a naive projection method to control numerical drift.
+    - The returned tensor is cloned and made contiguous for safe use with
+      multi-worker PyTorch DataLoaders.
+
+    Initialization
+    --------------
+    Initial gauge configurations are sampled from `UniformSUnPrior`, which
+    draws SU(n_c) matrices uniformly with respect to the Haar measure on the
+    group. This provides a "warm" start where link variables are already valid
+    SU(n_c) elements and broadly distributed over configuration space.
+    """
+    assert n_c == 3, f"Projection to SU({n_c}) is not available!"
+
+    action = WilsonHolonomyAction(beta=beta)
+
+    ext_shape = tuple(n + 1 for n in lat_shape)
+    gauge_field_shape = (*ext_shape, len(lat_shape) - 1)
+
+    prior = UniformSUnPrior(n=n_c, shape=gauge_field_shape)
+
+    hmc = SUnHMC(
+        lambda t, q: action.algebra_force(q),
+        t_span=(0, 1),
+        num_steps=num_leapfrog_steps,
+        action=action
+    )
+
+    x = prior.sample(num_parallel_chains)
+
+    t_0 = time.time()
+
+    for k in range(num_thermal_traj):
+        x, is_accepted = hmc.step(x)
+        acc_rate = torch.sum(is_accepted).item() / len(is_accepted)
+        x = naive_project_onto_su3(x)
+        print(f"{k}\t{acc_rate:.2f}\t", analyze(x))
+
+    print(f"Total thermalization time: {time.time() - t_0}")
+
+    if num_samples_per_chain > 1:
+        pass  # not ready yet
+
+    x = x.clone().contiguous()  # safe for multi-worker DataLoader
+
+    if save_fname is not None:
+        torch.save(x, save_fname)
+
+    # print("action-value:")
+    # print(action.calc_mean_plaq(x) / 3)
+
+    # x = holonomy_to_link(x)
+    # w_1x1 = compute_mean_normalized_trace_wilson_mxn_loop(x, 1, 1)
+    # print("plaq")
+    # print(w_1x1.mean(dim=0))
+
+    return x
+
+
+def analyze(x):
+    """Estimate the average plaquette and its statistical error."""
+    x = holonomy_to_link(x)
+    w_1x1 = compute_mean_normalized_trace_wilson_mxn_loop(x, 1, 1)
+    w_1x1_mean = w_1x1.mean()
+    w_1x1_error = w_1x1.std() / x.shape[0] ** 0.5
+    w_1x1_str = f"{w_1x1_mean.item():.4f}({10_000 * w_1x1_error.item():0.0f})"
+    return f"{w_1x1_str}"
+
+
+# =============================================================================
+if __name__ == '__main__':
+    from argparse import ArgumentParser
+    import yaml
+
+    parser = ArgumentParser()
+    add = parser.add_argument
+
+    # YAML config file
+    add("--config", type=str, help="Path to config YAML file")
+
+    # CLI arguments
+    add("--lat_shape", type=int, nargs='+')
+    add("--n_c", type=int)
+    add("--beta", type=float)
+    add("--num_parallel_chains", type=int)
+    add("--num_samples_per_chain", type=int)
+    add("--num_thermal_traj", type=int)
+    add("--num_leapfrog_steps", type=int)
+    add("--save_fname", type=str)
+
+    args = vars(parser.parse_args())
+
+    # Start with YAML config if provided
+    config = {}
+    if args.get("config"):
+        with open(args["config"], "r") as f:
+            config = yaml.safe_load(f)
+
+    # Override config with CLI args if provided
+    config.update(
+        {k: v for k, v in args.items() if v is not None and k != "config"}
+    )
+
+    main(**config)
