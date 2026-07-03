@@ -4,8 +4,10 @@
 
 # pylint: disable=too-many-arguments, too-many-positional-arguments
 
-from typing import Callable, Sequence
+from typing import Callable, Dict, Sequence
 
+import numpy as np
+import pydantic
 import torch
 
 from lattice_ml.integrate import odeint
@@ -31,28 +33,55 @@ class DiffusionModel(torch.nn.Module):
 
     def __init__(
         self,
-        score_fn: Callable,
+        network_fn: Callable,
         diffuser: Callable | None = None,
-        as_score_plus_x: bool = False
+        as_score_plus_x: bool = True,
+        training_config: Dict | None = None,
     ):
         """
-        Initializes the diffusion process with a score function.
+        Initializes the diffusion process with a network function.
 
         Args:
-            score_fn (Callable): A neural network for the score function.
+            network_fn (Callable): A neural network whose output is interpreted
+                according to `as_score_plus_x`.
             diffuser (Callable | None): Defines the diffusion process. If not
                 provided, defaults to the default instance of `VPDiffuser`.
-            as_score_plus_x (bool): If True, treats the provided score function
-                as `score + x`.
+            as_score_plus_x (bool): If True (False), `network_fn` is treated as
+                predicting `score + x` (`score`). This reparameterization keeps
+                the model stable even when the diffuser's schedule diverges,
+                e.g., `gamma(t) = 1 / (1 - t)`. Default is True.
+            training_config (Dict | None): Optional dict passed to
+                :class:`TrainingConfiguration`.
         """
         if diffuser is None:
             diffuser = VPDiffuser()
 
         super().__init__()
-        self.score_fn = score_fn
+        self.network_fn = network_fn
         self.diffuser = diffuser
         self.as_score_plus_x = as_score_plus_x
         self.trainer = Trainer(self)
+        self.training_config = TrainingConfiguration(**(training_config or {}))
+
+    @property
+    def score_fn(self):
+        """The raw score function, regardless of `as_score_plus_x`."""
+        if self.as_score_plus_x:
+            def score_fn(t, x_t):
+                return self.network_fn(t, x_t) - x_t
+        else:
+            score_fn = self.network_fn
+        return score_fn
+
+    @property
+    def score_plus_x_fn(self):
+        """The `score + x` function, regardless of `as_score_plus_x`."""
+        if self.as_score_plus_x:
+            score_plus_x_fn = self.network_fn
+        else:
+            def score_plus_x_fn(t, x_t):
+                return self.network_fn(t, x_t) + x_t
+        return score_plus_x_fn
 
     def training_step(self, batch, batch_idx=None):
         """Perform a training step to be used by Trainer."""
@@ -65,22 +94,29 @@ class DiffusionModel(torch.nn.Module):
         # Run the process to time t & get the context of the diffusion
         x_t, diffusion_context = self.diffuser(x_0, t_0=0, t=t)
 
-        # Predict the score at (t, x_t).
-        score = self.score_fn(t, x_t)
-
         # Compute loss: implicit score matching
         if self.as_score_plus_x:
-            # The evaluated score should be treated as score + x_t
-            score_plus_x = score
+            score_plus_x = self.network_fn(t, x_t)
             loss = implicit_score_plus_x_matching(
                 score_plus_x, diffusion_context
             )
         else:
+            score = self.network_fn(t, x_t)
             loss = implicit_score_matching_with_variance_weight(
                 score,
                 diffusion_context['noise'],
                 diffusion_context['noise_scale']
             )
+
+        # Contribution from t = 0 if loss_c0 > 0
+        if self.training_config.loss_c0 > 0:
+            idx = (slice(None) if self.training_config.all_samples_c0
+                   else np.random.randint(0, len(x_0), size=1))
+            score0 = self.score_fn(0 * t[idx], x_0[idx])
+            force0 = self.training_config.force0_fn(x_0[idx])
+            res = score0 - force0
+            loss0 = torch.mean(res * res.conj()).real
+            loss = loss + self.training_config.loss_c0 * loss0
 
         return loss
 
@@ -173,7 +209,7 @@ class DiffusionModel(torch.nn.Module):
             kwargs["t_eval"] = t_eval
 
         return self.diffuser.odeint(
-            self.score_fn, t_span, x_0, self.as_score_plus_x, **kwargs
+            self.score_plus_x_fn, t_span, x_0, **kwargs
         )
 
 
@@ -190,7 +226,7 @@ class VPDiffuser(torch.nn.Module):
     """
 
     def __init__(self, sde_schedule: Callable | None = None):
-        """Initializes the diffusion process with a score function.
+        """Initializes the diffuser with an SDE schedule.
 
         Args:
             sde_schedule (Callable): Defines the time-dependent functions of
@@ -268,10 +304,9 @@ class VPDiffuser(torch.nn.Module):
 
     def odeint(
         self,
-        score_fn: Callable,
+        score_plus_x_fn: Callable,
         t_span: Sequence[float],
         x_0: torch.Tensor,
-        as_score_plus_x: bool = False,
         **solver_kwargs
     ):
         r"""
@@ -288,14 +323,12 @@ class VPDiffuser(torch.nn.Module):
             \frac{dx}{dt} = -\frac{1}{2} \sigma(t)^2 (x + \nabla_x \log p_t(x))
 
         where :math:`\nabla_x \log p_t(x)` is the score function, approximated
-        by `score_fn`.
+        by `score_plus_x_fn(t, x_t) - x_t`.
 
         Args:
-            score_fn (Callable): Function approximating the score.
+            score_plus_x_fn (Callable): Function approximating `score + x`.
             t_span (Sequence[float, float]): Integration interval.
             x_0 (torch.Tensor): Initial state.
-            as_score_plus_x (bool): If True, treats the provided score function
-                as `score + x`.
 
             **solver_kwargs:
                 Additional arguments passed to :func:`odeint`, including:
@@ -308,12 +341,6 @@ class VPDiffuser(torch.nn.Module):
              torch.Tensor: The final state of the system.
               (see :func:`odeint` for exact behavior).
         """
-        if as_score_plus_x:
-            score_plus_x_fn = score_fn
-        else:
-            def score_plus_x_fn(t, x_t):
-                return x_t + score_fn(t, x_t)
-
         def drift_fn(t, x_t):
             """Compute the drift fucntion for the ODE form of the process."""
             coeff = -0.5 * self.sde_schedule.sigma_square(t)
@@ -335,7 +362,7 @@ class SubVPDiffuser(torch.nn.Module):
     """
 
     def __init__(self, sde_schedule: Callable | None = None):
-        """Initializes the diffusion process with a score function.
+        """Initializes the diffuser with an SDE schedule.
 
         Args:
             sde_schedule (Callable): Defines the time-dependent functions of
@@ -413,19 +440,12 @@ class SubVPDiffuser(torch.nn.Module):
 
     def odeint(
         self,
-        score_fn: Callable,
+        score_plus_x_fn: Callable,
         t_span: Sequence[float],
         x_0: torch.Tensor,
-        as_score_plus_x: bool = False,
         **solver_kwargs
     ):
         """Integrate the ODE associated with the diffusion process."""
-
-        if as_score_plus_x:
-            score_plus_x_fn = score_fn
-        else:
-            def score_plus_x_fn(t, x_t):
-                return x_t + score_fn(t, x_t)
 
         def drift_fn(t, x_t):
             """Compute the drift fucntion for the ODE form of the process."""
@@ -433,6 +453,21 @@ class SubVPDiffuser(torch.nn.Module):
             return -x_t + coeff * score_plus_x_fn(t, x_t)
 
         return odeint(drift_fn, t_span, x_0, **solver_kwargs)
+
+
+# =============================================================================
+class TrainingConfiguration(pydantic.BaseModel):
+    """Training configuration for :class:`DiffusionModel`."""
+
+    loss_c0: float = 0
+    force0_fn: Callable | None = None
+    variance_weight_for_time: bool = True
+    all_samples_c0: bool = False  # use a single random sample
+
+    def update(self, **kwargs):
+        """Update the attributes."""
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
 
 # =============================================================================
