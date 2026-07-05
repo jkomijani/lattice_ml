@@ -208,9 +208,9 @@ class DiffusionModel(torch.nn.Module):
         if t_eval.ndim > 0:
             kwargs["t_eval"] = t_eval
 
-        return self.diffuser.odeint(
-            self.score_plus_x_fn, t_span, x_0, **kwargs
-        )
+        dynamics_fn = self.diffuser.build_ode_dynamics_fn(self.score_plus_x_fn)
+
+        return odeint(dynamics_fn, t_span, x_0, **kwargs)
 
 
 # =============================================================================
@@ -302,17 +302,11 @@ class VPDiffuser(torch.nn.Module):
         }
         return x_t, diffusion_context
 
-    def odeint(
-        self,
-        score_plus_x_fn: Callable,
-        t_span: Sequence[float],
-        x_0: torch.Tensor,
-        **solver_kwargs
-    ):
+    def build_ode_dynamics_fn(self, score_plus_x_fn: Callable) -> Callable:
         r"""
-        Integrate the ODE associated with the diffusion process.
+        Build the probability flow ODE dynamics of this diffusion process.
 
-        This method solves the ODE corresponding to the forward SDE:
+        This solves the ODE corresponding to the forward SDE:
 
         .. math::
             d x(t) = -\frac{1}{2} \sigma(t)^2 x(t) dt + \sigma(t)\,dW_t,
@@ -327,26 +321,17 @@ class VPDiffuser(torch.nn.Module):
 
         Args:
             score_plus_x_fn (Callable): Function approximating `score + x`.
-            t_span (Sequence[float, float]): Integration interval.
-            x_0 (torch.Tensor): Initial state.
-
-            **solver_kwargs:
-                Additional arguments passed to :func:`odeint`, including:
-                - `step_size` or `num_steps`: controls discretization
-                - `method`: e.g. "RK4" or "Euler"
-                - `t_eval`: intermediate evaluation times
-                - `corrector`: predictor–corrector refinement step
 
         Returns:
-             torch.Tensor: The final state of the system.
-              (see :func:`odeint` for exact behavior).
+            Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+                Function `f(t, x_t)` computing the ODE dynamics at `(t, x_t)`.
         """
-        def drift_fn(t, x_t):
-            """Compute the drift fucntion for the ODE form of the process."""
+        def dynamics_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
+            """Compute the dynamics function of the probability flow ODE."""
             coeff = -0.5 * self.sde_schedule.sigma_square(t)
             return coeff * score_plus_x_fn(t, x_t)
 
-        return odeint(drift_fn, t_span, x_0, **solver_kwargs)
+        return dynamics_fn
 
 
 # =============================================================================
@@ -438,21 +423,26 @@ class SubVPDiffuser(torch.nn.Module):
         }
         return x_t, diffusion_context
 
-    def odeint(
-        self,
-        score_plus_x_fn: Callable,
-        t_span: Sequence[float],
-        x_0: torch.Tensor,
-        **solver_kwargs
-    ):
-        """Integrate the ODE associated with the diffusion process."""
+    def build_ode_dynamics_fn(self, score_plus_x_fn: Callable) -> Callable:
+        """
+        Build the probability flow ODE dynamics of this diffusion process.
 
-        def drift_fn(t, x_t):
-            """Compute the drift fucntion for the ODE form of the process."""
+        See `VPDiffuser.dynamics_fn` for the general idea; the drift here
+        additionally includes the `-x_t` term of the sub-VP schedule.
+
+        Args:
+            score_plus_x_fn (Callable): Function approximating `score + x`.
+
+        Returns:
+            Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+                Function `f(t, x_t)` computing the ODE dynamics at `(t, x_t)`.
+        """
+        def dynamics_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
+            """Compute the dynamics function of the probability flow ODE."""
             coeff = -0.5 * self.sde_schedule.sigma_square(t)
             return -x_t + coeff * score_plus_x_fn(t, x_t)
 
-        return odeint(drift_fn, t_span, x_0, **solver_kwargs)
+        return dynamics_fn
 
 
 # =============================================================================
