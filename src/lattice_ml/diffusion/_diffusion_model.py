@@ -35,7 +35,8 @@ class DiffusionModel(torch.nn.Module):
         self,
         network_fn: Callable,
         diffuser: Callable | None = None,
-        as_score_plus_x: bool = True,
+        network_role: str = "dynamics_fn",
+        use_inverse_snr_weight: bool = True,
         training_config: Dict | None = None,
     ):
         """
@@ -43,13 +44,14 @@ class DiffusionModel(torch.nn.Module):
 
         Args:
             network_fn (Callable): A neural network whose output is interpreted
-                according to `as_score_plus_x`.
+                according to `network_role`.
             diffuser (Callable | None): Defines the diffusion process. If not
                 provided, defaults to the default instance of `VPDiffuser`.
-            as_score_plus_x (bool): If True (False), `network_fn` is treated as
-                predicting `score + x` (`score`). This reparameterization keeps
-                the model stable even when the diffuser's schedule diverges,
-                e.g., `gamma(t) = 1 / (1 - t)`. Default is True.
+            network_role (str): Specifies the role of `network_fn`. The default
+                value is 'synamics_fn'. This reparameterization keeps the model
+                stable even when the diffuser's schedule diverges at t=1.
+            use_inverse_snr_weight (bool): Specifies the weight for the loss
+                function. Default is True.
             training_config (Dict | None): Optional dict passed to
                 :class:`TrainingConfiguration`.
         """
@@ -59,29 +61,62 @@ class DiffusionModel(torch.nn.Module):
         super().__init__()
         self.network_fn = network_fn
         self.diffuser = diffuser
-        self.as_score_plus_x = as_score_plus_x
+        self.network_role = network_role
+        self._as_score = network_role == "score_fn"
+        self._as_score_plus_x = network_role == "score_plus_x_fn"
+        self._as_ode_dynamics = network_role in ("dynamics_fn", "velocity_fn")
         self.trainer = Trainer(self)
         self.training_config = TrainingConfiguration(**(training_config or {}))
+        self._setup_matching_loss_fn(use_inverse_snr_weight)
+
+    def _setup_matching_loss_fn(self, use_inverse_snr_weight: bool):
+        """
+        Depending on the input and `self.network_role` specifies the loss func.
+        """
+        if use_inverse_snr_weight:
+            if self._as_ode_dynamics:
+                func = implicit_dynamics_matching_with_inverse_snr_weight
+            elif self._as_score_plus_x:
+                func = implicit_score_plus_x_matching_with_inverse_snr_weight
+            else:
+                raise ValueError("NOT READY")
+        else:
+            if self._as_ode_dynamics:
+                func = implicit_dynamics_matching_with_variance_weight
+            elif self._as_score_plus_x:
+                func = implicit_score_plus_x_matching_with_variance_weight
+            elif self._as_score:
+                func = implicit_score_matching_with_variance_weight
+            else:
+                raise ValueError("NOT READY")
+        self._matching_loss_fn = func
 
     @property
     def score_fn(self):
-        """The raw score function, regardless of `as_score_plus_x`."""
-        if self.as_score_plus_x:
-            def score_fn(t, x_t):
-                return self.network_fn(t, x_t) - x_t
-        else:
-            score_fn = self.network_fn
-        return score_fn
+        """The score function."""
+
+        if self._as_ode_dynamics:
+            return self.diffuser.build_score_fn(self.network_fn)
+        if self._as_score:
+            return self.network_fn
+        if self._as_score_plus_x:
+            return lambda t, x_t: self.network_fn(t, x_t) - x_t
+
+        raise ValueError(f"{self.network_role} is not known.")
 
     @property
     def score_plus_x_fn(self):
-        """The `score + x` function, regardless of `as_score_plus_x`."""
-        if self.as_score_plus_x:
-            score_plus_x_fn = self.network_fn
-        else:
-            def score_plus_x_fn(t, x_t):
-                return self.network_fn(t, x_t) + x_t
-        return score_plus_x_fn
+        """The `score + x` function."""
+        
+        if self._as_ode_dynamics:
+            score_fn = self.diffuser.build_score_fn(self.network_fn)
+            return lambda t, x_t: score_fn(t, x_t) + x_t
+        if self._as_score:
+            return lambda t, x_t: self.network_fn(t, x_t) + x_t
+        if self._as_score_plus_x:
+            return self.network_fn
+
+        raise ValueError(f"{self.network_role} is not known.")
 
     def training_step(self, batch, batch_idx=None):
         """Perform a training step to be used by Trainer."""
@@ -95,18 +130,9 @@ class DiffusionModel(torch.nn.Module):
         x_t, diffusion_context = self.diffuser(x_0, t_0=0, t=t)
 
         # Compute loss: implicit score matching
-        if self.as_score_plus_x:
-            score_plus_x = self.network_fn(t, x_t)
-            loss = implicit_score_plus_x_matching(
-                score_plus_x, diffusion_context
-            )
-        else:
-            score = self.network_fn(t, x_t)
-            loss = implicit_score_matching_with_variance_weight(
-                score,
-                diffusion_context['noise'],
-                diffusion_context['noise_scale']
-            )
+        loss = self._matching_loss_fn(
+            self.network_fn(t, x_t), diffusion_context
+        )
 
         # Contribution from t = 0 if loss_c0 > 0
         if self.training_config.loss_c0 > 0:
@@ -208,7 +234,12 @@ class DiffusionModel(torch.nn.Module):
         if t_eval.ndim > 0:
             kwargs["t_eval"] = t_eval
 
-        dynamics_fn = self.diffuser.build_ode_dynamics_fn(self.score_plus_x_fn)
+        if self._as_ode_dynamics:
+            dynamics_fn = self.network_fn
+        else:
+            dynamics_fn = self.diffuser.build_ode_dynamics_fn(
+                self.score_plus_x_fn
+            )
 
         return odeint(dynamics_fn, t_span, x_0, **kwargs)
 
@@ -257,17 +288,18 @@ class VPDiffuser(torch.nn.Module):
         In addition to the state at time `t`, this method computes and returns
         other useful quantities. Note that
 
-            [x_t, z_t].T = A  [signal, noise].T
+            [x_t, u_t].T = A [signal, noise].T
 
         where
                 |signal_scale    noise_scale |
             A = |                            |
                 |-noise_scale    signal_scale|
 
-        with `det(A) = 1`. Quantities `x_t` and `z_t` are complementary states.
-        Unlike the state `x_t`, the complementary state `z_t` mainly contains
+        with `det(A) = 1`. Quantities `x_t` and `u_t` are complementary states.
+        Unlike the state `x_t`, the complementary state `u_t` mainly contains
         the noise at small diffusion times and mainly the signal at later
-        times.
+        times. Moreover, the complementary state `u_t` is proportional to the
+        conditionaly velocity of the state `x_t`.
 
         Returns
         -------
@@ -279,6 +311,7 @@ class VPDiffuser(torch.nn.Module):
                 - `noise`: noise samples used in the diffusion,
                 - `noise_scale`: weight of the noise in `x_t`,
                 - `signal_scale`: weight of the signal in `x_t`.
+                - `half_sigma_square`: half of square of `sigma(t)`.
         """
         # Expand t_eval dimensions to match x_0
         t = t.view(-1, *[1] * (x_0.ndim - 1))
@@ -292,15 +325,29 @@ class VPDiffuser(torch.nn.Module):
 
         # Closed-form solution
         x_t = signal_scale * x_0 + noise_scale * noise
-        z_t = -noise_scale * x_0 + signal_scale * noise
+        u_t = -noise_scale * x_0 + signal_scale * noise
+
+        half_sigma_square = self.sde_schedule.half_sigma_square(t)
 
         diffusion_context = {
-            'complementary_state': z_t,
+            'complementary_state': u_t,
             'noise': noise,
             'noise_scale': noise_scale,
-            'signal_scale': signal_scale
+            'signal_scale': signal_scale,
+            'half_sigma_square': half_sigma_square,
         }
         return x_t, diffusion_context
+
+    def build_score_fn(self, dynamics_fn: Callable) -> Callable:
+        """
+        Build the score function from the probability flow ODE dynamics.
+        """
+        def score_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
+            """Compute the dynamics function of the probability flow ODE."""
+            coeff = -1 / self.sde_schedule.half_sigma_square(t)
+            return coeff * dynamics_fn(t, x_t) - x_t
+
+        return score_fn
 
     def build_ode_dynamics_fn(self, score_plus_x_fn: Callable) -> Callable:
         r"""
@@ -328,7 +375,7 @@ class VPDiffuser(torch.nn.Module):
         """
         def dynamics_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
             """Compute the dynamics function of the probability flow ODE."""
-            coeff = -0.5 * self.sde_schedule.sigma_square(t)
+            coeff = - self.sde_schedule.half_sigma_square(t)
             return coeff * score_plus_x_fn(t, x_t)
 
         return dynamics_fn
@@ -345,6 +392,8 @@ class SubVPDiffuser(torch.nn.Module):
 
     By default, we use :math:`\gamma(t) = 1 / (1 - t)`.
     """
+
+    _complementary_for_score_plus_x = False
 
     def __init__(self, sde_schedule: Callable | None = None):
         """Initializes the diffuser with an SDE schedule.
@@ -378,17 +427,18 @@ class SubVPDiffuser(torch.nn.Module):
         In addition to the state at time `t`, this method computes and returns
         other useful quantities. Note that
 
-            [x_t, z_t].T = A  [signal, noise].T
+            [x_t, u_t].T = A [signal, noise].T
 
         where
-                |signal_scale    noise_scale    |
-            A = |                               |
-                |-noise_scale    1 + noise_scale|
+                |signal_scale    noise_scale|
+            A = |                           |
+                |-1              1          |
 
-        with `det(A) = 1`. Quantities `x_t` and `z_t` are complementary states.
-        Unlike the state `x_t`, the complementary state `z_t` mainly contains
+        with `det(A) = 1`. Quantities `x_t` and `u_t` are complementary states.
+        Unlike the state `x_t`, the complementary state `u_t` mainly contains
         the noise at small diffusion times and mainly the signal at later
-        times.
+        times. Moreover, the complementary state `u_t` is proportional to the
+        conditionaly velocity of the state `x_t`.
 
         Returns
         -------
@@ -413,15 +463,34 @@ class SubVPDiffuser(torch.nn.Module):
 
         # Closed-form solution
         x_t = signal_scale * x_0 + noise_scale * noise
-        z_t = -noise_scale * x_0 + (1 + noise_scale) * noise
+
+        if self._complementary_for_score_plus_x:
+            u_t = -noise_scale * x_0 + (1 + noise_scale) * noise
+        else:
+            u_t = noise - x_0
+
+        half_sigma_square = self.sde_schedule.half_sigma_square(t)
 
         diffusion_context = {
-            'complementary_state': z_t,
+            'complementary_state': u_t,
             'noise': noise,
             'noise_scale': noise_scale,
-            'signal_scale': signal_scale
+            'signal_scale': signal_scale,
+            'half_sigma_square': half_sigma_square,
         }
         return x_t, diffusion_context
+
+    def build_score_fn(self, dynamics_fn: Callable) -> Callable:
+        """
+        Build the score function from the probability flow ODE dynamics.
+        """
+        def score_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
+            """Compute the dynamics function of the probability flow ODE."""
+            gamma = self.sde_schedule.gamma(t)
+            coeff = -1 / self.sde_schedule.half_sigma_square(t)
+            return coeff * (dynamics_fn(t, x_t) + gamma * x_t)
+
+        return score_fn
 
     def build_ode_dynamics_fn(self, score_plus_x_fn: Callable) -> Callable:
         """
@@ -439,7 +508,7 @@ class SubVPDiffuser(torch.nn.Module):
         """
         def dynamics_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
             """Compute the dynamics function of the probability flow ODE."""
-            coeff = -0.5 * self.sde_schedule.sigma_square(t)
+            coeff = - self.sde_schedule.half_sigma_square(t)
             return -x_t + coeff * score_plus_x_fn(t, x_t)
 
         return dynamics_fn
@@ -461,19 +530,84 @@ class TrainingConfiguration(pydantic.BaseModel):
 
 
 # =============================================================================
-def implicit_score_plus_x_matching(
+def implicit_dynamics_matching_with_inverse_snr_weight(
+    velocity: torch.Tensor,
+    diffusion_context: Dict
+) -> torch.Tensor:
+    """
+    Compute the implicit score matching loss applied on dynamics function.
+
+    The time weight is set to 1/SNR(t) = noise_scale^2 / signal_scale^2.
+
+    Args:
+        velocity (torch.Tensor): Predicted dynamics/velocity, dx_t/dt.
+        diffusion_context (dict): Dictionary containing quantities from
+            the forward diffusion step:
+            - complementary_state (torch.Tensor): Complementary to `x_t`.
+            - signal_scale (torch.Tensor): Scale of the signal in `x_t`.
+            - noise_scale (torch.Tensor): Scale of the cumulative noise.
+            - half_sigma_square (torch.Tensor): Half the square of `sigma(t)`.
+
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
+    u_t = diffusion_context['complementary_state']
+    a_t = diffusion_context['signal_scale']
+    b_t = diffusion_context['noise_scale']
+    half_sigma_square = diffusion_context['half_sigma_square']
+
+    beta_t = b_t / (a_t * half_sigma_square)
+    beta_t = torch.nan_to_num(beta_t, nan=1.0)  # in case t might be 0 or 1
+
+    res = u_t - beta_t * velocity
+    return torch.mean(res * res.conj()).real
+
+
+# =============================================================================
+def implicit_dynamics_matching_with_variance_weight(
+    velocity: torch.Tensor,
+    diffusion_context: Dict
+) -> torch.Tensor:
+    """
+    Compute the implicit score matching loss applied on dynamics function.
+
+    The time weight is set to noise_scale^2, equivalent to DDPM's unweighted
+    epsilon-prediction loss.
+
+    Args:
+        velocity (torch.Tensor): Predicted dynamics/velocity, dx_t/dt.
+        diffusion_context (dict): Dictionary containing quantities from
+            the forward diffusion step:
+            - complementary_state (torch.Tensor): Complementary to `x_t`.
+            - signal_scale (torch.Tensor): Scale of the signal in `x_t`.
+            - noise_scale (torch.Tensor): Scale of the cumulative noise.
+            - half_sigma_square (torch.Tensor): Half the square of `sigma(t)`.
+
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
+    u_t = diffusion_context['complementary_state']
+    a_t = diffusion_context['signal_scale']
+    b_t = diffusion_context['noise_scale']
+    half_sigma_square = diffusion_context['half_sigma_square']
+
+    alpha_t = b_t / half_sigma_square
+    alpha_t = torch.nan_to_num(alpha_t, nan=1.0)  # in case t might be 0 or 1
+
+    res = a_t * u_t - alpha_t * velocity
+    return torch.mean(res * res.conj()).real
+
+
+# =============================================================================
+def implicit_score_plus_x_matching_with_inverse_snr_weight(
     score_plus_x: torch.Tensor,
-    diffusion_context: dict
+    diffusion_context: Dict
 ) -> torch.Tensor:
     """Compute the implicit score matching loss applied on score_plus_x.
 
     This computes a weighted mean squared error (MSE) between the predicted and
     the empirical conditional score. The MSE is weighted by the variance of the
     accumulated noise relative to the remaining signal scale.
-
-    Mathematically:
-        res = complementary_state + score_plus_x * (noise_scale / signal_scale)
-        loss = mean(|res|^2)
 
     Args:
         score_plus_x (torch.Tensor): Predicted score plus the state `x_t`.
@@ -487,11 +621,45 @@ def implicit_score_plus_x_matching(
     Returns:
         torch.Tensor: Scalar loss value.
     """
-    z_t = diffusion_context['complementary_state']
+    u_t = diffusion_context['complementary_state']
     noise_scale = diffusion_context['noise_scale']
     signal_scale = diffusion_context['signal_scale']
 
-    res = z_t + score_plus_x * (noise_scale / signal_scale)
+    res = u_t + score_plus_x * (noise_scale / signal_scale)
+    loss = torch.mean(res * res.conj()).real
+
+    return loss
+
+
+# =============================================================================
+def implicit_score_plus_x_matching_with_variance_weight(
+    score_plus_x: torch.Tensor,
+    diffusion_context: Dict
+) -> torch.Tensor:
+    """Compute the implicit score matching loss applied on score_plus_x.
+
+    This computes a weighted mean squared error (MSE) between the predicted and
+    the empirical conditional score at a diffusion time. The MSE is weighted by
+    the effective (cumulative) noise variance at the diffusion time; equivalent
+    to DDPM's unweighted epsilon-prediction loss.
+
+    Args:
+        score_plus_x (torch.Tensor): Predicted score plus the state `x_t`.
+        diffusion_context (dict): Dictionary containing quantities from
+            the forward diffusion step:
+            - complementary_state (torch.Tensor): Complementary to `x_t`.
+            - noise_scale (torch.Tensor): Scale of the cumulative noise.
+            - signal_scale (torch.Tensor): Scale of the signal in `x_t`.
+            - Optional keys like `noise` can also be included.
+
+    Returns:
+        torch.Tensor: Scalar loss value.
+    """
+    u_t = diffusion_context['complementary_state']
+    noise_scale = diffusion_context['noise_scale']
+    signal_scale = diffusion_context['signal_scale']
+
+    res = signal_scale * u_t + noise_scale * score_plus_x
     loss = torch.mean(res * res.conj()).real
 
     return loss
@@ -500,25 +668,31 @@ def implicit_score_plus_x_matching(
 # =============================================================================
 def implicit_score_matching_with_variance_weight(
     score: torch.Tensor,
-    eps: torch.Tensor,
-    noise_std: torch.Tensor
+    diffusion_context: Dict
 ) -> torch.Tensor:
     """Compute the implicit score matching loss.
 
     This computes a weighted mean squared error (MSE) between the predicted and
     the empirical conditional score at a diffusion time. The MSE is weighted by
-    the effective (cumulative) noise variance at the diffusion time.
+    the effective (cumulative) noise variance at the diffusion time; equivalent
+    to DDPM's unweighted epsilon-prediction loss.
 
     Args:
         score (torch.Tensor): Predicted score, shape (batch_size, ...).
-        eps (torch.Tensor): Gaussian noise scaled by the standard deviation.
-        noise_std (torch.Tensor): Standard deviation of the cumulative noise.
+        diffusion_context (dict): Dictionary containing quantities from
+            the forward diffusion step:
+            - complementary_state (torch.Tensor): Complementary to `x_t`.
+            - noise_scale (torch.Tensor): Scale of the cumulative noise.
+            - signal_scale (torch.Tensor): Scale of the signal in `x_t`.
+            - Optional keys like `noise` can also be included.
 
     Returns:
         torch.Tensor: Scalar loss value.
     """
-    # Residual between predicted and conditional scores (variance-weighted)
-    res = score * noise_std + eps
+    noise = diffusion_context['noise']
+    noise_scale = diffusion_context['noise_scale']
+
+    res = noise + noise_scale * score
     loss = torch.mean(res * res.conj()).real
 
     return loss
@@ -527,8 +701,7 @@ def implicit_score_matching_with_variance_weight(
 # =============================================================================
 def implicit_score_matching_with_sdev_weight(
     score: torch.Tensor,
-    eps: torch.Tensor,
-    noise_std: torch.Tensor
+    diffusion_context: Dict
 ) -> torch.Tensor:
     """Compute the implicit score matching loss.
 
@@ -539,11 +712,18 @@ def implicit_score_matching_with_sdev_weight(
 
     Args:
         score (torch.Tensor): Predicted score, shape (batch_size, ...).
-        eps (torch.Tensor): Gaussian noise scaled by the standard deviation.
-        noise_std (torch.Tensor): Standard deviation of the cumulative noise.
+        diffusion_context (dict): Dictionary containing quantities from
+            the forward diffusion step:
+            - complementary_state (torch.Tensor): Complementary to `x_t`.
+            - noise_scale (torch.Tensor): Scale of the cumulative noise.
+            - signal_scale (torch.Tensor): Scale of the signal in `x_t`.
+            - Optional keys like `noise` can also be included.
 
     Returns:
         torch.Tensor: Scalar loss value.
     """
-    loss = torch.mean((score.conj() * (noise_std * score + 2 * eps)).real)
+    noise = diffusion_context['noise']
+    noise_scale = diffusion_context['noise_scale']
+
+    loss = torch.mean((score.conj() * (noise_scale * score + 2 * noise)).real)
     return loss
