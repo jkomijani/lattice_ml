@@ -84,9 +84,9 @@ class LinearDriftSDESchedule(torch.nn.Module, ABC):
         """
 
     @abstractmethod
-    def sigma_square(self, t: torch.Tensor) -> torch.Tensor:
+    def half_sigma_square(self, t: torch.Tensor) -> torch.Tensor:
         """
-        Return the square of instantaneous noise coefficient at time `t`.
+        Return the half square of instantaneous noise coefficient at time `t`.
 
         Args:
             t (torch.Tensor): Time tensor with values in (0, 1).
@@ -144,8 +144,8 @@ class OrnsteinUhlenbeckSchedule(LinearDriftSDESchedule):
     def sigma(self, t: torch.Tensor):
         return self.sigma_0
 
-    def sigma_square(self, t: torch.Tensor):
-        return self.sigma_0 ** 2
+    def half_sigma_square(self, t: torch.Tensor):
+        return 0.5 * self.sigma_0 ** 2
 
     def transition_mean_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
         return torch.exp(-self.gamma_0 * (t_1 - t_0))
@@ -184,8 +184,8 @@ class VPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
     def sigma(self, t: torch.Tensor) -> torch.Tensor:
         return (2 * self.gamma(t)) ** 0.5
 
-    def sigma_square(self, t: torch.Tensor) -> torch.Tensor:
-        return 2 * self.gamma(t)
+    def half_sigma_square(self, t: torch.Tensor) -> torch.Tensor:
+        return self.gamma(t)
 
     def transition_mean_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
         return ((1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)) ** self.gamma_0
@@ -222,8 +222,8 @@ class SubVPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
     def sigma(self, t: torch.Tensor) -> torch.Tensor:
         return (2 * self.gamma(t) * self.transition_noise_std(0, t)) ** 0.5
 
-    def sigma_square(self, t: torch.Tensor) -> torch.Tensor:
-        return 2 * self.gamma(t) * self.transition_noise_std(0, t)
+    def half_sigma_square(self, t: torch.Tensor) -> torch.Tensor:
+        return self.gamma(t) * self.transition_noise_std(0, t)
 
     def transition_mean_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
         return (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
