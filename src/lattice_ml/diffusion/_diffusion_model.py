@@ -107,7 +107,7 @@ class DiffusionModel(torch.nn.Module):
     @property
     def score_plus_x_fn(self):
         """The `score + x` function."""
-        
+
         if self._as_ode_dynamics:
             score_fn = self.diffuser.build_score_fn(self.network_fn)
             return lambda t, x_t: score_fn(t, x_t) + x_t
@@ -136,15 +136,19 @@ class DiffusionModel(torch.nn.Module):
 
         # Contribution from t = 0 if loss_c0 > 0
         if self.training_config.loss_c0 > 0:
-            idx = (slice(None) if self.training_config.all_samples_c0
-                   else np.random.randint(0, len(x_0), size=1))
-            score0 = self.score_fn(0 * t[idx], x_0[idx])
-            force0 = self.training_config.force0_fn(x_0[idx])
-            res = score0 - force0
-            loss0 = torch.mean(res * res.conj()).real
-            loss = loss + self.training_config.loss_c0 * loss0
+            loss = loss + self._penalty_term_from_exact_score(0 * t, x_0)
 
         return loss
+
+    def _penalty_term_from_exact_score(self, t_0, x_0):
+        idx = (slice(None) if self.training_config.all_samples_c0
+               else np.random.randint(0, len(x_0), size=1)
+               )
+        score0 = self.score_fn(t_0[idx], x_0[idx])
+        force0 = self.training_config.force0_fn(x_0[idx])
+        res = score0 - force0
+        loss0 = torch.mean(res * res.conj()).real
+        return self.training_config.loss_c0 * loss0
 
     def forward(
         self,
