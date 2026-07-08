@@ -110,6 +110,8 @@ class Trainer:
         self.optimizer = None
         self.scheduler = None
         self.config = TrainingConfiguration(**training_config)
+        self._step_metrics = {}
+        self._epoch_metrics = {}
 
     def configure_optimizers(self, **kwargs):
         """Configure the optimizers and logging."""
@@ -198,7 +200,9 @@ class Trainer:
             # -----------------------------
 
             loss = self.training_epoch()
-            self.logger.log_epoch(self.current_epoch, {'loss': loss})
+            self.logger.log_epoch(
+                self.current_epoch, {'loss': loss, **self._epoch_metrics}
+            )
 
             if self.scheduler is not None:
                 if not self.config.scheduler_per_batch:
@@ -259,13 +263,20 @@ class Trainer:
                 logging.info("Process group destroyed.")
 
     def training_epoch(self) -> torch.Tensor:
-        """Perform an epoch of training and return average training loss."""
+        """Perform an epoch of training and return average training loss.
+
+        Also averages any metrics logged via `self.log(name, value)`, storing
+        them in `self._epoch_metrics`.
+        """
 
         loss_sum = 0
         n_samples = 0
+        metrics_sum = {}
 
         for batch in self.training_dataloader:
             batch = self.device_handler.to_training_device(batch)
+
+            self._step_metrics = {}
             loss = self.model.training_step(batch)
 
             if torch.isnan(loss):
@@ -286,12 +297,31 @@ class Trainer:
             loss_sum += bsize * loss.detach()
             n_samples += bsize
 
+            for name, value in self._step_metrics.items():
+                if isinstance(value, torch.Tensor):
+                    value = value.detach()
+                metrics_sum[name] = metrics_sum.get(name, 0) + bsize * value
+
+        self._epoch_metrics = {
+            name: total / n_samples for name, total in metrics_sum.items()
+        }
+
         return loss_sum / n_samples
 
     @property
     def is_main_process(self):
         """Return if main process."""
         return self.device_handler.is_main_process
+
+    def log(self, name: str, value):
+        """Log a metric value for the current training step.
+
+        Meant to be called from within `model.training_step`, e.g.
+        `self.trainer.log("penalty", penalty)`. Logged values are averaged
+        over the epoch and merged into the epoch log alongside `loss`;
+        see `training_epoch`.
+        """
+        self._step_metrics[name] = value
 
     def save_checkpoint(self, fname: str):
         """Save the model state (on rank 0)."""
