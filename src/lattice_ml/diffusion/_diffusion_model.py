@@ -118,6 +118,14 @@ class DiffusionModel(torch.nn.Module):
 
         raise ValueError(f"{self.network_role} is not known.")
 
+    @property
+    def dynamics_fn(self):
+        """The probability flow ODE dynamics of this diffusion process."""
+
+        if self._as_ode_dynamics:
+            return self.network_fn
+        return self.diffuser.build_ode_dynamics_fn(self.score_plus_x_fn)
+
     def training_step(self, batch, batch_idx=None):
         """Perform a training step to be used by Trainer."""
         x_0, = batch
@@ -238,14 +246,7 @@ class DiffusionModel(torch.nn.Module):
         if t_eval.ndim > 0:
             kwargs["t_eval"] = t_eval
 
-        if self._as_ode_dynamics:
-            dynamics_fn = self.network_fn
-        else:
-            dynamics_fn = self.diffuser.build_ode_dynamics_fn(
-                self.score_plus_x_fn
-            )
-
-        return odeint(dynamics_fn, t_span, x_0, **kwargs)
+        return odeint(self.dynamics_fn, t_span, x_0, **kwargs)
 
 
 # =============================================================================
