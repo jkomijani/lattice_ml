@@ -1,6 +1,7 @@
 from . import gauge
 
 from ._diffusion_model import *
+from ._consistency_diffusion_model import *
 from ._lie_diffusion_process import *
 
 from ._trainer import *
