@@ -349,7 +349,8 @@ class VPDiffuser(torch.nn.Module):
         """
         def score_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
             """Compute the dynamics function of the probability flow ODE."""
-            coeff = -1 / self.sde_schedule.half_sigma_square(t)
+            t_ = t.view(-1, *[1] * (x_t.ndim - 1))
+            coeff = -1 / self.sde_schedule.half_sigma_square(t_)
             return coeff * dynamics_fn(t, x_t) - x_t
 
         return score_fn
@@ -380,7 +381,8 @@ class VPDiffuser(torch.nn.Module):
         """
         def dynamics_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
             """Compute the dynamics function of the probability flow ODE."""
-            coeff = - self.sde_schedule.half_sigma_square(t)
+            t_ = t.view(-1, *[1] * (x_t.ndim - 1))
+            coeff = - self.sde_schedule.half_sigma_square(t_)
             return coeff * score_plus_x_fn(t, x_t)
 
         return dynamics_fn
@@ -491,8 +493,9 @@ class SubVPDiffuser(torch.nn.Module):
         """
         def score_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
             """Compute the dynamics function of the probability flow ODE."""
-            gamma = self.sde_schedule.gamma(t)
-            coeff = -1 / self.sde_schedule.half_sigma_square(t)
+            t_ = t.view(-1, *[1] * (x_t.ndim - 1))
+            gamma = self.sde_schedule.gamma(t_)
+            coeff = -1 / self.sde_schedule.half_sigma_square(t_)
             return coeff * (dynamics_fn(t, x_t) + gamma * x_t)
 
         return score_fn
@@ -513,7 +516,8 @@ class SubVPDiffuser(torch.nn.Module):
         """
         def dynamics_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
             """Compute the dynamics function of the probability flow ODE."""
-            coeff = - self.sde_schedule.half_sigma_square(t)
+            t_ = t.view(-1, *[1] * (x_t.ndim - 1))
+            coeff = - self.sde_schedule.half_sigma_square(t_)
             return -x_t + coeff * score_plus_x_fn(t, x_t)
 
         return dynamics_fn
