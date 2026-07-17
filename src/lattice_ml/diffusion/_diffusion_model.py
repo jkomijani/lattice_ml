@@ -33,8 +33,8 @@ class DiffusionModel(torch.nn.Module):
 
     def __init__(
         self,
+        diffuser: Callable,
         network_fn: Callable,
-        diffuser: Callable | None = None,
         network_role: str = "dynamics_fn",
         use_inverse_snr_weight: bool = True,
         training_config: Dict | None = None,
@@ -43,24 +43,20 @@ class DiffusionModel(torch.nn.Module):
         Initializes the diffusion process with a network function.
 
         Args:
+            diffuser (Callable): Defines the diffusion process.
             network_fn (Callable): A neural network whose output is interpreted
                 according to `network_role`.
-            diffuser (Callable | None): Defines the diffusion process. If not
-                provided, defaults to the default instance of `VPDiffuser`.
             network_role (str): Specifies the role of `network_fn`. The default
-                value is 'synamics_fn'. This reparameterization keeps the model
+                value is 'dynamics_fn'. This reparameterization keeps the model
                 stable even when the diffuser's schedule diverges at t=1.
             use_inverse_snr_weight (bool): Specifies the weight for the loss
                 function. Default is True.
             training_config (Dict | None): Optional dict passed to
                 :class:`TrainingConfiguration`.
         """
-        if diffuser is None:
-            diffuser = VPDiffuser()
-
         super().__init__()
-        self.network_fn = network_fn
         self.diffuser = diffuser
+        self.network_fn = network_fn
         self.network_role = network_role
         self._as_score = network_role == "score_fn"
         self._as_score_plus_x = network_role == "score_plus_x_fn"
@@ -212,7 +208,6 @@ class DiffusionModel(torch.nn.Module):
         x_0: torch.Tensor,
         t_0: float = 1.0,
         t_eval: float | Sequence[float] | torch.Tensor = 0.,
-        method: str = 'Euler',
         step_size: float = 0.01,
         **solver_kwargs
     ):
@@ -225,9 +220,9 @@ class DiffusionModel(torch.nn.Module):
             x_0: Initial state at time `t_0`.
             t_0: Initial time.
             t_eval: Target time(s) (< t_0).
-            method: ODE solver ("Euler" or "RK4").
             step_size: Solver step size.
-            **solver_kwargs: Additional arguments for `odeint`.
+            **solver_kwargs: Additional keyword arguments forwarded to the
+                solver, e.g. `method` and `num_steps`.
 
         Returns:
             Final state or states at `t_eval`.
@@ -240,13 +235,13 @@ class DiffusionModel(torch.nn.Module):
         t_span = (t_0, t_end)
 
         # Pass solver options
-        kwargs = {**solver_kwargs, "method": method, "step_size": step_size}
+        kwargs = {**solver_kwargs, "step_size": step_size}
 
         # Only pass t_eval if it's not scalar
         if t_eval.ndim > 0:
             kwargs["t_eval"] = t_eval
 
-        return odeint(self.dynamics_fn, t_span, x_0, **kwargs)
+        return self.diffuser.integrate(self.dynamics_fn, t_span, x_0, **kwargs)
 
 
 # =============================================================================
@@ -260,6 +255,8 @@ class VPDiffuser(torch.nn.Module):
 
     By default, we use :math:`\gamma(t) = 1 / (1 - t)`.
     """
+
+    integrate = staticmethod(odeint)
 
     def __init__(self, sde_schedule: Callable | None = None):
         """Initializes the diffuser with an SDE schedule.
@@ -401,6 +398,7 @@ class SubVPDiffuser(torch.nn.Module):
     """
 
     _complementary_for_score_plus_x = False
+    integrate = staticmethod(odeint)
 
     def __init__(self, sde_schedule: Callable | None = None):
         """Initializes the diffuser with an SDE schedule.
