@@ -10,7 +10,8 @@ from numpy import pi
 __all__ = [
     "OrnsteinUhlenbeckSchedule",
     "VPScheduleWithInverseTimeGamma",
-    "SubVPScheduleWithInverseTimeGamma"
+    "SubVPScheduleWithInverseTimeGamma",
+    "VEScheduleWithInverseTimeSigmaSquared",
 ]
 
 
@@ -135,8 +136,12 @@ class OrnsteinUhlenbeckSchedule(LinearDriftSDESchedule):
     def __init__(self, gamma_0: float = pi, sigma_0: float = (2 * pi)**0.5):
         super().__init__()
         self.train(False)  # indicating it is not trainable
-        self.register_buffer("gamma_0", torch.tensor(gamma_0))
-        self.register_buffer("sigma_0", torch.tensor(sigma_0))
+        self.register_buffer(
+            "gamma_0", torch.tensor(gamma_0, dtype=torch.get_default_dtype())
+        )
+        self.register_buffer(
+            "sigma_0", torch.tensor(sigma_0, dtype=torch.get_default_dtype())
+        )
 
     def gamma(self, t: torch.Tensor):
         return self.gamma_0
@@ -188,10 +193,10 @@ class VPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
         return self.gamma(t)
 
     def transition_mean_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        return ((1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)) ** self.gamma_0
+        ratio = (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
+        return ratio ** self.gamma_0
 
     def transition_noise_std(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        eps = self.EPS
         return torch.sqrt(1 - self.transition_mean_scale(t_0, t_1)**2)
 
 
@@ -226,8 +231,59 @@ class SubVPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
         return self.gamma(t) * self.transition_noise_std(0, t)
 
     def transition_mean_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        return (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
+        ratio = (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
+        return ratio
 
     def transition_noise_std(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        factor = (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
-        return torch.sqrt(t_1**2 - (factor * t_0)**2) / (1 + self.EPS)
+        ratio = (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
+        return torch.sqrt(t_1**2 - (ratio * t_0)**2) / (1 + self.EPS)
+
+
+# =============================================================================
+class VEScheduleWithInverseTimeSigmaSquared(LinearDriftSDESchedule):
+    r"""
+    Variance Exploding (VE) diffusion schedule with inverse-time variance.
+
+    The forward process is defined by the stochastic differential equation
+
+    .. math::
+        dx(t) = \sigma(t)\, dW_t, \quad
+        \sigma^2(t) = \frac{\sigma_0^2}{1 - t + \epsilon},
+
+    i.e. pure noise injection with no drift (:math:`\gamma \equiv 0`).
+    This schedule applies equally to Euclidean and to Lie-group diffusion,
+    which only needs `sigma(t)` -- see Komijani, "Noise scheduling and linear
+    dynamics in diffusion models on Lie groups," arXiv:2605.17326 (2026).
+
+    :math:`\epsilon > 0` prevents divergence as :math:`t \to 1`.
+    """
+
+    EPS = 1e-8  # Small constant to regulate the divergence at t = 1
+
+    def __init__(self, sigma_0: float = 1.0):
+        """Initializes the schedule.
+
+        Args:
+            sigma_0 (float): Scaling factor (default is 1).
+        """
+        super().__init__()
+        self.train(False)  # indicating it is not trainable
+        self.register_buffer(
+            "sigma_0", torch.tensor(sigma_0, dtype=torch.get_default_dtype())
+        )
+
+    def gamma(self, t: torch.Tensor) -> torch.Tensor:
+        return torch.zeros_like(t)
+
+    def sigma(self, t: torch.Tensor) -> torch.Tensor:
+        return self.sigma_0 / (1 - t + self.EPS) ** 0.5
+
+    def half_sigma_square(self, t: torch.Tensor) -> torch.Tensor:
+        return 0.5 * self.sigma(t) ** 2
+
+    def transition_mean_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
+        return 1.0
+
+    def transition_noise_std(self, t_0: torch.Tensor, t_1: torch.Tensor):
+        ratio = (1 - t_0 + self.EPS) / (1 - t_1 + self.EPS)
+        return self.sigma_0 * torch.sqrt(torch.log(ratio).abs())
