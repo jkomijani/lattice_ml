@@ -9,7 +9,6 @@ from typing import Callable
 
 import torch
 
-from ._diffusion_model import VPDiffuser
 from ._trainer import Trainer
 
 
@@ -44,8 +43,8 @@ class ConsistencyDiffusionModel(torch.nn.Module):
 
     def __init__(
         self,
+        diffuser: Callable,
         network_fn: Callable,
-        diffuser: Callable | None = None,
         dynamics_fn: Callable | None = None,
         delta_t: float | None = 0.001,
         target_ema_decay: float | None = None,
@@ -54,12 +53,10 @@ class ConsistencyDiffusionModel(torch.nn.Module):
         Initializes the consistency model with a network function.
 
         Args:
+            diffuser (Callable): Defines the diffusion process.
             network_fn (Callable): The consistency function `f(t, x_t)`,
                 used directly. It is the caller's responsibility to make
                 `network_fn` satisfy the boundary condition `f(0, x) = x`.
-            diffuser (Callable | None): Defines the forward diffusion
-                process used to generate training pairs. If not provided,
-                defaults to the default instance of `VPDiffuser`.
             dynamics_fn (Callable | None): If provided, the corresponding ODE
                 dynamics `(t, x_t) -> dx/dt`, for training via Consistency
                 Distillation (CD); if `None`, via Consistency Training (CT).
@@ -71,8 +68,8 @@ class ConsistencyDiffusionModel(torch.nn.Module):
                 `target_consistency_fn` becomes `network_fn` itself.
         """
         super().__init__()
+        self.diffuser = diffuser
         self.consistency_fn = network_fn
-        self.diffuser = diffuser or VPDiffuser()
         self.dynamics_fn = dynamics_fn
         self.delta_t = delta_t
         self.target_ema_decay = target_ema_decay
