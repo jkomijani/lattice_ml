@@ -2,8 +2,11 @@ from . import gauge
 
 from ._diffusion_model import *
 from ._diffuser import *
-from ._consistency_diffusion_model import *
+from ._lie_diffuser import *
+
 from ._lie_diffusion_process import *
+
+from ._consistency_diffusion_model import *
 
 from ._trainer import *
 from ._noise_schedule import *
