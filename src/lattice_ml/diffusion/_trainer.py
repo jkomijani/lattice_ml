@@ -83,6 +83,7 @@ class Trainer:
         self,
         model: torch.nn.Module,
         logger: Union["LoggerLike", None] = None,
+        training_device: Literal["gpu", "cpu", "auto"] = "auto",
         **training_config,
     ):
         """Initializes the trainer with the given model.
@@ -90,6 +91,7 @@ class Trainer:
         Args:
             model (torch.nn.Module): The model to be trained.
             logger (LoggerLike or None): If None, uses the default `CSVLogger`.
+            training_device (str): Selects the training device.
             **training_config: Additional kweword arguments, including:
                 optimizer_class: Callable = torch.optim.AdamW
                 scheduler_class: Callable | None = None
@@ -107,7 +109,7 @@ class Trainer:
         self.model = model
         self.current_epoch = 0
         self.training_dataloader = None
-        self.device_handler = DeviceHandler()
+        self.device_handler = DeviceHandler(training_device)
         self.logger = logger or CSVLogger()
         self.optimizer = None
         self.scheduler = None
@@ -117,6 +119,10 @@ class Trainer:
 
     def configure_optimizers(self, **kwargs):
         """Configure the optimizers and logging."""
+
+        if "training_device" in kwargs:
+            self.device_handler = DeviceHandler(kwargs["training_device"])
+            kwargs.pop("training_device")
 
         if "log_name" in kwargs:
             self.logger.reset_name(kwargs["log_name"])
