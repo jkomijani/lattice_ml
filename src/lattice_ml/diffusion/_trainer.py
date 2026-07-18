@@ -83,7 +83,7 @@ class Trainer:
         self,
         model: torch.nn.Module,
         logger: Union["LoggerLike", None] = None,
-        training_device: Literal["gpu", "cpu", "auto"] = "auto",
+        training_device: Literal["gpu", "cpu", "cuda", "default"] = "default",
         **training_config,
     ):
         """Initializes the trainer with the given model.
@@ -392,14 +392,14 @@ class DeviceHandler:
     """
     def __init__(
         self,
-        training_device: Literal["gpu", "cpu", "auto"] = "auto"
+        training_device: Literal["gpu", "cpu", "cuda", "default"] = "default"
     ):
         """Initialize for 1 rank. If needed will be changed later."""
         self.world_size = int(os.environ.get("WORLD_SIZE", 1))
         if self.world_size == 1:
             self.rank = 0  # The global rank of the current process
             self.local_rank = 0  # The rank within the local node (GPU)
-            self.training_device = get_device(training_device)
+            self.training_device = resolve_device(training_device)
         else:
             # to be de determined later in self.init_process_group()
             self.rank = None  # The global rank of the current process
@@ -499,27 +499,33 @@ class DeviceHandler:
             torch.distributed.barrier()
 
 
-def get_device(preferred_device: str = "auto") -> str:
-    """Determine which device to use.
+def resolve_device(preferred_device: str = "gpu") -> str:
+    """Resolve a device preference to an actual device.
 
-    Checks GPU accelerators in the order `cuda` > `mps` > `xpu`, falling back
-    to `cpu` if none are available (or if `preferred_device == "cpu"`).
+    Returns the default device if `preferred_device == "default"`. If
+    `preferred_device == "cuda"`, uses `cuda` if available, otherwise falls
+    back to `cpu` (mps/xpu are not considered). Otherwise, checks GPU
+    accelerators in the order `cuda` > `mps` > `xpu`, falling back to `cpu`
+    if none are available (or if `preferred_device is "cpu"`).
 
     Args:
-        preferred_device (str): `"cpu"` forces CPU; `"auto"` or `"gpu"` tries
-            accelerators in the above order.
+        preferred_device (str): `"cpu"` forces CPU; `"gpu"` tries
+            accelerators in the above order; `"cuda"` uses cuda if available
+            and otherwise falls back to cpu; `"default"` returns the default.
 
     Returns:
-        str: One of `"cuda"`, `"mps"`, `"xpu"`, or `"cpu"`.
-
-    Raises:
-        ValueError: If `preferred_device` is not `"auto"`, `"cpu"`, or `"gpu"`.
+        str: One of `"cuda"`, `"mps"`, `"xpu"`, `"cpu"`, or the dafault device.
     """
-    if preferred_device not in ("auto", "cpu", "gpu"):
+    if preferred_device not in ("cpu", "gpu", "cuda", "default"):
         raise ValueError(
-            f"preferred_device must be 'auto', 'cpu', or 'gpu'; "
+            f"preferred_device must be 'cpu', 'gpu', 'cuda', or 'default'; "
             f"got {preferred_device!r}."
         )
+    if preferred_device == "default":
+        return torch.get_default_device()
+    if preferred_device == "cuda":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+
     use_accelerator = preferred_device != "cpu"
     if use_accelerator and torch.cuda.is_available():
         return "cuda"
