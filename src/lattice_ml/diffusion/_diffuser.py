@@ -155,6 +155,11 @@ class VPDiffuser(torch.nn.Module):
 
         return dynamics_fn
 
+    @staticmethod
+    def euler_step(dynamics_fn, x_t, t, dt):
+        """Perform a single Euler step."""
+        return x_t + dt * dynamics_fn(t, x_t)
+
 
 # =============================================================================
 class SubVPDiffuser(torch.nn.Module):
@@ -290,3 +295,8 @@ class SubVPDiffuser(torch.nn.Module):
             return -x_t + coeff * score_plus_x_fn(t, x_t)
 
         return dynamics_fn
+
+    @staticmethod
+    def euler_step(dynamics_fn, x_t, t, dt):
+        """Perform a single Euler step."""
+        return x_t + dt * dynamics_fn(t, x_t)

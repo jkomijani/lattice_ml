@@ -166,39 +166,35 @@ class LieDiffuser(torch.nn.Module, ABC):
         dynamics_fn: Callable,
         t_span: Tuple[float, float],
         x_0: torch.Tensor,
-        method: str = 'Euler:su(n)',
+        method: str = 'Euler:g',
         **kwargs,
     ) -> torch.Tensor:
         """
         Integrate algebra-valued ODE dynamics on the group.
 
-        Delegates to `lattice_ml.integrate.lie_odeint`, which advances the
-        state via the matrix exponential at each step as:
+        Delegates to `lattice_ml.integrate.lie_odeint`, which by default
+        advances the state via the matrix exponential at each step as:
 
             torch.matrix_exp(dynamics_fn(t, x_t) * dt) @ x_t
-
-        Only `method='Euler:su(n)'` is supported. Any other integration method
-        must be handled externally.
 
         Args:
             dynamics_fn (Callable): Algebra-valued ODE dynamics.
             t_span (Tuple[float, float]): `(t0, t1)`, the integration interval.
             x_0 (torch.Tensor): Initial group-valued state.
-            method (str): Must be `'Euler:su(n)'` (the default).
+            method (str): The integration method (default is 'Euler:g').
             **kwargs: Additional keyword arguments forwarded to `lie_odeint`,
                 e.g. `step_size`, `num_steps`, `t_eval`.
 
         Returns:
             torch.Tensor: Final (or evaluated) group-valued state(s).
-
-        Raises:
-            ValueError: If `method` is not `'Euler:su(n)'`.
         """
-        if method != 'Euler:su(n)':
-            raise ValueError("Any other method must be handled externally.")
-
         kwargs['method'] = method
         return lie_odeint(dynamics_fn, t_span, x_0, **kwargs)
+
+    @staticmethod
+    def euler_step(dynamics_fn, x_t, t, dt):
+        """Perform a single Euler step on the group."""
+        return torch.matrix_exp(dynamics_fn(t, x_t) * dt) @ x_t
 
     def integrate_sde(
         self,

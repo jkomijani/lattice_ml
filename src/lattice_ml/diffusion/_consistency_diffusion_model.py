@@ -97,7 +97,7 @@ class ConsistencyDiffusionModel(torch.nn.Module):
             x_t, _ = self.diffuser(x_0, t_0=0, t=t)
             dt = (tau - t).view(-1, *[1] * (x_0.ndim - 1))
             with torch.no_grad():
-                x_tau = x_t + dt * self.dynamics_fn(t, x_t)
+                x_tau = self.diffuser.euler_step(self.dynamics_fn, x_t, t, dt)
 
         if self.target_ema_decay is not None:
             # Update the target network using the weights from previous steps
@@ -134,6 +134,7 @@ class ConsistencyDiffusionModel(torch.nn.Module):
         return t, tau
 
     def _diffuse_to_pair(self, x_0, t, tau):
+        # NOT applicable to Lie groups
         """
         Diffuses `x_0` to two different times, sharing one noise draw.
 
