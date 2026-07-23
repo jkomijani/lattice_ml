@@ -94,7 +94,7 @@ class ConsistencyDiffusionModel(torch.nn.Module):
             x_t, x_tau = self._diffuse_to_pair(x_0, t, tau)
         else:
             # Consistency Distillation (CD): an Euler step along known dynamics
-            x_t, _ = self.diffuser(x_0, t_0=0, t=t)
+            x_t, _ = self.diffuser((0, t), x_0)
             dt = (tau - t).view(-1, *[1] * (x_0.ndim - 1))
             with torch.no_grad():
                 x_tau = self.diffuser.euler_step(self.dynamics_fn, x_t, t, dt)

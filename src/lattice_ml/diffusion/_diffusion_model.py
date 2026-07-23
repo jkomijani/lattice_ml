@@ -127,7 +127,7 @@ class DiffusionModel(torch.nn.Module):
         t = torch.rand((bsize,), device=x_0.device)
 
         # Run the process to time t & get the context of the diffusion
-        x_t, diffusion_context = self.diffuser(x_0, t_0=0, t=t)
+        x_t, diffusion_context = self.diffuser((0, t), x_0)
 
         # Compute loss: implicit score matching
         loss = self._matching_loss_fn(
@@ -192,7 +192,7 @@ class DiffusionModel(torch.nn.Module):
             assert t >= t_0, "`t_eval` must monotonically increase."
 
             # Run the process to time t
-            x_eval[ind] = self.diffuser(x_0, t_0=t_0, t=t)[0]
+            x_eval[ind] = self.diffuser((t_0, t), x_0)[0]
 
             # Update the state for the next round
             x_0, t_0 = x_eval[ind], t
