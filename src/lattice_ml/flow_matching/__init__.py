@@ -1,1 +1,1 @@
-from ._flow_matching import *
+from . import dynamics
