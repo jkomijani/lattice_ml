@@ -32,9 +32,9 @@ class FlowMapLearner(torch.nn.Module):
             diffuser (Callable | None): If given, used to sample the source
                 state `x_s` from data via its forward process. If `None`,
                 `x_s` is instead obtained from the flow map's own current
-                `Phi_{s,0}(x_0)`.
-            t_leq_s (bool): Which triangle `(t, s)` pairs are sampled from
-                in `_prepare_t_and_s`: `t <= s` (default) or `t >= s`.
+                `Phi_{0,s}(x_0)`.
+            t_leq_s (bool): Which triangle `(s, t)` pairs are sampled from
+                in `_prepare_t_span`: `s >= t` (default) or `s <= t`.
         """
         super().__init__()
         self.flow_map = flow_map
@@ -47,24 +47,27 @@ class FlowMapLearner(torch.nn.Module):
         """Perform a training step to be used by Trainer."""
         x_0, = batch
 
-        t, s = self._prepare_t_and_s(bsize=x_0.shape[0], device=x_0.device)
+        t_span = self._prepare_t_span(bsize=x_0.shape[0], device=x_0.device)
+        s, _ = t_span
 
         if self.diffuser is not None:
-            x_s, _ = self.diffuser(x_0, t_0=0, t=s)
+            x_s, _ = self.diffuser((0, s), x_0)
         else:
-            x_s = self.flow_map(t=s, s=0, x_s=x_0)
+            x_s = self.flow_map((0, s), x_0)
 
-        x_t = self.flow_map(t, s, x_s)
+        x_t = self.flow_map(t_span, x_s)
 
-        return self.matching_objective(self.flow_map, t, s, x_t, x_s)
+        return self.matching_objective(self.flow_map, t_span, x_s, x_t)
 
-    def _prepare_t_and_s(self, bsize, device):
-        """Sample `(t, s)` uniformly over the triangle `t <= s` or `t >= s`."""
+    def _prepare_t_span(self, bsize, device):
+        """Sample `t_span = (s, t)` such that `t <= s` (or `t >= s` if
+        `self.t_leq_s` is `False`), uniformly over the corresponding
+        triangle."""
         u1 = torch.rand((bsize,), device=device)
         u2 = torch.rand((bsize,), device=device)
         lo, hi = torch.minimum(u1, u2), torch.maximum(u1, u2)
-        return (lo, hi) if self.t_leq_s else (hi, lo)
+        return (hi, lo) if self.t_leq_s else (lo, hi)
 
-    def forward(self, t, s, x_s):
-        """Evaluate the flow map being trained, `Phi_{t,s}(x_s)`."""
-        return self.flow_map(t, s, x_s)
+    def forward(self, t_span, x_s):
+        """Evaluate the flow map being trained, `Phi_{s,t}(x_s)`."""
+        return self.flow_map(t_span, x_s)

@@ -2,7 +2,7 @@
 
 """Implements the flow map."""
 
-from typing import Callable, Literal
+from typing import Callable, Literal, Tuple
 
 import torch
 from torch.func import jvp
@@ -17,22 +17,22 @@ class FlowMap(torch.nn.Module):
     Neural approximation of the flow map associated to a flow equation.
 
     Given the ODE `dx/dt = v_t(x)` and a state `x_s` at source time `s`, the
-    flow map `Phi_{t,s}(x_s)` returns the state `x_t` at target time `t`
+    flow map `Phi_{s,t}(x_s)` returns the state `x_t` at target time `t`
 
-        x_t = Phi_{t,s}(x_s) ,
+        x_t = Phi_{s,t}(x_s) ,
 
     by integrating the ODE from `s` to `t`, without numerically integrating it.
 
     The flow map satisfies:
 
     - `Phi_{s,s} = id`
-    - `Phi_{t,r} o Phi_{r,s} = Phi_{t,s}`  (semigroup property)
-    - `Phi_{s, t}^{-1} = Phi_{t,s}`        (a consequence, not the definition)
+    - `Phi_{t,r} o Phi_{r,s} = Phi_{s,t}`  (semigroup property)
+    - `Phi_{t,s}^{-1} = Phi_{s,t}`         (a consequence, not the definition)
 
     The boundary condition `Phi_{s,s} = id` is enforced exactly by
     parameterizing the map as
 
-        Phi_{t,s}(x_s) = x_s + (t - s) v(s, x_s) + (t - s)^2 f(t, s, x_s) / 2.
+        Phi_{s,t}(x_s) = x_s + (t - s) v_s(x_s) + (t - s)^2 f_{s,t}(x_s) / 2.
 
     This parameterization is deliberate: the first-order (small `|t - s|`)
     behavior of the flow map is exactly a single Euler step along `v`. The map
@@ -48,19 +48,18 @@ class FlowMap(torch.nn.Module):
         Args:
             underlying_dynamics_fn (Callable): ODE dynamics function
                 `v(t, x) -> dx/dt` that this flow map approximates.
-            network_fn (Callable): Network computing `f(t, s, x_s)`, the term
-                in the parameterization above.
+            network_fn (Callable): Network computing `f(t_span, x_s)`, the
+                term in the parameterization above (`t_span = (s, t)`).
         """
         super().__init__()
         self.underlying_dynamics_fn = underlying_dynamics_fn
         self.network_fn = network_fn
 
-    def forward(self, t, s, x_s):
-        """Evaluate the flow map `Phi_{t,s}(x_s)`.
+    def forward(self, t_span: Tuple, x_s: torch.Tensor):
+        """Evaluate the flow map `Phi_{s,t}(x_s)`.
 
         Args:
-            t (float | torch.Tensor): Target time(s).
-            s (float | torch.Tensor): Source time(s).
+            t_span (Tuple): `(s, t)`, the source and target times.
             x_s (torch.Tensor): State at time `s`.
 
         Returns:
@@ -72,6 +71,8 @@ class FlowMap(torch.nn.Module):
             additional loss term in self-distillation methods, which has
             nothing to do with this `forward` method.
         """
+        s, t = t_span
+
         delta_ts = t - s
         if isinstance(delta_ts, torch.Tensor) and delta_ts.ndim > 0:
             delta_ts = delta_ts.view(-1, *[1] * (x_s.ndim - 1))
@@ -79,30 +80,31 @@ class FlowMap(torch.nn.Module):
         with torch.no_grad():
             v_s = self.underlying_dynamics_fn(s, x_s)
 
-        f_ts = self.network_fn(t, s, x_s)
+        f_ts = self.network_fn(t_span, x_s)
 
         return x_s + delta_ts * v_s + (delta_ts**2 / 2) * f_ts
 
-    def network_fn_and_partial_t(self, t, s, x_s, eps: float | None = None):
-        """Evaluate `network_fn(t, s, x_s)` and its derivative w.r.t. `t`.
+    def network_fn_and_partial_t(
+        self, t_span: Tuple, x_s: torch.Tensor, eps: float | None = None
+    ):
+        """Evaluate `network_fn(t_span, x_s)` and its derivative w.r.t. `t`.
 
         If `network_fn` has a `forward_and_partial_t` method, the derivative
         is obtained from it directly; otherwise it falls back to `eval_jvp`
         (automatic differentiation, or finite differences if `eps` is given).
 
         Args:
-            t (float | torch.Tensor): Target time(s).
-            s (float | torch.Tensor): Source time(s).
+            t_span (Tuple): `(s, t)`, the source and target times.
             x_s (torch.Tensor): State at time `s`.
             eps (float | None): Finite-difference step size if not None.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]:
-                `(network_fn(t, s, x_s), d network_fn/dt(t, s, x_s))`.
+                `(network_fn(t_span, x_s), d network_fn/dt(t_span, x_s))`.
         """
         if hasattr(self.network_fn, "forward_and_partial_t"):
-            return self.network_fn.forward_and_partial_t(t, s, x_s)
-        return eval_jvp(self.network_fn, t, s, x_s, eps=eps)
+            return self.network_fn.forward_and_partial_t(t_span, x_s)
+        return eval_jvp(self.network_fn, t_span, x_s, eps=eps)
 
 
 # =============================================================================
@@ -111,7 +113,7 @@ class FlowMapMatchingObjective:
     Objective for training a flow map against a known `underlying_dynamics_fn`.
 
     `method="L"` enforces the Lagrangian condition,
-    `d/dt Phi_{t,s}(x) = v_t(Phi_{t,s}(x))`, i.e. the transported point's
+    `d/dt Phi_{s,t}(x_s) = v_t(Phi_{s,t}(x_s))`, i.e. the transported point's
     trajectory, pushed forward in the target time `t`, obeys the known
     drift `v` at wherever it currently is.
     """
@@ -129,15 +131,14 @@ class FlowMapMatchingObjective:
         self.method = method
         self.eps = eps
 
-    def __call__(self, flow_map, t, s, x_t, x_s):
+    def __call__(self, flow_map, t_span, x_s, x_t):
         """Compute the training objective.
 
         Args:
-            flow_map (Callable): The flow map with signature `(t, s, x_s)`.
-            t (float | torch.Tensor): The target time.
-            s (float | torch.Tensor): The source time.
+            flow_map (Callable): The flow map with signature `(t_span, x_s)`.
+            t_span (Tuple): `(s, t)`, the source and target times.
+            x_s (torch.Tensor): Batch of states at the source time.
             x_t (torch.Tensor): Batch of states at the target time.
-            x_s (torch.Tensor): Batch of states at the soruce time.
 
         Returns:
             torch.Tensor: Scalar loss value.
@@ -148,6 +149,7 @@ class FlowMapMatchingObjective:
             here too, same as in `FlowMap.forward`.
         """
         v = flow_map.underlying_dynamics_fn
+        s, t = t_span
 
         delta_ts = t - s
         if isinstance(delta_ts, torch.Tensor) and delta_ts.ndim > 0:
@@ -160,32 +162,35 @@ class FlowMapMatchingObjective:
         # rearranged Lagrangian condition: (v_t - v_s)/del = f + (del/2)*df/dt
         a_ts = (v_t - v_s) / delta_ts
 
-        f_ts, dfdt_ts = flow_map.network_fn_and_partial_t(t, s, x_s, self.eps)
+        f_ts, dfdt_ts = flow_map.network_fn_and_partial_t(
+            t_span, x_s, self.eps
+        )
 
         return squared_l2_distance(a_ts - f_ts, (delta_ts / 2) * dfdt_ts)
 
 
 # =============================================================================
-def eval_jvp(f, t, s, x_s, eps: float | None = None):
+def eval_jvp(f, t_span: Tuple, x_s: torch.Tensor, eps: float | None = None):
     """
     Evaluate JVP of `f` with respect to `t`.
 
     Args:
-        f (Callable): Function `f(t, s, x_s)` to differentiate w.r.t. `t`.
-        t (float | torch.Tensor): Target time(s), the time to differentiate at.
-        s (float | torch.Tensor): Source time(s), held fixed.
+        f (Callable): Function `f(t_span, x_s)` to differentiate w.r.t. `t`.
+        t_span (Tuple): `(s, t)`; differentiation is w.r.t. `t`.
         x_s (torch.Tensor): State at time `s`, held fixed.
         eps (float | None): Finite-difference step size; if None, uses AD.
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor]: `(f(t, s, x_s), df/dt(t, s, x_s))`.
+        Tuple[torch.Tensor, torch.Tensor]: `(f(t_span, x_s), df/dt)`.
     """
+    s, t = t_span
+
     if eps is not None:
-        f_ts = f(t, s, x_s)
-        dfdt_ts = (f(t + eps, s, x_s) - f_ts) / eps
+        f_ts = f((s, t), x_s)
+        dfdt_ts = (f((s, t + eps), x_s) - f_ts) / eps
         return f_ts, dfdt_ts
 
-    return jvp(lambda t_: f(t_, s, x_s), (t,), (torch.ones_like(t),))
+    return jvp(lambda t_: f((s, t_), x_s), (t,), (torch.ones_like(t),))
 
 
 # =============================================================================
