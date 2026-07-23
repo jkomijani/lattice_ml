@@ -2,7 +2,7 @@
 
 """Implements Euclidean (scalar) diffusers for :class:`DiffusionModel`."""
 
-from typing import Callable
+from typing import Callable, Tuple
 
 import torch
 
@@ -41,22 +41,20 @@ class VPDiffuser(torch.nn.Module):
             sde_schedule = VPScheduleWithInverseTimeGamma()
         self.sde_schedule = sde_schedule
 
-    def forward(self, x_0: torch.Tensor, t_0: torch.Tensor, t: torch.Tensor):
+    def forward(self, t_span: Tuple, x_0: torch.Tensor):
         """
         Simulates the forward diffusion process.
 
-        The process starts from the initial state `x_0` at time `t_0` and
-        evolves the states until the terminal time `t` by adding noise to the
-        state.
+        The process starts from the initial state `x_0` at time `t_span[0]`
+        and evolves the state until the terminal time `t_span[1]` by adding
+        noise to the state.
 
         Args:
+            t_span (Tuple): `(t_0, t)`, the initial and terminal times, each
+                a 0d or 1d `torch.Tensor`. These may be batched per-example;
+                if 1d, their length must match the batch size of `x_0`. One of
+                the two (but not both) may be a plain float instead, if needed.
             x_0 (torch.Tensor): The initial state of the system at time `t_0`.
-            t_0 (torch.Tensor): A 0d or 1d tensor of the initial times.
-            t (torch.Tensor): A 0d or 1d tensor of the terminal times.
-
-        Note:
-            At least one of `t_0` or `t` must be an instance of `torch.Tensor`.
-            If a 1d tensor, their lengths must match the batch size of `x_0`.
 
         In addition to the state at time `t`, this method computes and returns
         other useful quantities. Note that
@@ -86,6 +84,8 @@ class VPDiffuser(torch.nn.Module):
                 - `signal_scale`: weight of the signal in `x_t`.
                 - `half_sigma_square`: half of square of `sigma(t)`.
         """
+        t_0, t = t_span
+
         # Expand t_eval dimensions to match x_0
         t = t.view(-1, *[1] * (x_0.ndim - 1))
 
@@ -188,22 +188,20 @@ class SubVPDiffuser(torch.nn.Module):
             sde_schedule = SubVPScheduleWithInverseTimeGamma()
         self.sde_schedule = sde_schedule
 
-    def forward(self, x_0: torch.Tensor, t_0: torch.Tensor, t: torch.Tensor):
+    def forward(self, t_span: Tuple, x_0: torch.Tensor):
         """
         Simulates the forward diffusion process.
 
-        The process starts from the initial state `x_0` at time `t_0` and
-        evolves the states until the terminal time `t` by adding noise to the
-        state.
+        The process starts from the initial state `x_0` at time `t_span[0]`
+        and evolves the state until the terminal time `t_span[1]` by adding
+        noise to the state.
 
         Args:
+            t_span (Tuple): `(t_0, t)`, the initial and terminal times, each
+                a 0d or 1d `torch.Tensor`. These may be batched per-example;
+                if 1d, their length must match the batch size of `x_0`. One of
+                the two (but not both) may be a plain float instead, if needed.
             x_0 (torch.Tensor): The initial state of the system at time `t_0`.
-            t_0 (torch.Tensor): A 0d or 1d tensor of the initial times.
-            t (torch.Tensor): A 0d or 1d tensor of the terminal times.
-
-        Note:
-            At least one of `t_0` or `t` must be an instance of `torch.Tensor`.
-            If a 1d tensor, their lengths must match the batch size of `x_0`.
 
         In addition to the state at time `t`, this method computes and returns
         other useful quantities. Note that
@@ -232,6 +230,8 @@ class SubVPDiffuser(torch.nn.Module):
                 - `noise_scale`: weight of the noise in `x_t`,
                 - `signal_scale`: weight of the signal in `x_t`.
         """
+        t_0, t = t_span
+
         # Expand t_eval dimensions to match x_0
         t = t.view(-1, *[1] * (x_0.ndim - 1))
 

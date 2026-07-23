@@ -67,20 +67,21 @@ class LieDiffuser(torch.nn.Module, ABC):
     def randn_algebra_like(self, x: torch.Tensor):
         """Sample algebra-valued Gaussian noise with the same shape as `x`."""
 
-    def forward(self, x_0: torch.Tensor, t_0: torch.Tensor, t: torch.Tensor):
+    def forward(self, t_span: Tuple, x_0: torch.Tensor):
         """
         Simulates the forward diffusion process on the group.
 
         The process starts from the initial group-valued state `x_0` at
-        time `t_0` and evolves it to time `t` via a discretized random walk
-        in the Lie algebra, mapped to the group through the matrix exponential
-        at each sub-step.
+        time `t_span[0]` and evolves it to time `t_span[1]` via a discretized
+        random walk in the Lie algebra, mapped to the group through the
+        matrix exponential at each sub-step.
 
         Args:
+            t_span (Tuple): `(t_0, t)`, the initial and terminal times, each
+                a 0d or 1d `torch.Tensor`. These may be batched per-example;
+                if 1d, their length must match the batch size of `x_0`. One of
+                the two (but not both) may be a plain float instead, if needed.
             x_0 (torch.Tensor): The initial group-valued state at time `t_0`.
-            t_0 (torch.Tensor): A 0d (or float) of the initial time.
-            t (torch.Tensor): A 0d or 1d tensor of the terminal times. If 1d,
-                its length must match the batch size of `x_0`.
 
         Returns:
             A tuple containing:
@@ -100,6 +101,8 @@ class LieDiffuser(torch.nn.Module, ABC):
             two keys coincide exactly here because this schedule is driftless
             (`gamma = 0`, Variance Exploding).
         """
+        t_0, t = t_span
+
         assert (t >= t_0).all(), "`t` must be >= `t_0`."
 
         # Expand t_eval dimensions to match x_0
