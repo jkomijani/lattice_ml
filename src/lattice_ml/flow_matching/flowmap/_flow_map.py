@@ -59,7 +59,9 @@ class FlowMap(torch.nn.Module):
         """Evaluate the flow map `Phi_{s,t}(x_s)`.
 
         Args:
-            t_span (Tuple): `(s, t)`, the source and target times.
+            t_span (Tuple): `(s, t)`, the source and target times. Each may
+                independently be a plain float or a 0d/1d `torch.Tensor`
+                (batched per-example if 1d, matching the batch size of states).
             x_s (torch.Tensor): State at time `s`.
 
         Returns:
@@ -72,10 +74,7 @@ class FlowMap(torch.nn.Module):
             nothing to do with this `forward` method.
         """
         s, t = t_span
-
-        delta_ts = t - s
-        if isinstance(delta_ts, torch.Tensor) and delta_ts.ndim > 0:
-            delta_ts = delta_ts.view(-1, *[1] * (x_s.ndim - 1))
+        delta_ts = _prepare_time(t - s, x_s, "t - s")
 
         with torch.no_grad():
             v_s = self.underlying_dynamics_fn(s, x_s)
@@ -94,7 +93,9 @@ class FlowMap(torch.nn.Module):
         (automatic differentiation, or finite differences if `eps` is given).
 
         Args:
-            t_span (Tuple): `(s, t)`, the source and target times.
+            t_span (Tuple): `(s, t)`, the source and target times. Each may
+                independently be a plain float or a 0d/1d `torch.Tensor`
+                (batched per-example if 1d, matching the batch size of states).
             x_s (torch.Tensor): State at time `s`.
             eps (float | None): Finite-difference step size if not None.
 
@@ -136,7 +137,9 @@ class FlowMapMatchingObjective:
 
         Args:
             flow_map (Callable): The flow map with signature `(t_span, x_s)`.
-            t_span (Tuple): `(s, t)`, the source and target times.
+            t_span (Tuple): `(s, t)`, the source and target times. Each may
+                independently be a plain float or a 0d/1d `torch.Tensor`
+                (batched per-example if 1d, matching the batch size of states).
             x_s (torch.Tensor): Batch of states at the source time.
             x_t (torch.Tensor): Batch of states at the target time.
 
@@ -149,11 +152,9 @@ class FlowMapMatchingObjective:
             here too, same as in `FlowMap.forward`.
         """
         v = flow_map.underlying_dynamics_fn
-        s, t = t_span
 
-        delta_ts = t - s
-        if isinstance(delta_ts, torch.Tensor) and delta_ts.ndim > 0:
-            delta_ts = delta_ts.view(-1, *[1] * (x_s.ndim - 1))
+        s, t = t_span
+        delta_ts = _prepare_time(t - s, x_s, "t - s")
 
         with torch.no_grad():
             v_t = v(t, x_t)
@@ -176,7 +177,10 @@ def eval_jvp(f, t_span: Tuple, x_s: torch.Tensor, eps: float | None = None):
 
     Args:
         f (Callable): Function `f(t_span, x_s)` to differentiate w.r.t. `t`.
-        t_span (Tuple): `(s, t)`; differentiation is w.r.t. `t`.
+        t_span (Tuple): `(s, t)`, the source and target times; differentiation
+            is w.r.t. `t`. Each may independently be a plain float or a
+            0d/1d `torch.Tensor` (batched per-example if 1d, matching the
+            batch size of states).
         x_s (torch.Tensor): State at time `s`, held fixed.
         eps (float | None): Finite-difference step size; if None, uses AD.
 
@@ -198,3 +202,14 @@ def squared_l2_distance(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Default distance function: mean squared error (real part)."""
     res = a - b
     return torch.mean((res * res.conj()).real)
+
+
+# =============================================================================
+def _prepare_time(t, x: torch.Tensor, name: str = "t") -> torch.Tensor:
+    """Convert `t` to a tensor if needed, and align it with `x`'s batch."""
+    if not isinstance(t, torch.Tensor):
+        t = torch.as_tensor(t, device=x.device)
+    assert t.ndim <= 1, f"`{name}` must be 0d or 1d."
+    if t.numel() > 1:
+        t = t.view(-1, *[1] * (x.ndim - 1))
+    return t
