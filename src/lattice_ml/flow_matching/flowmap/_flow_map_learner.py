@@ -60,9 +60,10 @@ class FlowMapLearner(torch.nn.Module):
         return self.matching_objective(self.flow_map, t_span, x_s, x_t)
 
     def _prepare_t_span(self, bsize, device):
-        """Sample `t_span = (s, t)` such that `t <= s` (or `t >= s` if
-        `self.t_leq_s` is `False`), uniformly over the corresponding
-        triangle."""
+        """
+        Sample `t_span = (s, t)` uniformly over `t <= s` or `t >= s` triangles,
+        depending on `self.t_leq_s`.
+        """
         u1 = torch.rand((bsize,), device=device)
         u2 = torch.rand((bsize,), device=device)
         lo, hi = torch.minimum(u1, u2), torch.maximum(u1, u2)
