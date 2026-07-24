@@ -77,10 +77,10 @@ class LieDiffuser(torch.nn.Module, ABC):
         matrix exponential at each sub-step.
 
         Args:
-            t_span (Tuple): `(t_0, t)`, the initial and terminal times, each
-                a 0d or 1d `torch.Tensor`. These may be batched per-example;
-                if 1d, their length must match the batch size of `x_0`. One of
-                the two (but not both) may be a plain float instead, if needed.
+            t_span (Tuple): `(t_0, t)`, the initial and terminal times. Each
+                may independently be a plain float or a 0d/1d `torch.Tensor`
+                (batched per-example if 1d, matching the batch size of `x_0`).
+                Note that `t_0 =< t` is required.
             x_0 (torch.Tensor): The initial group-valued state at time `t_0`.
 
         Returns:
@@ -102,11 +102,10 @@ class LieDiffuser(torch.nn.Module, ABC):
             (`gamma = 0`, Variance Exploding).
         """
         t_0, t = t_span
+        t_0 = _prepare_time(t_0, x_0, "t_0")
+        t = _prepare_time(t, x_0, "t")
 
         assert (t >= t_0).all(), "`t` must be >= `t_0`."
-
-        # Expand t_eval dimensions to match x_0
-        t = t.view(-1, *[1] * (x_0.ndim - 1))
 
         # Time step for discretized diffusion
         h = (t - t_0) / self.n_random_walk_steps
@@ -251,3 +250,14 @@ class SUnDiffuser(LieDiffuser):
 
     def randn_algebra_like(self, x: torch.Tensor):
         return randn_traceless_antihermitian_like(x)
+
+
+# =============================================================================
+def _prepare_time(t, x_0: torch.Tensor, name: str = "t") -> torch.Tensor:
+    """Convert `t` to a tensor if needed, and align it with `x_0`'s batch."""
+    if not isinstance(t, torch.Tensor):
+        t = torch.as_tensor(t, device=x_0.device)
+    assert t.ndim <= 1, f"`{name}` must be 0d or 1d."
+    if t.numel() > 1:
+        t = t.view(-1, *[1] * (x_0.ndim - 1))
+    return t

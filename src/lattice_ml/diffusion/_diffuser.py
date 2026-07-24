@@ -50,10 +50,10 @@ class VPDiffuser(torch.nn.Module):
         noise to the state.
 
         Args:
-            t_span (Tuple): `(t_0, t)`, the initial and terminal times, each
-                a 0d or 1d `torch.Tensor`. These may be batched per-example;
-                if 1d, their length must match the batch size of `x_0`. One of
-                the two (but not both) may be a plain float instead, if needed.
+            t_span (Tuple): `(t_0, t)`, the initial and terminal times. Each
+                may independently be a plain float or a 0d/1d `torch.Tensor`
+                (batched per-example if 1d, matching the batch size of `x_0`).
+                Note that `t_0 =< t` is required.
             x_0 (torch.Tensor): The initial state of the system at time `t_0`.
 
         In addition to the state at time `t`, this method computes and returns
@@ -85,9 +85,10 @@ class VPDiffuser(torch.nn.Module):
                 - `half_sigma_square`: half of square of `sigma(t)`.
         """
         t_0, t = t_span
+        t_0 = _prepare_time(t_0, x_0, "t_0")
+        t = _prepare_time(t, x_0, "t")
 
-        # Expand t_eval dimensions to match x_0
-        t = t.view(-1, *[1] * (x_0.ndim - 1))
+        assert (t >= t_0).all(), "`t` must be >= `t_0`."
 
         # Compute accumulated noise standard deviation and its complementary
         noise_scale = self.sde_schedule.transition_noise_std(t_0, t)
@@ -197,10 +198,10 @@ class SubVPDiffuser(torch.nn.Module):
         noise to the state.
 
         Args:
-            t_span (Tuple): `(t_0, t)`, the initial and terminal times, each
-                a 0d or 1d `torch.Tensor`. These may be batched per-example;
-                if 1d, their length must match the batch size of `x_0`. One of
-                the two (but not both) may be a plain float instead, if needed.
+            t_span (Tuple): `(t_0, t)`, the initial and terminal times. Each
+                may independently be a plain float or a 0d/1d `torch.Tensor`
+                (batched per-example if 1d, matching the batch size of `x_0`).
+                Note that `t_0 =< t` is required.
             x_0 (torch.Tensor): The initial state of the system at time `t_0`.
 
         In addition to the state at time `t`, this method computes and returns
@@ -231,9 +232,10 @@ class SubVPDiffuser(torch.nn.Module):
                 - `signal_scale`: weight of the signal in `x_t`.
         """
         t_0, t = t_span
+        t_0 = _prepare_time(t_0, x_0, "t_0")
+        t = _prepare_time(t, x_0, "t")
 
-        # Expand t_eval dimensions to match x_0
-        t = t.view(-1, *[1] * (x_0.ndim - 1))
+        assert (t >= t_0).all(), "`t` must be >= `t_0`."
 
         # Compute accumulated noise standard deviation and its complementary
         noise_scale = self.sde_schedule.transition_noise_std(t_0, t)
@@ -300,3 +302,14 @@ class SubVPDiffuser(torch.nn.Module):
     def euler_step(dynamics_fn, x_t, t, dt):
         """Perform a single Euler step."""
         return x_t + dt * dynamics_fn(t, x_t)
+
+
+# =============================================================================
+def _prepare_time(t, x_0: torch.Tensor, name: str = "t") -> torch.Tensor:
+    """Convert `t` to a tensor if needed, and align it with `x_0`'s batch."""
+    if not isinstance(t, torch.Tensor):
+        t = torch.as_tensor(t, device=x_0.device)
+    assert t.ndim <= 1, f"`{name}` must be 0d or 1d."
+    if t.numel() > 1:
+        t = t.view(-1, *[1] * (x_0.ndim - 1))
+    return t
