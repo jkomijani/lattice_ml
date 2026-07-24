@@ -4,7 +4,7 @@
 
 # pylint: disable=too-many-arguments, too-many-positional-arguments
 
-from typing import Callable, Dict, Sequence
+from typing import Callable, Dict, Tuple
 
 import numpy as np
 import pydantic
@@ -153,91 +153,80 @@ class DiffusionModel(torch.nn.Module):
     def forward(
         self,
         x_0: torch.Tensor,
-        t_0: float = 0.,
-        t_eval: float | Sequence[float] | torch.Tensor = 1.0
+        t_span: Tuple[float, float] = (0, 1),
+        t_eval: Tuple[float] | torch.Tensor | None = None,
     ):
         """
         Simulate the forward diffusion process from an initial state.
 
-        The system is evolved sequentially from the initial time `t_0` to one
-        or multiple evaluation times `t_eval`. For each evaluation time, the
-        underlying diffusion operator `self.diffuser` is called to propagate
-        the state from the current state to the next one.
+        Starts from `x_0` at time `t_span[0]` and evolves to `t_span[1]`.
+        If `t_eval` is given, the state is instead evolved sequentially through
+        each time in `t_eval` in turn; `t_span[1]` is then not used, and should
+        be included in `t_eval` if its state is wanted too.
 
         Args:
-            x_0 (torch.Tensor): The initial state of the system at time `t_0`.
-            t_0 (float): The initial time for the simulation. Default is 0.
-            t_eval (float | Sequence[float] | torch.Tensor): Target evaluation
-               time(s). Times must be monotonically non-decreasing.
+            x_0 (torch.Tensor): The initial state of the system at `t_span[0]`.
+            t_span (Tuple[float, float]): `(t_0, t_1)`, the initial and
+                terminal times, with `t_0 <= t_1`. Default is `(0, 1)`.
+            t_eval (Tuple[float] | torch.Tensor | None): Optional evaluation
+                time(s) to evolve through sequentially instead of jumping
+                directly to `t_span[1]`. If a `torch.Tensor`, must be 1d.
+                Times are expected to be monotonically non-decreasing and not
+                outside `t_span`. However, each entry is silently skipped if it
+                breaks the expected rule.
 
         Returns:
             torch.Tensor | List[torch.Tensor]:
-            - If `t_eval` is a scalar, returns the state `x_t` at that time.
-            - If `t_eval` contains multiple times, returns a list of states
-              evaluated at each time in `t_eval`.
+            - If `t_eval` is `None`, returns a single state, at `t_span[1]`.
+            - Otherwise, returns a list of states, one for each time in t_eval.
         """
-        # Convert evaluation times to tensor
-        if not isinstance(t_eval, torch.Tensor):
-            t_eval = torch.as_tensor(t_eval, device=x_0.device)
+        t_0, t_1 = t_span
+        assert t_1 >= t_0, "`t_span` must go from small to large in `forward`."
 
-        if t_eval.ndim == 0:
-            t_eval = t_eval.unsqueeze(0)
-            squeeze_output = True
-        else:
-            squeeze_output = False
+        if t_eval is None:
+            return self.diffuser((t_0, t_1), x_0)[0]
 
-        x_eval = [None] * len(t_eval)
+        if isinstance(t_eval, torch.Tensor):
+            assert t_eval.ndim == 1, "`t_eval` must be 1d."
 
-        for ind, t in enumerate(t_eval):
-            assert t >= t_0, "`t_eval` must monotonically increase."
+        x_eval = []
+        for t in t_eval:
+            if not t_0 <= t <= t_1:
+                continue
 
             # Run the process to time t
-            x_eval[ind] = self.diffuser((t_0, t), x_0)[0]
+            x_eval.append(self.diffuser((t_0, t), x_0)[0])
 
             # Update the state for the next round
-            x_0, t_0 = x_eval[ind], t
+            x_0, t_0 = x_eval[-1], t
 
-        return x_eval[0] if squeeze_output else x_eval
+        return x_eval
 
     def reverse(
         self,
         x_0: torch.Tensor,
-        t_0: float = 1.0,
-        t_eval: float | Sequence[float] | torch.Tensor = 0.,
-        step_size: float = 0.01,
+        t_span: Tuple[float, float] = (1, 0),
         **solver_kwargs
     ):
         """Integrate the reverse-time ODE to generate samples.
 
-        Starts from `x_0` at time `t_0` (typically noise) and evolves toward
-        smaller times using the learned score function.
+        Starts from `x_0` at time `t_span[0]` (typically noise) and evolves
+        to `t_span[1]` using the learned score function.
 
         Args:
-            x_0: Initial state at time `t_0`.
-            t_0: Initial time.
-            t_eval: Target time(s) (< t_0).
-            step_size: Solver step size.
+            x_0 (torch.Tensor): Initial state at time `t_span[0]`.
+            t_span (Tuple[float, float]): `(t_0, t_1)`, the integration
+                interval. Unlike `forward`, `t_span` may go in either direction
+                here (the solver handles both). Default is `(1, 0)`.
             **solver_kwargs: Additional keyword arguments forwarded to the
-                solver, e.g. `method` and `num_steps`.
+                solver, e.g. `method` and `num_steps` (or `step_size`) .
 
         Returns:
-            Final state or states at `t_eval`.
+            Final state at `t_span[1]`, or states at `t_eval` if given.
         """
-        # Convert to tensor (on correct device)
-        t_eval = torch.as_tensor(t_eval, device=x_0.device)
-
-        # Determine integration interval
-        t_end = t_eval if t_eval.ndim == 0 else t_eval.min()
-        t_span = (t_0, t_end)
-
-        # Pass solver options
-        kwargs = {**solver_kwargs, "step_size": step_size}
-
-        # Only pass t_eval if it's not scalar
-        if t_eval.ndim > 0:
-            kwargs["t_eval"] = t_eval
-
-        return self.diffuser.integrate(self.dynamics_fn, t_span, x_0, **kwargs)
+        return self.diffuser.integrate(
+            self.dynamics_fn, t_span, x_0, **solver_kwargs
+        )
 
 
 # =============================================================================
