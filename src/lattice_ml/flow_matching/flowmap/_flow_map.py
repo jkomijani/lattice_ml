@@ -26,7 +26,7 @@ class FlowMap(torch.nn.Module):
     The flow map satisfies:
 
     - `Phi_{s,s} = id`
-    - `Phi_{t,r} o Phi_{r,s} = Phi_{s,t}`  (semigroup property)
+    - `Phi_{r,t} o Phi_{s,r} = Phi_{s,t}`  (semigroup property)
     - `Phi_{t,s}^{-1} = Phi_{s,t}`         (a consequence, not the definition)
 
     The boundary condition `Phi_{s,s} = id` is enforced exactly by
@@ -55,7 +55,12 @@ class FlowMap(torch.nn.Module):
         self.underlying_dynamics_fn = underlying_dynamics_fn
         self.network_fn = network_fn
 
-    def forward(self, t_span: Tuple, x_s: torch.Tensor):
+    def forward(
+        self,
+        t_span: Tuple,
+        x_s: torch.Tensor,
+        t_eval: Tuple[float] | torch.Tensor | None = None,
+    ):
         """Evaluate the flow map `Phi_{s,t}(x_s)`.
 
         Args:
@@ -63,9 +68,14 @@ class FlowMap(torch.nn.Module):
                 independently be a plain float or a 0d/1d `torch.Tensor`
                 (batched per-example if 1d, matching the batch size of states).
             x_s (torch.Tensor): State at time `s`.
+            t_eval (Tuple[float] | torch.Tensor | None): Optional evaluation
+                time(s) to evolve through sequentially instead of jumping
+                directly to `t_span[1]`. If a `torch.Tensor`, must be 1d.
 
         Returns:
-            torch.Tensor: The transported state, approximating `x_t`.
+            torch.Tensor | List[torch.Tensor]:
+            - If `t_eval` is `None`, returns a single state, at `t_span[1]`.
+            - Otherwise, returns a list of states, one for each time in t_eval.
 
         Note:
             `underlying_dynamics_fn` is evaluated with no backward graph;
@@ -74,14 +84,29 @@ class FlowMap(torch.nn.Module):
             nothing to do with this `forward` method.
         """
         s, t = t_span
-        delta_ts = _prepare_time(t - s, x_s, "t - s")
 
-        with torch.no_grad():
-            v_s = self.underlying_dynamics_fn(s, x_s)
+        if t_eval is None:
+            delta_ts = _prepare_time(t - s, x_s, "t - s")
 
-        f_ts = self.network_fn(t_span, x_s)
+            with torch.no_grad():
+                v_s = self.underlying_dynamics_fn(s, x_s)
 
-        return x_s + delta_ts * v_s + (delta_ts**2 / 2) * f_ts
+            f_ts = self.network_fn(t_span, x_s)
+
+            return x_s + delta_ts * v_s + (delta_ts**2 / 2) * f_ts
+
+        if isinstance(t_eval, torch.Tensor):
+            assert t_eval.ndim == 1, "`t_eval` must be 1d."
+
+        x_eval = []
+        for t_i in t_eval:
+            # Run the flow map to time t_i
+            x_eval.append(self.forward((s, t_i), x_s))
+
+            # Update the state for the next round
+            x_s, s = x_eval[-1], t_i
+
+        return x_eval
 
     def network_fn_and_partial_t(
         self, t_span: Tuple, x_s: torch.Tensor, eps: float | None = None
