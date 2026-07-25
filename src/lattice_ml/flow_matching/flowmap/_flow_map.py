@@ -160,7 +160,9 @@ class FlowMapMatchingObjective:
             v_t = v(t, x_t)
             v_s = v(s, x_s)
 
-        # rearranged Lagrangian condition: (v_t - v_s)/del = f + (del/2)*df/dt
+        # Rearranged Lagrangian condition:
+        #    (v_t - v_s) / delta_ts = f + (delta_ts / 2 ) * df/dt
+
         a_ts = (v_t - v_s) / delta_ts
 
         f_ts, dfdt_ts = flow_map.network_fn_and_partial_t(
