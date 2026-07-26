@@ -22,11 +22,14 @@ class TimeEmbeddedWeight(torch.nn.Module):
     Args:
         weight_shape (tuple of int): Shape of the output weight tensor,
             excluding batch dimension.
-        hidden_dim (int): Hidden dimension of the MLP (default 32).
-        max_freq (int | None): Maximum frequencey in the sinusoidal encoder if
-            not None (default is 32.0). Otherwise, a dense econder is used.
+        encoder_dim (int): The time encoder's own output size (default 32).
             Overlooked if `time_encoder` is provided.
-        time_encoder (torch.nn.Module): Module that encodes time if provided.
+        hidden_dim (int): Hidden width of the MLP (default 32).
+        max_freq (int | None): Maximum frequencey in the sinusoidal encoder
+            if not None (default is 32.0). Otherwise, a dense econder is used.
+            Overlooked if `time_encoder` is provided.
+        time_encoder (torch.nn.Module): Module that encodes time if provided;
+            overrides `encoder_dim`/`max_freq`.
         n_coords (int | None): Number of scalar coordinates jointly encoded
             (e.g. `2` for a pair of times `(s, t)`. Default `None`: `t` has no
             coordinate axis at all -- `t.shape` is exactly the batch shape.
@@ -34,6 +37,7 @@ class TimeEmbeddedWeight(torch.nn.Module):
     def __init__(
         self,
         weight_shape: Tuple[int],
+        encoder_dim: int = 32,
         hidden_dim: int = 32,
         max_freq: int | None = 32.0,
         time_encoder: torch.nn.Module = None,
@@ -47,15 +51,17 @@ class TimeEmbeddedWeight(torch.nn.Module):
 
         if time_encoder is None:
             if max_freq is None:
-                time_encoder = DenseEncoder(hidden_dim)
+                time_encoder = DenseEncoder(encoder_dim)
             else:
-                time_encoder = SinusoidalEncoder(hidden_dim, max_freq=max_freq)
+                time_encoder = SinusoidalEncoder(
+                    encoder_dim, max_freq=max_freq
+                )
 
         self.time_encoder = time_encoder
-        time_n_embed = self.time_encoder.n_embed * (n_coords or 1)
+        extended_encoder_dim = self.time_encoder.encoder_dim * (n_coords or 1)
 
         self.mlp = torch.nn.Sequential(
-            torch.nn.Linear(time_n_embed, hidden_dim),
+            torch.nn.Linear(extended_encoder_dim, hidden_dim),
             torch.nn.SiLU(),
             torch.nn.Linear(hidden_dim, n_weight),
         )
@@ -74,7 +80,7 @@ class TimeEmbeddedWeight(torch.nn.Module):
 
         emb = self.time_encoder(t)
         if self.n_coords is not None:
-            emb = emb.flatten(start_dim=-2)  # merge axes of n_coords & n_embed
+            emb = emb.flatten(start_dim=-2)  # merge n_coords & encoder_dim
 
         weight_t = self.mlp(emb)
         return weight_t.reshape(*batch_shape, *self.weight_shape)
@@ -101,7 +107,7 @@ class SinusoidalEncoder(torch.nn.Module):
     adjusted using `min_freq` and `max_freq`.
 
     Args:
-        n_embed (int): Length of the code vector (must be even).
+        encoder_dim (int): Length of the code vector (must be even).
         min_freq (float, int): Minimum angular frequency (default is 1).
         max_freq (float, int): Maximum angular frequency (default is 1000).
         inner_ndim (int): For reshaping the output (default is 0).
@@ -111,7 +117,7 @@ class SinusoidalEncoder(torch.nn.Module):
 
     def __init__(
         self,
-        n_embed: int,
+        encoder_dim: int,
         min_freq: float = 1.,
         max_freq: float = 1000.,
         inner_ndim: int = 0,
@@ -119,11 +125,11 @@ class SinusoidalEncoder(torch.nn.Module):
         trainable_ampl: bool = False
     ):
 
-        assert n_embed % 2 == 0, "Embedding length must be even."
+        assert encoder_dim % 2 == 0, "Embedding length must be even."
 
         super().__init__()
 
-        self.n_embed = n_embed
+        self.encoder_dim = encoder_dim
         self.min_freq = min_freq
         self.max_freq = max_freq
         self.inner_ndim = inner_ndim
@@ -131,14 +137,14 @@ class SinusoidalEncoder(torch.nn.Module):
         self.trainable_ampl = trainable_ampl
 
         if trainable_freq:
-            self.freq_ratio = torch.nn.Parameter(torch.rand(n_embed // 2))
+            self.freq_ratio = torch.nn.Parameter(torch.rand(encoder_dim // 2))
         else:
-            power = torch.arange(n_embed // 2) * (2 / n_embed)  # \in [0, 1)
-            freq = max_freq / (max_freq / min_freq)**power
+            power = torch.arange(encoder_dim // 2) * (2 / encoder_dim)
+            freq = max_freq / (max_freq / min_freq)**power  # power \in [0, 1)
             self.register_buffer('freq', freq)
 
         if trainable_ampl:
-            self.ampl = torch.nn.Parameter(torch.randn(n_embed))
+            self.ampl = torch.nn.Parameter(torch.randn(encoder_dim))
         else:
             self.ampl = None
 
@@ -149,7 +155,7 @@ class SinusoidalEncoder(torch.nn.Module):
             t (torch.Tensor): The input tensor, e.g., representing time.
 
         Returns:
-            torch.Tensor: A tensor of original shape `(*t.shape, n_embed)` with
+            torch.Tensor: A tensor of original shape `(*t.shape, encoder_dim)` with
                 sinusoidal encoding. It is then reshaped to have `inner_ndim`
                 additional inner dimensions with unit lenght.
         """
@@ -158,7 +164,7 @@ class SinusoidalEncoder(torch.nn.Module):
         else:
             angle = t.unsqueeze(-1) * self.freq
 
-        encoded_t = torch.zeros((*t.shape, self.n_embed), device=t.device)
+        encoded_t = torch.zeros((*t.shape, self.encoder_dim), device=t.device)
 
         encoded_t[..., 0::2] = torch.sin(angle)
         encoded_t[..., 1::2] = torch.cos(angle)
@@ -166,7 +172,7 @@ class SinusoidalEncoder(torch.nn.Module):
         if self.trainable_ampl:
             encoded_t = self.ampl * encoded_t
 
-        out_shape = (*t.shape, self.n_embed, *(1,) * self.inner_ndim)
+        out_shape = (*t.shape, self.encoder_dim, *(1,) * self.inner_ndim)
         return encoded_t.reshape(*out_shape)
 
 
@@ -174,18 +180,18 @@ class DenseEncoder(torch.nn.Module):
     """Implements a dense encoding.
 
     Args:
-        n_embed (int): Length of the code vector.
+        encoder_dim (int): Length of the code vector.
     """
 
-    def __init__(self, n_embed: int):
+    def __init__(self, encoder_dim: int):
 
         super().__init__()
 
-        self.n_embed = n_embed
+        self.encoder_dim = encoder_dim
 
         self.mlp = torch.nn.Sequential(
             torch.nn.Linear(1, 4), torch.nn.SiLU(),
-            torch.nn.Linear(4, n_embed), torch.nn.SiLU()
+            torch.nn.Linear(4, encoder_dim), torch.nn.SiLU()
         )
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
@@ -195,7 +201,7 @@ class DenseEncoder(torch.nn.Module):
             t (torch.Tensor): The input tensor, e.g., representing time.
 
         Returns:
-            torch.Tensor: A tensor of original shape `(*t.shape, n_embed)`.
+            torch.Tensor: A tensor of original shape `(*t.shape, encoder_dim)`.
         """
         return self.mlp(3.14 * t.unsqueeze(-1))
 
