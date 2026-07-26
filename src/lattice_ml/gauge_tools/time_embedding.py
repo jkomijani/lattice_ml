@@ -17,7 +17,7 @@ __all__ = [
 
 # =============================================================================
 class TimeEmbeddedWeight(torch.nn.Module):
-    """Constructs time-emebedded weight tensors.
+    """Constructs time-embedded weight tensors.
 
     Args:
         weight_shape (tuple of int): Shape of the output weight tensor,
@@ -27,17 +27,22 @@ class TimeEmbeddedWeight(torch.nn.Module):
             not None (default is 32.0). Otherwise, a dense econder is used.
             Overlooked if `time_encoder` is provided.
         time_encoder (torch.nn.Module): Module that encodes time if provided.
+        n_coords (int | None): Number of scalar coordinates jointly encoded
+            (e.g. `2` for a pair of times `(s, t)`. Default `None`: `t` has no
+            coordinate axis at all -- `t.shape` is exactly the batch shape.
     """
     def __init__(
         self,
         weight_shape: Tuple[int],
         hidden_dim: int = 32,
         max_freq: int | None = 32.0,
-        time_encoder: torch.nn.Module = None
+        time_encoder: torch.nn.Module = None,
+        n_coords: int | None = None
     ):
         super().__init__()
 
         self.weight_shape = weight_shape
+        self.n_coords = n_coords
         n_weight = int(torch.tensor(weight_shape).prod())
 
         if time_encoder is None:
@@ -47,7 +52,7 @@ class TimeEmbeddedWeight(torch.nn.Module):
                 time_encoder = SinusoidalEncoder(hidden_dim, max_freq=max_freq)
 
         self.time_encoder = time_encoder
-        time_n_embed = self.time_encoder.n_embed
+        time_n_embed = self.time_encoder.n_embed * (n_coords or 1)
 
         self.mlp = torch.nn.Sequential(
             torch.nn.Linear(time_n_embed, hidden_dim),
@@ -56,16 +61,23 @@ class TimeEmbeddedWeight(torch.nn.Module):
         )
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        """Compute time-dependent weight tensor for given time.
+        """Compute time-dependent weight tensor for given time(s).
 
         Args:
-            t (torch.Tensor): A tensor representing time.
+            t (torch.Tensor): A tensor representing time, of shape `(*batch,)`
+                if `n_coords is None`, or `(*batch, n_coords)` otherwise.
 
         Returns:
-            Tensor: Weight tensor of shape `(*t.shape, *self.weight_shape)`.
+            Tensor: Weight tensor of shape `(*batch, *self.weight_shape)`.
         """
-        weight_t = self.mlp(self.time_encoder(t))
-        return weight_t.reshape(*t.shape, *self.weight_shape)
+        batch_shape = t.shape if self.n_coords is None else t.shape[:-1]
+
+        emb = self.time_encoder(t)
+        if self.n_coords is not None:
+            emb = emb.flatten(start_dim=-2)  # merge axes of n_coords & n_embed
+
+        weight_t = self.mlp(emb)
+        return weight_t.reshape(*batch_shape, *self.weight_shape)
 
     def set_param2zero(self):
         """Set all trainable parameters to zero."""
