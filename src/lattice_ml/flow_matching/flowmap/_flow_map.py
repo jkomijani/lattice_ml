@@ -42,18 +42,18 @@ class FlowMap(torch.nn.Module):
     def __init__(
         self,
         underlying_dynamics_fn: Callable,
-        network_fn: Callable,
+        correction_fn: Callable,
     ):
         """
         Args:
             underlying_dynamics_fn (Callable): ODE dynamics function
                 `v(t, x) -> dx/dt` that this flow map approximates.
-            network_fn (Callable): Network computing `f(t_span, x_s)`, the
+            correction_fn (Callable): Network computing `f(t_span, x_s)`, the
                 term in the parameterization above (`t_span = (s, t)`).
         """
         super().__init__()
         self.underlying_dynamics_fn = underlying_dynamics_fn
-        self.network_fn = network_fn
+        self.correction_fn = correction_fn
 
     def forward(
         self,
@@ -91,7 +91,7 @@ class FlowMap(torch.nn.Module):
             with torch.no_grad():
                 v_s = self.underlying_dynamics_fn(s, x_s)
 
-            f_ts = self.network_fn(t_span, x_s)
+            f_ts = self.correction_fn(t_span, x_s)
 
             return x_s + delta_ts * v_s + (delta_ts**2 / 2) * f_ts
 
@@ -108,12 +108,12 @@ class FlowMap(torch.nn.Module):
 
         return x_eval
 
-    def network_fn_and_partial_t(
+    def correction_fn_and_partial_t(
         self, t_span: Tuple, x_s: torch.Tensor, eps: float | None = None
     ):
-        """Evaluate `network_fn(t_span, x_s)` and its derivative w.r.t. `t`.
+        """Evaluate `correction_fn(t_span, x_s)` and its derivative w.r.t. `t`.
 
-        If `network_fn` has a `forward_and_partial_t` method, the derivative
+        If `correction_fn` has a `forward_and_partial_t` method, the derivative
         is obtained from it directly; otherwise it falls back to `eval_jvp`
         (automatic differentiation, or finite differences if `eps` is given).
 
@@ -126,11 +126,11 @@ class FlowMap(torch.nn.Module):
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]:
-                `(network_fn(t_span, x_s), d network_fn/dt(t_span, x_s))`.
+                `(correction_fn(.), d correction_fn/dt(.))`.
         """
-        if hasattr(self.network_fn, "forward_and_partial_t"):
-            return self.network_fn.forward_and_partial_t(t_span, x_s)
-        return eval_jvp(self.network_fn, t_span, x_s, eps=eps)
+        if hasattr(self.correction_fn, "forward_and_partial_t"):
+            return self.correction_fn.forward_and_partial_t(t_span, x_s)
+        return eval_jvp(self.correction_fn, t_span, x_s, eps=eps)
 
 
 # =============================================================================
@@ -190,7 +190,7 @@ class FlowMapMatchingObjective:
 
         a_ts = (v_t - v_s) / delta_ts
 
-        f_ts, dfdt_ts = flow_map.network_fn_and_partial_t(
+        f_ts, dfdt_ts = flow_map.correction_fn_and_partial_t(
             t_span, x_s, self.eps
         )
 
