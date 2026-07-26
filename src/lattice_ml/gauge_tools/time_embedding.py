@@ -8,6 +8,7 @@ import torch
 
 
 __all__ = [
+    "TimeEmbedding",
     "TimeEmbeddedWeight",
     "SinusoidalEncoder",
     "TimeModulatedWeight",  # alias -> TimeEmbeddedWeight; for legacy
@@ -16,8 +17,81 @@ __all__ = [
 
 
 # =============================================================================
-class TimeEmbeddedWeight(torch.nn.Module):
+class TimeEmbedding(torch.nn.Module):
+    """Computes a shared, reusable embedding from raw time.
+
+    Args:
+        emb_dim (int): Size of the final shared embedding.
+        encoder_dim (int | None): Size of the time encoder's own output.
+            Default `None`: falls back to `emb_dim` (no separate encoder
+            size). Ignored if `time_encoder` is provided.
+        hidden_dim (int | None): Hidden width of the MLP. Default `None`:
+            falls back to `emb_dim` (no separate hidden width).
+        max_freq (int | None): Maximum frequencey in the sinusoidal encoder if
+            not None (default is 32.0). Otherwise, a dense econder is used.
+            Overlooked if `time_encoder` is provided.
+        time_encoder (torch.nn.Module): Module that encodes time if provided;
+            overrides `encoder_dim`/`max_freq`.
+        n_coords (int | None): Number of scalar coordinates jointly encoded
+            (e.g. `2` for a pair of times `(s, t)`). Default `None`: `t` has
+            no coordinate axis at all -- `t.shape` is exactly the batch shape.
+    """
+    def __init__(
+        self,
+        emb_dim: int,
+        encoder_dim: int | None = None,
+        hidden_dim: int | None = None,
+        max_freq: int | None = 32.0,
+        time_encoder: torch.nn.Module = None,
+        n_coords: int | None = None,
+    ):
+        super().__init__()
+
+        self.emb_dim = emb_dim
+        self.n_coords = n_coords
+
+        if time_encoder is None:
+            encoder_dim = emb_dim if encoder_dim is None else encoder_dim
+            if max_freq is None:
+                time_encoder = DenseEncoder(encoder_dim)
+            else:
+                time_encoder = SinusoidalEncoder(
+                    encoder_dim, max_freq=max_freq
+                )
+
+        self.time_encoder = time_encoder
+        extended_encoder_dim = self.time_encoder.encoder_dim * (n_coords or 1)
+        hidden_dim = emb_dim if hidden_dim is None else hidden_dim
+
+        self.mlp = torch.nn.Sequential(
+            torch.nn.Linear(extended_encoder_dim, hidden_dim),
+            torch.nn.SiLU(),
+            torch.nn.Linear(hidden_dim, emb_dim),
+        )
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """Compute the shared time embedding.
+
+        Args:
+            t (torch.Tensor): A tensor representing time, of shape `(*batch,)`
+                if `n_coords is None`, or `(*batch, n_coords)` otherwise.
+
+        Returns:
+            Tensor: Embedding of shape `(*batch, emb_dim)`.
+        """
+        emb = self.time_encoder(t)
+        if self.n_coords is not None:
+            emb = emb.flatten(start_dim=-2)  # merge n_coords & encoder_dim
+
+        return self.mlp(emb)
+
+
+# =============================================================================
+class TimeEmbeddedWeight(TimeEmbedding):
     """Constructs time-embedded weight tensors.
+
+    A `TimeEmbedding` whose output is reshaped into an arbitrary `weight_shape`
+    instead of returned as a flat embedding vector.
 
     Args:
         weight_shape (tuple of int): Shape of the output weight tensor,
@@ -43,28 +117,16 @@ class TimeEmbeddedWeight(torch.nn.Module):
         time_encoder: torch.nn.Module = None,
         n_coords: int | None = None
     ):
-        super().__init__()
-
-        self.weight_shape = weight_shape
-        self.n_coords = n_coords
         n_weight = int(torch.tensor(weight_shape).prod())
-
-        if time_encoder is None:
-            if max_freq is None:
-                time_encoder = DenseEncoder(encoder_dim)
-            else:
-                time_encoder = SinusoidalEncoder(
-                    encoder_dim, max_freq=max_freq
-                )
-
-        self.time_encoder = time_encoder
-        extended_encoder_dim = self.time_encoder.encoder_dim * (n_coords or 1)
-
-        self.mlp = torch.nn.Sequential(
-            torch.nn.Linear(extended_encoder_dim, hidden_dim),
-            torch.nn.SiLU(),
-            torch.nn.Linear(hidden_dim, n_weight),
+        super().__init__(
+            emb_dim=n_weight,
+            encoder_dim=encoder_dim,
+            hidden_dim=hidden_dim,
+            max_freq=max_freq,
+            time_encoder=time_encoder,
+            n_coords=n_coords,
         )
+        self.weight_shape = weight_shape
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         """Compute time-dependent weight tensor for given time(s).
@@ -77,13 +139,8 @@ class TimeEmbeddedWeight(torch.nn.Module):
             Tensor: Weight tensor of shape `(*batch, *self.weight_shape)`.
         """
         batch_shape = t.shape if self.n_coords is None else t.shape[:-1]
-
-        emb = self.time_encoder(t)
-        if self.n_coords is not None:
-            emb = emb.flatten(start_dim=-2)  # merge n_coords & encoder_dim
-
-        weight_t = self.mlp(emb)
-        return weight_t.reshape(*batch_shape, *self.weight_shape)
+        emb = super().forward(t)
+        return emb.reshape(*batch_shape, *self.weight_shape)
 
     def set_param2zero(self):
         """Set all trainable parameters to zero."""
