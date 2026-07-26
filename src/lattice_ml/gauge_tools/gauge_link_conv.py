@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Javad Komijani
+# Copyright (c) 2025-2026 Javad Komijani
 
 """
 Wilson line convolutional layers for lattice gauge theory.
@@ -7,23 +7,29 @@ This module provides gauge-equivariant layers that update lattice gauge links
 using short Wilson lines starting at the tail of a link and ending at its head.
 """
 
+# pylint: disable=too-many-arguments, too-many-positional-arguments
+
 import torch
 
 from .wilson_staples import compute_staples
 from .time_embedding import TimeEmbeddedWeight
 
 
-__all__ = ["GaugeLinkConv", "TimeEmbeddedStapleLayer"]
+__all__ = [
+    "TimeConditionedGaugeLinkConv",
+    "TimeConditionedStapleLayer",
+    "GaugeLinkConv",  # alias -> TimeConditionedGaugeLinkConv; for legacy
+]
 
 matmul = torch.matmul
 
 
 # =============================================================================
-class GaugeLinkConv(torch.nn.Module):
+class TimeConditionedGaugeLinkConv(torch.nn.Module):
     """Gauge-equivariant link convolution layer for lattice gauge fields.
 
-    GaugeLinkConv updates gauge links using gauge-covariant linear combinations
-    of Wilson staples. Only nearby links are mixed, similar to a convolution in
+    This class updates gauge links using gauge-covariant linear combinations of
+    Wilson staples. Only nearby links are mixed, similar to a convolution in
     standard ML layers. The linear weights are time-dependent, allowing dynamic
     evolution of the gauge links.
 
@@ -31,6 +37,7 @@ class GaugeLinkConv(torch.nn.Module):
         - Gauge-covariant (preserves link transformations)
         - Operates on links (not plaquettes or other lattice objects)
         - Convolution-like (local aggregation over nearby staples)
+        - Time-conditioned (weights depend on time via a learned embedding)
 
     The output is not unitary, but is scaled so its Frobenius norm equals
     sqrt(n_c), as in unitary matrices.
@@ -56,9 +63,10 @@ class GaugeLinkConv(torch.nn.Module):
         sites_before_link: bool = True,
         sum_over_staples: bool = False,
         normalize_output: bool = True,
+        time_emb_dim: int | None = None,
         **time_embed_kwargs
     ):
-        """Initialize the GaugeLinkConv module.
+        """Initialize the TimeConditionedGaugeLinkConv module.
 
         Parameters
         ----------
@@ -74,8 +82,12 @@ class GaugeLinkConv(torch.nn.Module):
             Whether to sum over all staples instead of keeping them separate.
         normalize_output: bool, default=True
             Whether to normalize the output to have Frobenius norm sqrt(n_c).
+        time_emb_dim (int | None): If given, the input `t` is treated as an
+            already-embedded global time embedding of size `time_emb_dim`,
+            and to be projected via a single `nn.Linear`. Default is `None`.
         **time_embed_kwargs:
             Additional options to pass to `TimeEmbeddedWeight`.
+            Ignored if `time_emb_dim` is given.
         """
         super().__init__()
 
@@ -85,12 +97,13 @@ class GaugeLinkConv(torch.nn.Module):
         self.out_channels = 1 if out_channels is None else out_channels
         self.normalize_output = normalize_output
 
-        self.wilson_staple_linear = TimeEmbeddedStapleLayer(
+        self.wilson_staple_linear = TimeConditionedStapleLayer(
             self.in_channels,
             4 * self.out_channels,
             spatial_ndim,
             sites_before_link,
             sum_over_staples,
+            time_emb_dim=time_emb_dim,
             **time_embed_kwargs
         )
 
@@ -98,6 +111,8 @@ class GaugeLinkConv(torch.nn.Module):
         """Forward pass.
 
         Args:
+           t (torch.Tensor): Raw time, or an already-embedded global time
+               embedding if `time_emb_dim` was given at construction.
            x (torch.Tensor): Tensor containing the gauge links.
 
         Returns:
@@ -133,7 +148,7 @@ class GaugeLinkConv(torch.nn.Module):
 
 
 # =============================================================================
-class TimeEmbeddedStapleLayer(torch.nn.Module):
+class TimeConditionedStapleLayer(torch.nn.Module):
     """
     Computes Wilson staples from gauge links and mixes them using a
     time-dependent linear map.
@@ -154,9 +169,10 @@ class TimeEmbeddedStapleLayer(torch.nn.Module):
         spatial_ndim: int,
         sites_before_link: bool = True,
         sum_over_staples: bool = False,
+        time_emb_dim: int | None = None,
         **time_embed_kwargs
     ):
-        """Initialize the GaugeLinkConv module.
+        """Initialize the TimeConditionedStapleLayer module.
 
         Parameters
         ----------
@@ -170,8 +186,12 @@ class TimeEmbeddedStapleLayer(torch.nn.Module):
             Whether spatial lattice axes come before the link axis.
         sum_over_staples: bool, default=False
             Whether to sum over all staples instead of keeping them separate.
+        time_emb_dim (int | None): If given, the input `t` is treated as an
+            already-embedded global time embedding of size `time_emb_dim`,
+            and to be projected via a single `nn.Linear`. Default is `None`.
         **time_embed_kwargs:
             Additional options to pass to `TimeEmbeddedWeight`.
+            Ignored if `time_emb_dim` is given.
         """
         super().__init__()
 
@@ -195,15 +215,21 @@ class TimeEmbeddedStapleLayer(torch.nn.Module):
 
         # Learnable time-dependent weight tensor
         weight_shape = (self.out_channels, self.in_channels * num_staples)
-        self.weight_fn = TimeEmbeddedWeight(
-            weight_shape=weight_shape,
-            **time_embed_kwargs
-        )
+
+        if time_emb_dim is None:
+            self.weight_fn = TimeEmbeddedWeight(
+                weight_shape=weight_shape,
+                **time_embed_kwargs
+            )
+        else:
+            self.weight_fn = _LinearWeight(time_emb_dim, weight_shape)
 
     def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """Apply the time-dependent linear staple map to gauge links.
 
         Args:
+           t (torch.Tensor): Raw time, or an already-embedded global time
+               embedding if `time_emb_dim` was given at construction.
            x (torch.Tensor): Tensor containing the gauge links.
 
         Returns:
@@ -235,6 +261,34 @@ class TimeEmbeddedStapleLayer(torch.nn.Module):
             staples = staples.squeeze(1)
 
         return staples
+
+
+# =============================================================================
+class _LinearWeight(torch.nn.Module):
+    """Projects a precomputed embedding to a weight tensor via one `Linear`.
+
+    The already-embedded counterpart to `TimeEmbeddedWeight`: no time
+    encoder, no hidden layer -- just a single linear projection, since the
+    input is assumed to already be a rich, shared embedding.
+    """
+    def __init__(self, emb_dim: int, weight_shape: tuple[int, ...]):
+        super().__init__()
+
+        self.weight_shape = weight_shape
+        n_weight = int(torch.tensor(weight_shape).prod())
+        self.linear = torch.nn.Linear(emb_dim, n_weight)
+
+    def forward(self, emb: torch.Tensor) -> torch.Tensor:
+        """Compute the weight tensor for a given embedding.
+
+        Args:
+            emb (torch.Tensor): Embedding of shape `(*batch, emb_dim)`.
+
+        Returns:
+            Tensor: Weight tensor of shape `(*batch, *self.weight_shape)`.
+        """
+        batch_shape = emb.shape[:-1]
+        return self.linear(emb).reshape(*batch_shape, *self.weight_shape)
 
 
 # =============================================================================
@@ -291,3 +345,7 @@ def _test_gauge_equivaraince():
     z[0, 0, 0, 0, -1, 3] = z[0, 0, 0, 0, -1, 3] @ q
 
     print(f"Gauge Equivariant if {(z - y).abs().mean()} is approximately 0")
+
+
+# Keep for legacy
+GaugeLinkConv = TimeConditionedGaugeLinkConv
