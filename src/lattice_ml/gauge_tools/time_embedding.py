@@ -86,13 +86,13 @@ class SinusoidalEncoder(torch.nn.Module):
 
     Unlike the original paper where positions are integers, this class supports
     non-integer values, typically within [0, 1]. The frequency spectrum can be
-    adjusted using `max_freq` and `max_freq`.
+    adjusted using `min_freq` and `max_freq`.
 
     Args:
         n_embed (int): Length of the code vector (must be even).
         min_freq (float, int): Minimum angular frequency (default is 1).
         max_freq (float, int): Maximum angular frequency (default is 1000).
-        inner_ndim (int): for reshaping the output (default is 0).
+        inner_ndim (int): For reshaping the output (default is 0).
         trainable_freq (bool): Frequencies are trainable (defaults to False).
         trainable_ampl (bool): Amplitudes are trainable (defaults to False).
     """
