@@ -61,7 +61,7 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
         out_channels: int | None,
         spatial_ndim: int,
         sites_before_link: bool = True,
-        sum_over_staples: bool = False,
+        sum_over_staples: bool = True,
         normalize_output: bool = True,
         time_emb_dim: int | None = None,
         **time_embed_kwargs
@@ -78,7 +78,7 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
             Number of spatial dimensions of the lattice.
         sites_before_link: bool, default=True
             Whether spatial lattice axes come before the link axis.
-        sum_over_staples: bool, default=False
+        sum_over_staples: bool, default=True
             Whether to sum over all staples instead of keeping them separate.
         normalize_output: bool, default=True
             Whether to normalize the output to have Frobenius norm sqrt(n_c).
@@ -168,7 +168,7 @@ class TimeConditionedStapleLayer(torch.nn.Module):
         out_channels: int | None,
         spatial_ndim: int,
         sites_before_link: bool = True,
-        sum_over_staples: bool = False,
+        sum_over_staples: bool = True,
         time_emb_dim: int | None = None,
         **time_embed_kwargs
     ):
@@ -184,7 +184,7 @@ class TimeConditionedStapleLayer(torch.nn.Module):
             Number of spatial lattice dimensions.
         sites_before_link : bool, default=True
             Whether spatial lattice axes come before the link axis.
-        sum_over_staples: bool, default=False
+        sum_over_staples: bool, default=True
             Whether to sum over all staples instead of keeping them separate.
         time_emb_dim (int | None): If given, the input `t` is treated as an
             already-embedded global time embedding of size `time_emb_dim`,
@@ -307,13 +307,18 @@ def normalize_matrix(x: torch.Tensor) -> torch.Tensor:
 
 
 # =============================================================================
+# Keep for legacy
+GaugeLinkConv = TimeConditionedGaugeLinkConv
+
+
+# =============================================================================
 def _test_gauge_equivaraince():
     """Shows the gauge equivariance of the transformation in GaugeLinkConv."""
 
-    saved_dtype = torch.get_default_dtype()
     # pylint: disable=import-outside-toplevel
     from normflow.prior import SUnPrior
-    torch.set_default_dtype(saved_dtype)  # importing normflow may change dtype
+
+    t = torch.rand(1)
 
     shape = (2, 2, 2, 2, 4)  # 2^4 lattice; the last axis is the "mu" axis.
     prior = SUnPrior(3, shape=shape)
@@ -322,7 +327,7 @@ def _test_gauge_equivaraince():
     gauge_link_conv1 = GaugeLinkConv(None, 5, spatial_ndim=4)
     gauge_link_conv2 = GaugeLinkConv(5, None, spatial_ndim=4)
     x = prior.sample(2)
-    y = gauge_link_conv2(gauge_link_conv1(x))
+    y = gauge_link_conv2(t, gauge_link_conv1(t, x))
 
     # Now gauge transform `x`; only the links connected to the origin
     q = prior.sample(1)[0, 0, 0, 0, 0, 0]
@@ -334,7 +339,7 @@ def _test_gauge_equivaraince():
     x[0, 0, 0, 0, -1, 3] = x[0, 0, 0, 0, -1, 3] @ q.adjoint()
 
     # Use the gauge transformed x & transform it w/ instances of GaugeLinkConv
-    z = gauge_link_conv2(gauge_link_conv1(x))
+    z = gauge_link_conv2(t, gauge_link_conv1(t, x))
 
     # Undo the gauge transformation on `z` to check the gauge equivarience.
     for i in range(4):
@@ -345,7 +350,3 @@ def _test_gauge_equivaraince():
     z[0, 0, 0, 0, -1, 3] = z[0, 0, 0, 0, -1, 3] @ q
 
     print(f"Gauge Equivariant if {(z - y).abs().mean()} is approximately 0")
-
-
-# Keep for legacy
-GaugeLinkConv = TimeConditionedGaugeLinkConv
