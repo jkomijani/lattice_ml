@@ -264,12 +264,8 @@ class TimeConditionedStapleLayer(torch.nn.Module):
 
 # =============================================================================
 class _LinearWeight(torch.nn.Module):
-    """Projects a precomputed embedding to a weight tensor via one `Linear`.
+    """Projects a precomputed embedding to a weight tensor via one `Linear`."""
 
-    The already-embedded counterpart to `TimeEmbeddedWeight`: no time
-    encoder, no hidden layer -- just a single linear projection, since the
-    input is assumed to already be a rich, shared embedding.
-    """
     def __init__(self, emb_dim: int, weight_shape: tuple[int, ...]):
         super().__init__()
 

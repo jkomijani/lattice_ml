@@ -18,17 +18,17 @@ __all__ = [
 
 # =============================================================================
 class TimeEmbedding(torch.nn.Module):
-    """Computes a shared, reusable embedding from raw time.
+    """Computes an embedding of time.
 
     Args:
-        emb_dim (int): Size of the final shared embedding.
+        emb_dim (int): Size of the embedding.
         encoder_dim (int | None): Size of the time encoder's own output.
             Default `None`: falls back to `emb_dim` (no separate encoder
             size). Ignored if `time_encoder` is provided.
         hidden_dim (int | None): Hidden width of the MLP. Default `None`:
             falls back to `emb_dim` (no separate hidden width).
-        max_freq (int | None): Maximum frequencey in the sinusoidal encoder if
-            not None (default is 32.0). Otherwise, a dense econder is used.
+        max_freq (float | None): Maximum frequencey in the sinusoidal encoder
+            if not None (default is 32.0). Otherwise, a dense econder is used.
             Overlooked if `time_encoder` is provided.
         time_encoder (torch.nn.Module): Module that encodes time if provided;
             overrides `encoder_dim`/`max_freq`.
@@ -41,7 +41,7 @@ class TimeEmbedding(torch.nn.Module):
         emb_dim: int,
         encoder_dim: int | None = None,
         hidden_dim: int | None = None,
-        max_freq: int | None = 32.0,
+        max_freq: float | None = 32.0,
         time_encoder: torch.nn.Module = None,
         n_coords: int | None = None,
     ):
@@ -99,7 +99,7 @@ class TimeEmbeddedWeight(TimeEmbedding):
         encoder_dim (int): The time encoder's own output size (default 32).
             Overlooked if `time_encoder` is provided.
         hidden_dim (int): Hidden width of the MLP (default 32).
-        max_freq (int | None): Maximum frequencey in the sinusoidal encoder
+        max_freq (float | None): Maximum frequencey in the sinusoidal encoder
             if not None (default is 32.0). Otherwise, a dense econder is used.
             Overlooked if `time_encoder` is provided.
         time_encoder (torch.nn.Module): Module that encodes time if provided;
@@ -113,7 +113,7 @@ class TimeEmbeddedWeight(TimeEmbedding):
         weight_shape: Tuple[int],
         encoder_dim: int = 32,
         hidden_dim: int = 32,
-        max_freq: int | None = 32.0,
+        max_freq: float | None = 32.0,
         time_encoder: torch.nn.Module = None,
         n_coords: int | None = None
     ):
@@ -165,8 +165,8 @@ class SinusoidalEncoder(torch.nn.Module):
 
     Args:
         encoder_dim (int): Length of the code vector (must be even).
-        min_freq (float, int): Minimum angular frequency (default is 1).
-        max_freq (float, int): Maximum angular frequency (default is 1000).
+        min_freq (float): Minimum angular frequency (default is 1).
+        max_freq (float): Maximum angular frequency (default is 1000).
         inner_ndim (int): For reshaping the output (default is 0).
         trainable_freq (bool): Frequencies are trainable (defaults to False).
         trainable_ampl (bool): Amplitudes are trainable (defaults to False).
