@@ -212,9 +212,9 @@ class SinusoidalEncoder(torch.nn.Module):
             t (torch.Tensor): The input tensor, e.g., representing time.
 
         Returns:
-            torch.Tensor: A tensor of original shape `(*t.shape, encoder_dim)` with
-                sinusoidal encoding. It is then reshaped to have `inner_ndim`
-                additional inner dimensions with unit lenght.
+            torch.Tensor: A tensor of original shape `(*t.shape, encoder_dim)`.
+                It is then reshaped to have `inner_ndim` additional inner
+                dimensions with unit lenght.
         """
         if self.trainable_freq:
             angle = t.unsqueeze(-1) * (self.freq_ratio * self.max_freq)
