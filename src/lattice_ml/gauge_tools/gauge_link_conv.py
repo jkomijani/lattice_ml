@@ -17,7 +17,6 @@ from .time_embedding import TimeEmbeddedWeight
 
 __all__ = [
     "TimeConditionedGaugeLinkConv",
-    "TimeConditionedStapleLayer",
     "GaugeLinkConv",  # alias -> TimeConditionedGaugeLinkConv; for legacy
 ]
 
