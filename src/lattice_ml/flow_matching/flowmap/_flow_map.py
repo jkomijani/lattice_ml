@@ -108,30 +108,6 @@ class FlowMap(torch.nn.Module):
 
         return x_eval
 
-    def correction_fn_and_partial_t(
-        self, t_span: Tuple, x_s: torch.Tensor, eps: float | None = None
-    ):
-        """Evaluate `correction_fn(t_span, x_s)` and its derivative w.r.t. `t`.
-
-        If `correction_fn` has a `forward_and_partial_t` method, the derivative
-        is obtained from it directly; otherwise it falls back to `eval_jvp`
-        (automatic differentiation, or finite differences if `eps` is given).
-
-        Args:
-            t_span (Tuple): `(s, t)`, the source and target times. Each may
-                independently be a plain float or a 0d/1d `torch.Tensor`
-                (batched per-example if 1d, matching the batch size of states).
-            x_s (torch.Tensor): State at time `s`.
-            eps (float | None): Finite-difference step size if not None.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]:
-                `(correction_fn(.), d correction_fn/dt(.))`.
-        """
-        if hasattr(self.correction_fn, "forward_and_partial_t"):
-            return self.correction_fn.forward_and_partial_t(t_span, x_s)
-        return eval_jvp(self.correction_fn, t_span, x_s, eps=eps)
-
 
 # =============================================================================
 class FlowMapMatchingObjective:
@@ -190,9 +166,7 @@ class FlowMapMatchingObjective:
 
         a_ts = (v_t - v_s) / delta_ts
 
-        f_ts, dfdt_ts = flow_map.correction_fn_and_partial_t(
-            t_span, x_s, self.eps
-        )
+        f_ts, dfdt_ts = eval_jvp(flow_map.correction_fn, t_span, x_s, self.eps)
 
         return squared_l2_distance(a_ts - f_ts, (delta_ts / 2) * dfdt_ts)
 
@@ -200,7 +174,7 @@ class FlowMapMatchingObjective:
 # =============================================================================
 def eval_jvp(f, t_span: Tuple, x_s: torch.Tensor, eps: float | None = None):
     """
-    Evaluate JVP of `f` with respect to `t`.
+    Evaluate JVP of `f(t_span, x_s)` with respect to `t`.
 
     Args:
         f (Callable): Function `f(t_span, x_s)` to differentiate w.r.t. `t`.
