@@ -174,9 +174,6 @@ class LieFlowMapMatchingObjective:
 
         a_ts = (v_t - v_s) / delta_ts
 
-        f_ts, dfdt_ts = flow_map.correction_fn_and_partial_t(
-            t_span, x_s, self.eps
-        )
         f_ts, dfdt_ts = eval_jvp(flow_map.correction_fn, t_span, x_s, self.eps)
 
         A = delta_ts * v_s + (delta_ts**2 / 2) * f_ts
