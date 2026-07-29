@@ -16,7 +16,7 @@ from .gauge._randn_xxx_like import randn_traceless_antihermitian_like
 from .gauge._lie_sdeint import integrate_sde as _lie_sde_integrate
 
 
-__all__ = ["LieDiffuser", "SUnDiffuser"]
+__all__ = ["LieDiffuser", "SUnDiffuser", "U1Diffuser"]
 
 
 # =============================================================================
@@ -250,6 +250,23 @@ class SUnDiffuser(LieDiffuser):
 
     def randn_algebra_like(self, x: torch.Tensor):
         return randn_traceless_antihermitian_like(x)
+
+
+# =============================================================================
+class U1Diffuser(LieDiffuser):
+    """Concretizes `LieDiffuser` for U(1)."""
+
+    def __init__(self, sde_schedule: Callable | None = None):
+        """Initializes the diffuser with an SDE schedule.
+
+        Args:
+            sde_schedule (Callable): Defines the time-dependent functions of
+                the SDE (for default see `LieDiffuser`).
+        """
+        super().__init__(sde_schedule, n_random_walk_steps=1)
+
+    def randn_algebra_like(self, x: torch.Tensor):
+        return 1j * torch.randn_like(x.real)
 
 
 # =============================================================================
