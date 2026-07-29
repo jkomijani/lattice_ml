@@ -157,7 +157,8 @@ class OrnsteinUhlenbeckSchedule(LinearDriftSDESchedule):
 
     def transition_noise_std(self, t_0: torch.Tensor, t_1: torch.Tensor):
         c = self.sigma_0 / (2 * self.gamma_0)**0.5
-        return c * torch.sqrt(1 - torch.exp(-2 * self.gamma_0 * (t_1 - t_0)))
+        # -expm1(x) = 1 - exp(x), but more accurate for small x
+        return c * torch.sqrt(-torch.expm1(-2 * self.gamma_0 * (t_1 - t_0)))
 
 
 # =============================================================================
@@ -193,11 +194,18 @@ class VPScheduleWithInverseTimeGamma(LinearDriftSDESchedule):
         return self.gamma(t)
 
     def transition_mean_scale(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        ratio = (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
-        return ratio ** self.gamma_0
+        if self.gamma_0 == 1:
+            return (1 - t_1 + self.EPS) / (1 - t_0 + self.EPS)
+
+        z = (t_1 - t_0) / (1 - t_0 + self.EPS)
+        return torch.exp(self.gamma_0 * torch.log1p(-z))
 
     def transition_noise_std(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        return torch.sqrt(1 - self.transition_mean_scale(t_0, t_1)**2)
+        z = (t_1 - t_0) / (1 - t_0 + self.EPS)
+        if self.gamma_0 == 1:
+            return torch.sqrt(z * (2 - z))
+
+        return torch.sqrt(-torch.expm1(2 * self.gamma_0 * torch.log1p(-z)))
 
 
 # =============================================================================
@@ -285,5 +293,6 @@ class VEScheduleWithInverseTimeSigmaSquared(LinearDriftSDESchedule):
         return 1.0
 
     def transition_noise_std(self, t_0: torch.Tensor, t_1: torch.Tensor):
-        ratio = (1 - t_0 + self.EPS) / (1 - t_1 + self.EPS)
-        return self.sigma_0 * torch.sqrt(torch.log(ratio).abs())
+        # log1p(z) = log(1 + z), but more accurate for small z
+        z = (t_1 - t_0) / (1 - t_1 + self.EPS)
+        return self.sigma_0 * torch.sqrt(torch.log1p(z))
