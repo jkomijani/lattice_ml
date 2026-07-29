@@ -124,7 +124,9 @@ class LieDiffuser(torch.nn.Module, ABC):
 
         noise_scale = transition_noise_std(t_0, t)
 
-        u_t = cum_randn_alg / noise_scale
+        # `noise_scale` underflows to exactly 0 for `t` extremely close to
+        # `t_0`, making this a 0/0 division
+        u_t = torch.nan_to_num(cum_randn_alg / noise_scale, nan=0.0)
 
         signal_scale = 1  # analogous to the VE scheme for Euclidean scalar
         half_sigma_square = self.sde_schedule.half_sigma_square(t)
