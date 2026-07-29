@@ -164,7 +164,7 @@ class FlowMapMatchingObjective:
         # Rearranged Lagrangian condition:
         #    (v_t - v_s) / delta_ts = f + (delta_ts / 2 ) * df/dt
 
-        a_ts = (v_t - v_s) / delta_ts
+        a_ts = torch.nan_to_num((v_t - v_s) / delta_ts, nan=0.0)
 
         f_ts, dfdt_ts = eval_jvp(flow_map.correction_fn, t_span, x_s, self.eps)
 

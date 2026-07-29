@@ -172,7 +172,7 @@ class LieFlowMapMatchingObjective:
         #    (v_t - v_s) / delta_ts = (f_ts / 2 +  C)
         #    C = \int_0^1 dz e^{zA} B e^{-zA})
 
-        a_ts = (v_t - v_s) / delta_ts
+        a_ts = torch.nan_to_num((v_t - v_s) / delta_ts, nan=0.0)
 
         f_ts, dfdt_ts = eval_jvp(flow_map.correction_fn, t_span, x_s, self.eps)
 
