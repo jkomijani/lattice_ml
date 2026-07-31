@@ -41,6 +41,20 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
     The output is not unitary, but is scaled so its Frobenius norm equals
     sqrt(n_c), as in unitary matrices.
 
+    Discussion:
+        The covariant update takes the form U' = normalize((I + A) @ U) for
+        some matrix A built from a linear combination of Wilson staples.
+
+        By default (`restrict_to_algebra=False`), A is an unconstrained
+        matrix: four independent staple-mixing maps are learned, one for
+        each role A plays in the update (see `forward`). This gives more
+        flexibility, at the cost of a 4x larger staple-mixing weight.
+
+        With `restrict_to_algebra=True`, A is instead constrained to lie in
+        the Lie algebra (anti-Hermitian), structurally similar to a single step
+        of APE-like link smearing. This reuses one shared staple map for all
+        four roles, cutting the staple-mixing channels by a factor of 4.
+
     Note:
         Tensors are expected by default to have spatial lattice axes before
         the link direction axis (sites_before_link=True). Set to False if your
@@ -62,6 +76,7 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
         sites_before_link: bool = True,
         sum_over_staples: bool = True,
         normalize_output: bool = True,
+        restrict_to_algebra: bool = False,
         time_emb_dim: int | None = None,
         **time_embed_kwargs
     ):
@@ -81,9 +96,14 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
             Whether to sum over all staples instead of keeping them separate.
         normalize_output: bool, default=True
             Whether to normalize the output to have Frobenius norm sqrt(n_c).
-        time_emb_dim (int | None): If given, the input `t` is treated as an
-            already-embedded global time embedding of size `time_emb_dim`,
-            and to be projected via a single `nn.Linear`. Default is `None`.
+        restrict_to_algebra: bool, default=False
+            If True, the update reduces to normalize((I + A) @ U), with A
+            restricted to the Lie algebra (anti-Hermitian). If False, A is an
+            unconstrained matrix, using four-times channel count.
+        time_emb_dim: in | None, default=None
+            If given, the input `t` is treated as an already-embedded global
+            time embedding of size `time_emb_dim`, and to be projected via
+            a single `nn.Linear`.
         **time_embed_kwargs:
             Additional options to pass to `TimeEmbeddedWeight`.
             Ignored if `time_emb_dim` is given.
@@ -95,10 +115,11 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
         self.in_channels = 1 if in_channels is None else in_channels
         self.out_channels = 1 if out_channels is None else out_channels
         self.normalize_output = normalize_output
+        self.restrict_to_algebra = restrict_to_algebra
 
         self.wilson_staple_linear = TimeConditionedStapleLayer(
             self.in_channels,
-            4 * self.out_channels,
+            self.out_channels * (1 if restrict_to_algebra else 4),
             spatial_ndim,
             sites_before_link,
             sum_over_staples,
@@ -122,9 +143,11 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
             x = x.unsqueeze(1)
 
         staples = self.wilson_staple_linear(t, x)
-        # Note that the number of channels in staples is twice of out_channels
 
-        s_1, s_2, s_3, s_4 = torch.tensor_split(staples, 4, dim=1)
+        if self.restrict_to_algebra:
+            s_1 = s_2 = s_3 = s_4 = staples
+        else:
+            s_1, s_2, s_3, s_4 = torch.tensor_split(staples, 4, dim=1)
 
         if self.in_channels > 1:
             x = x.mean(dim=1, keepdim=True)
@@ -185,9 +208,10 @@ class TimeConditionedStapleLayer(torch.nn.Module):
             Whether spatial lattice axes come before the link axis.
         sum_over_staples: bool, default=True
             Whether to sum over all staples instead of keeping them separate.
-        time_emb_dim (int | None): If given, the input `t` is treated as an
-            already-embedded global time embedding of size `time_emb_dim`,
-            and to be projected via a single `nn.Linear`. Default is `None`.
+        time_emb_dim: in | None, default=None
+            If given, the input `t` is treated as an already-embedded global
+            time embedding of size `time_emb_dim`, and to be projected via
+            a single `nn.Linear`.
         **time_embed_kwargs:
             Additional options to pass to `TimeEmbeddedWeight`.
             Ignored if `time_emb_dim` is given.
