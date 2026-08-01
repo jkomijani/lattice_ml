@@ -85,7 +85,7 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
         restrict_to_algebra: bool = False,
         legacy: bool = False,
         time_emb_dim: int | None = None,
-        **time_embed_kwargs
+        time_embed_kwargs: dict | None = None
     ):
         """Initialize the TimeConditionedGaugeLinkConv module.
 
@@ -111,11 +111,11 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
         legacy: bool, default=False
             Only meaningful when restrict_to_algebra=False; ignored
             otherwise. See the class docstring for details.
-        time_emb_dim: in | None, default=None
+        time_emb_dim: int | None, default=None
             If given, the input `t` is treated as an already-embedded global
             time embedding of size `time_emb_dim`, and to be projected via
             a single `nn.Linear`.
-        **time_embed_kwargs:
+        time_embed_kwargs: dict | None, default=None
             Additional options to pass to `TimeEmbeddedWeight`.
             Ignored if `time_emb_dim` is given.
         """
@@ -137,7 +137,7 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
             sum_over_staples,
             complex_weights=(not legacy and not restrict_to_algebra),
             time_emb_dim=time_emb_dim,
-            **time_embed_kwargs
+            time_embed_kwargs=time_embed_kwargs
         )
 
     def forward(self, t: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
@@ -208,7 +208,7 @@ class TimeConditionedStapleLayer(torch.nn.Module):
         sum_over_staples: bool = True,
         complex_weights: bool = False,
         time_emb_dim: int | None = None,
-        **time_embed_kwargs
+        time_embed_kwargs: dict | None = None
     ):
         """Initialize the TimeConditionedStapleLayer module.
 
@@ -227,11 +227,11 @@ class TimeConditionedStapleLayer(torch.nn.Module):
         complex_weights: bool, default=False
             If True, the staple-mixing weights have independently learned
             real and imaginary parts.
-        time_emb_dim: in | None, default=None
+        time_emb_dim: int | None, default=None
             If given, the input `t` is treated as an already-embedded global
             time embedding of size `time_emb_dim`, and to be projected via
             a single `nn.Linear`.
-        **time_embed_kwargs:
+        time_embed_kwargs: dict | None, default=None
             Additional options to pass to `TimeEmbeddedWeight`.
             Ignored if `time_emb_dim` is given.
         """
@@ -264,7 +264,7 @@ class TimeConditionedStapleLayer(torch.nn.Module):
 
         if time_emb_dim is None:
             self.weight_fn = TimeEmbeddedWeight(
-                weight_shape=weight_shape, **time_embed_kwargs
+                weight_shape=weight_shape, **(time_embed_kwargs or {})
             )
         else:
             self.weight_fn = _LinearWeight(time_emb_dim, weight_shape)
