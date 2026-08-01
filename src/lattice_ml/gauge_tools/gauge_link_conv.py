@@ -17,10 +17,8 @@ from .time_embedding import TimeEmbeddedWeight
 
 __all__ = [
     "TimeConditionedGaugeLinkConv",
-    "GaugeLinkConv",  # alias -> TimeConditionedGaugeLinkConv; for legacy
+    "GaugeLinkConv",  # alias -> TimeConditionedGaugeLinkConv
 ]
-
-matmul = torch.matmul
 
 
 # =============================================================================
@@ -42,18 +40,26 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
     sqrt(n_c), as in unitary matrices.
 
     Discussion:
-        The covariant update takes the form U' = normalize((I + A) @ U) for
-        some matrix A built from a linear combination of Wilson staples.
+        The output takes the form `normalize((I + A) @ U)` for some matrix A.
 
-        By default (`restrict_to_algebra=False`), A is an unconstrained
-        matrix: four independent staple-mixing maps are learned, one for
-        each role A plays in the update (see `forward`). This gives more
-        flexibility, at the cost of a 4x larger staple-mixing weight.
+        With `restrict_to_algebra=True`, A is guaranteed to lie in the algebra
+        by construction, `A = Pi_alg[U @ Gamma]`: the traceless-anti-Hermitian
+        projection of U times a single shared staple map Gamma.
 
-        With `restrict_to_algebra=True`, A is instead constrained to lie in
-        the Lie algebra (anti-Hermitian), structurally similar to a single step
-        of APE-like link smearing. This reuses one shared staple map for all
-        four roles, cutting the staple-mixing channels by a factor of 4.
+        With `restrict_to_algebra=False`, four independently weighted staple
+        maps s_1, s_2, s_3, s_4 are learned instead of one shared Gamma, and
+        A is built from them without being restricted to the algebra, giving
+        more flexibility at the cost of a 4x larger staple-mixing weight.
+
+        - `legacy=True` uses the formula of Algorithm 1 of arXiv:2605.06134.
+        - `legacy=False` uses a modified formula that reduces exactly to the
+          `restrict_to_algebra=True` formula above when
+          `s_1 = s_2 = s_3 = s_4 = -Gamma / 2`, giving it a clean
+          interpretation as "restrict_to_algebra, but with independently
+          learned, unconstrained staple maps per role."
+
+        Additionally, the weights are complex when `restrict_to_algebra=False`
+        and `legacy=False`.
 
     Note:
         Tensors are expected by default to have spatial lattice axes before
@@ -77,6 +83,7 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
         sum_over_staples: bool = True,
         normalize_output: bool = True,
         restrict_to_algebra: bool = False,
+        legacy: bool = False,
         time_emb_dim: int | None = None,
         **time_embed_kwargs
     ):
@@ -97,9 +104,13 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
         normalize_output: bool, default=True
             Whether to normalize the output to have Frobenius norm sqrt(n_c).
         restrict_to_algebra: bool, default=False
-            If True, the update reduces to normalize((I + A) @ U), with A
-            restricted to the Lie algebra (anti-Hermitian). If False, A is an
-            unconstrained matrix, using four-times channel count.
+            If True, the update is normalize((I + A) @ U) with A
+            restricted to the Lie algebra (anti-Hermitian), and `legacy`
+            has no effect. If False, A is an unconstrained matrix, using
+            four-times channel count.
+        legacy: bool, default=False
+            Only meaningful when restrict_to_algebra=False; ignored
+            otherwise. See the class docstring for details.
         time_emb_dim: in | None, default=None
             If given, the input `t` is treated as an already-embedded global
             time embedding of size `time_emb_dim`, and to be projected via
@@ -116,6 +127,7 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
         self.out_channels = 1 if out_channels is None else out_channels
         self.normalize_output = normalize_output
         self.restrict_to_algebra = restrict_to_algebra
+        self.legacy = legacy
 
         self.wilson_staple_linear = TimeConditionedStapleLayer(
             self.in_channels,
@@ -123,6 +135,7 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
             spatial_ndim,
             sites_before_link,
             sum_over_staples,
+            complex_weights=(not legacy and not restrict_to_algebra),
             time_emb_dim=time_emb_dim,
             **time_embed_kwargs
         )
@@ -144,23 +157,25 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
 
         staples = self.wilson_staple_linear(t, x)
 
-        if self.restrict_to_algebra:
-            s_1 = s_2 = s_3 = s_4 = staples
-        else:
-            s_1, s_2, s_3, s_4 = torch.tensor_split(staples, 4, dim=1)
-
         if self.in_channels > 1:
             x = x.mean(dim=1, keepdim=True)
 
-        trace_plaqs = torch.einsum('...ii->...', x @ s_3 - (x @ s_4).adjoint())
-
-        x = x + trace_plaqs[..., None, None] / 3 * x
-
-        # Covariant update of the link
-        if self.normalize_output:
-            x = normalize_matrix(x + s_1.adjoint() - x @ s_2 @ x)
+        if self.restrict_to_algebra:
+            corrections = anti_hermitian_traceless(x @ staples)
+            x = x + corrections @ x
         else:
-            x = x + s_1.adjoint() - x @ s_2 @ x
+            s_1, s_2, s_3, s_4 = torch.tensor_split(staples, 4, dim=1)
+            trace = torch.einsum('...ii->...', x @ s_3 - (x @ s_4).adjoint())
+            trace = trace[..., None, None]
+            n_c = x.shape[-1]
+            if self.legacy:
+                x = (1 + trace / n_c) * x
+                x = x + s_1.adjoint() - x @ s_2 @ x
+            else:
+                x = (1 + trace / n_c) * x + ((x @ s_1).adjoint() - x @ s_2) @ x
+
+        if self.normalize_output:
+            x = normalize_matrix(x)
 
         # Remove the added channel dimension if necessary
         if self.true_out_channels is None:
@@ -191,6 +206,7 @@ class TimeConditionedStapleLayer(torch.nn.Module):
         spatial_ndim: int,
         sites_before_link: bool = True,
         sum_over_staples: bool = True,
+        complex_weights: bool = False,
         time_emb_dim: int | None = None,
         **time_embed_kwargs
     ):
@@ -202,12 +218,15 @@ class TimeConditionedStapleLayer(torch.nn.Module):
             Number of input channels. If None, a singleton channel is added.
         out_channels: int | None
             Number of output channels. If None, a singleton channel is removed.
-        spatial_ndim : int
+        spatial_ndim: int
             Number of spatial lattice dimensions.
-        sites_before_link : bool, default=True
+        sites_before_link: bool, default=True
             Whether spatial lattice axes come before the link axis.
         sum_over_staples: bool, default=True
             Whether to sum over all staples instead of keeping them separate.
+        complex_weights: bool, default=False
+            If True, the staple-mixing weights have independently learned
+            real and imaginary parts.
         time_emb_dim: in | None, default=None
             If given, the input `t` is treated as an already-embedded global
             time embedding of size `time_emb_dim`, and to be projected via
@@ -221,6 +240,7 @@ class TimeConditionedStapleLayer(torch.nn.Module):
         self.spatial_ndim = spatial_ndim
         self.sites_before_link = sites_before_link
         self.sum_over_staples = sum_over_staples
+        self.complex_weights = complex_weights
 
         # Remember user-specified channels
         self.true_in_channels = in_channels
@@ -236,13 +256,15 @@ class TimeConditionedStapleLayer(torch.nn.Module):
         else:
             num_staples = 2 * (spatial_ndim - 1)
 
-        # Learnable time-dependent weight tensor
+        # Learnable time-dependent weight tensor; an extra trailing axis of
+        # size 2 holds independent real & imaginary parts if complex_weights.
         weight_shape = (self.out_channels, self.in_channels * num_staples)
+        if complex_weights:
+            weight_shape = (*weight_shape, 2)
 
         if time_emb_dim is None:
             self.weight_fn = TimeEmbeddedWeight(
-                weight_shape=weight_shape,
-                **time_embed_kwargs
+                weight_shape=weight_shape, **time_embed_kwargs
             )
         else:
             self.weight_fn = _LinearWeight(time_emb_dim, weight_shape)
@@ -276,7 +298,11 @@ class TimeConditionedStapleLayer(torch.nn.Module):
             staples = staples.flatten(start_dim=1, end_dim=2)
 
         # Linear map: (B, F, ...) -> (B_out, F_out, ...)
-        weight = self.weight_fn(t) + 0j
+        weight = self.weight_fn(t)
+        if self.complex_weights:
+            weight = weight[..., 0] + 1j * weight[..., 1]
+        else:
+            weight = weight + 0j
         staples = torch.einsum('bi...,boi->bo...', staples, weight)
 
         # Remove channel if out_channels=None
@@ -323,6 +349,33 @@ def normalize_matrix(x: torch.Tensor) -> torch.Tensor:
     norm = torch.mean(norm, dim=1, keepdim=True)
     norm = norm.clamp_min(1e-12)  # avoid division by accidental zero
     return x / norm
+
+
+# =============================================================================
+def anti_hermitian_traceless(x: torch.Tensor) -> torch.Tensor:
+    """
+    Project the input onto the space of traceless anti-Hermitian matrices.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input tensor with square matrices in the last two dimensions.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of the same shape as `x`, where each matrix is projected to be
+        anti-Hermitian and traceless.
+    """
+    # Anti-Hermitian part
+    x = (x - x.adjoint()) / 2
+
+    # Remove trace
+    trace = torch.einsum("...ii->...", x)[..., None, None]
+    n = x.shape[-1]
+    eye = torch.eye(n, device=x.device, dtype=x.dtype)
+
+    return x - (trace / n) * eye
 
 
 # =============================================================================
