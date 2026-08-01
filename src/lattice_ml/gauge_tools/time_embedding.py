@@ -28,7 +28,7 @@ class TimeEmbedding(torch.nn.Module):
         hidden_dim (int | None): Hidden width of the MLP. Default `None`:
             falls back to `emb_dim` (no separate hidden width).
         max_freq (float | None): Maximum frequencey in the sinusoidal encoder
-            if not None (default is 32.0). Otherwise, a dense econder is used.
+            if not None (default is None). Otherwise, a dense econder is used.
             Overlooked if `time_encoder` is provided.
         time_encoder (torch.nn.Module): Module that encodes time if provided;
             overrides `encoder_dim`/`max_freq`.
@@ -41,7 +41,7 @@ class TimeEmbedding(torch.nn.Module):
         emb_dim: int,
         encoder_dim: int | None = None,
         hidden_dim: int | None = None,
-        max_freq: float | None = 32.0,
+        max_freq: float | None = None,
         time_encoder: torch.nn.Module = None,
         n_coords: int | None = None,
     ):
@@ -100,7 +100,7 @@ class TimeEmbeddedWeight(TimeEmbedding):
             Overlooked if `time_encoder` is provided.
         hidden_dim (int): Hidden width of the MLP (default 32).
         max_freq (float | None): Maximum frequencey in the sinusoidal encoder
-            if not None (default is 32.0). Otherwise, a dense econder is used.
+            if not None (default is None). Otherwise, a dense econder is used.
             Overlooked if `time_encoder` is provided.
         time_encoder (torch.nn.Module): Module that encodes time if provided;
             overrides `encoder_dim`/`max_freq`.
@@ -113,7 +113,7 @@ class TimeEmbeddedWeight(TimeEmbedding):
         weight_shape: Tuple[int],
         encoder_dim: int = 32,
         hidden_dim: int = 32,
-        max_freq: float | None = 32.0,
+        max_freq: float | None = None,
         time_encoder: torch.nn.Module = None,
         n_coords: int | None = None
     ):
