@@ -1,7 +1,8 @@
-# Created by Javad Komijan, 2025
+# Created by Javad Komijan, 2025-2026
 
 """Module for generating time-embedded weight tensors and modules."""
 
+# pylint: disable=too-many-arguments,too-many-positional-arguments
 
 from typing import Tuple
 import torch
@@ -35,6 +36,8 @@ class TimeEmbedding(torch.nn.Module):
         n_coords (int | None): Number of scalar coordinates jointly encoded
             (e.g. `2` for a pair of times `(s, t)`). Default `None`: `t` has
             no coordinate axis at all -- `t.shape` is exactly the batch shape.
+        with_final_activation (bool): Whether to add a final activation.
+            Defaults to True.
     """
     def __init__(
         self,
@@ -44,6 +47,7 @@ class TimeEmbedding(torch.nn.Module):
         max_freq: float | None = None,
         time_encoder: torch.nn.Module = None,
         n_coords: int | None = None,
+        with_final_activation: bool = True,
     ):
         super().__init__()
 
@@ -66,8 +70,10 @@ class TimeEmbedding(torch.nn.Module):
         self.mlp = torch.nn.Sequential(
             torch.nn.Linear(extended_encoder_dim, hidden_dim),
             torch.nn.SiLU(),
-            torch.nn.Linear(hidden_dim, emb_dim),
+            torch.nn.Linear(hidden_dim, emb_dim)
         )
+        if with_final_activation:
+            self.mlp.insert(-1, torch.nn.SiLU())
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         """Compute the shared time embedding.
@@ -125,6 +131,7 @@ class TimeEmbeddedWeight(TimeEmbedding):
             max_freq=max_freq,
             time_encoder=time_encoder,
             n_coords=n_coords,
+            with_final_activation=False
         )
         self.weight_shape = weight_shape
 
