@@ -79,12 +79,12 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
         in_channels: int | None,
         out_channels: int | None,
         spatial_ndim: int,
+        time_emb_dim: int | None,
         sites_before_link: bool = True,
         sum_over_staples: bool = True,
         normalize_output: bool = True,
         restrict_to_algebra: bool = False,
         legacy: bool = False,
-        time_emb_dim: int | None = None,
         time_embed_kwargs: dict | None = None
     ):
         """Initialize the TimeConditionedGaugeLinkConv module.
@@ -97,6 +97,10 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
             Number of output channels. If None, a singleton channel is removed.
         spatial_ndim: int
             Number of spatial dimensions of the lattice.
+        time_emb_dim: int | None
+            If integer, the input `t` is treated as an already-embedded global
+            time embedding of size `time_emb_dim`, and to be projected via
+            a single `nn.Linear`. If None, see `time_embed_kwargs`.
         sites_before_link: bool, default=True
             Whether spatial lattice axes come before the link axis.
         sum_over_staples: bool, default=True
@@ -111,10 +115,6 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
         legacy: bool, default=False
             Only meaningful when restrict_to_algebra=False; ignored
             otherwise. See the class docstring for details.
-        time_emb_dim: int | None, default=None
-            If given, the input `t` is treated as an already-embedded global
-            time embedding of size `time_emb_dim`, and to be projected via
-            a single `nn.Linear`.
         time_embed_kwargs: dict | None, default=None
             Additional options to pass to `TimeEmbeddedWeight`.
             Ignored if `time_emb_dim` is given.
@@ -133,10 +133,10 @@ class TimeConditionedGaugeLinkConv(torch.nn.Module):
             self.in_channels,
             self.out_channels * (1 if restrict_to_algebra else 4),
             spatial_ndim,
+            time_emb_dim,
             sites_before_link,
             sum_over_staples,
             complex_weights=(not legacy and not restrict_to_algebra),
-            time_emb_dim=time_emb_dim,
             time_embed_kwargs=time_embed_kwargs
         )
 
@@ -204,10 +204,10 @@ class TimeConditionedStapleLayer(torch.nn.Module):
         in_channels: int | None,
         out_channels: int | None,
         spatial_ndim: int,
+        time_emb_dim: int | None,
         sites_before_link: bool = True,
         sum_over_staples: bool = True,
         complex_weights: bool = False,
-        time_emb_dim: int | None = None,
         time_embed_kwargs: dict | None = None
     ):
         """Initialize the TimeConditionedStapleLayer module.
@@ -220,6 +220,10 @@ class TimeConditionedStapleLayer(torch.nn.Module):
             Number of output channels. If None, a singleton channel is removed.
         spatial_ndim: int
             Number of spatial lattice dimensions.
+        time_emb_dim: int | None
+            If integer, the input `t` is treated as an already-embedded global
+            time embedding of size `time_emb_dim`, and to be projected via
+            a single `nn.Linear`. If None, see `time_embed_kwargs`.
         sites_before_link: bool, default=True
             Whether spatial lattice axes come before the link axis.
         sum_over_staples: bool, default=True
@@ -227,10 +231,6 @@ class TimeConditionedStapleLayer(torch.nn.Module):
         complex_weights: bool, default=False
             If True, the staple-mixing weights have independently learned
             real and imaginary parts.
-        time_emb_dim: int | None, default=None
-            If given, the input `t` is treated as an already-embedded global
-            time embedding of size `time_emb_dim`, and to be projected via
-            a single `nn.Linear`.
         time_embed_kwargs: dict | None, default=None
             Additional options to pass to `TimeEmbeddedWeight`.
             Ignored if `time_emb_dim` is given.
@@ -396,8 +396,12 @@ def _test_gauge_equivaraince():
     prior = SUnPrior(3, shape=shape)
 
     # Define `x` and transform it with instances of GaugeLinkConv
-    gauge_link_conv1 = GaugeLinkConv(None, 5, spatial_ndim=4)
-    gauge_link_conv2 = GaugeLinkConv(5, None, spatial_ndim=4)
+    gauge_link_conv1 = GaugeLinkConv(
+        in_channels=None, out_channels=5, spatial_ndim=4, time_emb_dim=None
+    )
+    gauge_link_conv2 = GaugeLinkConv(
+        in_channels=5, out_channels=None, spatial_ndim=4, time_emb_dim=None
+    )
     x = prior.sample(2)
     y = gauge_link_conv2(t, gauge_link_conv1(t, x))
 
