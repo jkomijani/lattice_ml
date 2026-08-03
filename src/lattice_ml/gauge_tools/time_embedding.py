@@ -12,8 +12,6 @@ __all__ = [
     "TimeEmbedding",
     "TimeEmbeddedWeight",
     "SinusoidalEncoder",
-    "TimeModulatedWeight",  # alias -> TimeEmbeddedWeight; for legacy
-    "SinusoidalTimeEncoder"  # alias -> SinusoidalEncoder; for legacy
 ]
 
 
@@ -268,8 +266,3 @@ class DenseEncoder(torch.nn.Module):
             torch.Tensor: A tensor of original shape `(*t.shape, encoder_dim)`.
         """
         return self.mlp(3.14 * t.unsqueeze(-1))
-
-
-# Keep for legacy
-TimeModulatedWeight = TimeEmbeddedWeight
-SinusoidalTimeEncoder = SinusoidalEncoder

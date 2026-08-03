@@ -15,8 +15,6 @@ import torch
 
 __all__ = [
     'compute_mean_normalized_trace_wilson_mxn_loop',
-    'compute_mean_reduced_trace_wilson_mxn_loop',  # for legacy
-    'compute_avg_trace_wilson_mxn_loop',  # for legacy
     'compute_wilson_1x1_loop',
     'compute_planar_wilson_1x1_loop',
     'compute_planar_wilson_1x1_loop_response',
@@ -95,12 +93,6 @@ def compute_mean_normalized_trace_wilson_mxn_loop(
         mean *= 2  # square loops counted only once in previous loop
 
     return mean
-
-
-# Define another mouthful alias (for legacy)
-compute_mean_reduced_trace_wilson_mxn_loop = \
-    compute_mean_normalized_trace_wilson_mxn_loop
-compute_avg_trace_wilson_mxn_loop = compute_mean_reduced_trace_wilson_mxn_loop
 
 
 def compute_wilson_1x1_loop(
