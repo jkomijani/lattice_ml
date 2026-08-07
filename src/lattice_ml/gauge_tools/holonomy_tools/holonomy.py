@@ -158,9 +158,20 @@ def holonomy_to_prelink(
     sites_before_link: bool = True,
 ) -> torch.Tensor:
     r"""
-    Reconstruct prelinks from the prelink holonomy h_{mu, 0}(x).
+    Reconstruct prelinks from the prelink holonomy h_{mu, 0}(x) assuming
+    the following constraints:
+
+    A. The corner constraint ``C_00 C_01† C_11 C_10† = I``, indicating the
+       corners in the ``t-x`` plane are **not** independent degrees of freedom.
+
+    B. The product ``h_{mu, 0}(t=N_0)† @ h_{mu, 0}(t=0)`` is independent of mu,
+       indicating ``h_{mu, 0}(t=N_0)`` for mu >= 2 are **not** independent
+       degrees of freedom. (See step 3.)
+
+    The output of `prelink_to_holonomy` satisfies both constraints.
 
     This is the inverse of `prelink_to_holonomy`, up to a gauge transformation.
+
     The reconstruction is carried out in a temporal gauge where
 
         V_0(x) = I   for t = 0, ..., N_0 - 1,
@@ -169,32 +180,19 @@ def holonomy_to_prelink(
     physical time slices. The remaining degrees of freedom are then fixed by:
 
     1. **V_mu (mu != 0) for t = 0, ..., N_0 - 1**:
-       In the gauge V_0 = I, the holonomy reduces to
-
-           h_{mu, 0}(x) = V_mu(x)
+       In the gauge V_0 = I, the holonomy reduces to h_{mu, 0}(x) = V_mu(x).
 
     2. **V_mu (mu != 0) at t = N_0**:
        Set by the periodic boundary condition:
 
-           V_mu(t = N_0) = V_mu(t = 0) = h_{mu, 0}(t = 0).
+           V_mu(t=N_0) = V_mu(t=0) = h_{mu, 0}(t=0).
 
     3. **V_0 at t = N_0**:
-       Using V_mu(t = N_0) from step 2 and the holonomy at t = N_0:
+       Derived from h_{1,0}(N_0) = V_1(N_0) V_0(N_0)† with V_1(N_0) = h(0):
 
-           h_{mu, 0}(t = N_0) = V_mu(t = N_0) V_0(t = N_0)^\dagger
+           V_0(t=N_0) = h_{1, 0}(t=N_0)† @ h_{1, 0}(t=0).
 
-       we solve for
-
-           V_0(t = N_0) = h_{mu, 0}(N_0)^\dagger @ h_{mu, 0}(0)
-
-       This is independent of non-vanishing mu; mu = 1 is used in the code.
-
-    .. warning::
-       The independence of the right-hand side from mu is not a coincidence:
-       it reveals that ``h_{mu, 0}(t=N_0)`` for mu >= 2 are **not** independent
-       degrees of freedom — they are all determined by ``h_{1, 0}(t=N_0)`` and
-       the values at t = 0.  Treating them as independent in an HMC update
-       leads to inconsistent configurations in 3D+.
+       By constraint B this is independent of the choice mu = 1.
 
     Parameters
     ----------
@@ -203,10 +201,8 @@ def holonomy_to_prelink(
         ``(...batch..., n0+1, ..., nd+1, ndim-1, Nc, Nc)``
         if ``sites_before_link=True``, else
         ``(...batch..., ndim-1, n0+1, ..., nd+1, Nc, Nc)``.
-
     prefix_dims : int, default=1
         Number of leading batch/channel dimensions.
-
     sites_before_link : bool, default=True
         If True, spatial axes precede the link-direction axis.
 
@@ -218,9 +214,12 @@ def holonomy_to_prelink(
 
     Notes
     -----
-    While ``prelink_to_holonomy(holonomy_to_prelink(h))`` is the identity on h,
-    the reverse composition ``holonomy_to_prelink(prelink_to_holonomy(V))``
-    returns V in temporal gauge, not the original V.
+    ``prelink_to_holonomy(holonomy_to_prelink(h))`` is the identity on h when
+    constraints A and B hold. The reverse composition returns V in temporal
+    gauge, not the original V.
+
+    If constraint A does not hold use `holonomy_to_prelink_with_corner_fix`,
+    which relaxes A (for V_0 and V_1 only) while still assuming B.
     """
     # Axis corresponding to the link direction
     link_axis = -3 if sites_before_link else prefix_dims
@@ -228,27 +227,24 @@ def holonomy_to_prelink(
 
     N_t_ext = h.shape[time_axis]  # N_0 + 1 (extended time dimension)
 
-    # Step 1: Build V_0 on the extended lattice
+    # Step 1: V_0 = I for t < N_0; V_0(N_0) = h(N_0)† @ h(0).
     h_10 = torch.narrow(h, link_axis, 0, 1)
     V_0 = identity_like(h_10)
 
     h_10_unbind = torch.unbind(h_10, dim=time_axis)
-    V_0_last = h_10_unbind[-1].adjoint() @ h_10_unbind[0]
-
-    V_0.select(dim=time_axis, index=-1).copy_(V_0_last)
-
-    # Step 2: Build V_mu (mu != 0) from h with periodic extension
-    V_mu = torch.cat(
-        [torch.narrow(h, time_axis, 0, N_t_ext - 1),
-         torch.narrow(h, time_axis, 0, 1)
-         ],
-        dim=time_axis
+    V_0.select(dim=time_axis, index=-1).copy_(
+        h_10_unbind[-1].adjoint() @ h_10_unbind[0]
     )
 
-    # Step 3: Stack V_0 and V_mu to form V in temporal gauge
-    V = torch.cat([V_0, V_mu], dim=link_axis)
+    # Step 2: V_mu = h for t < N_0; periodic extension at t = N_0.
+    V_mu = torch.cat(
+        [torch.narrow(h, time_axis, 0, N_t_ext - 1),
+         torch.narrow(h, time_axis, 0, 1)],
+        dim=time_axis,
+    )
 
-    return V
+    # Step 3: Stack V_0 and V_mu.
+    return torch.cat([V_0, V_mu], dim=link_axis)
 
 
 # =============================================================================
