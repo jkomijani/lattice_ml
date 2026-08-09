@@ -270,12 +270,16 @@ def holonomy_to_prelink_no_constraints(
     sites_before_link: bool = True,
 ) -> torch.Tensor:
     r"""
-    Reconstruct prelinks from h_{mu, 0}(x) without assuming any constraints.
+    Reconstruct prelinks from h_{mu, 0}(x), relaxing constraint A only.
 
-    Unlike :func:`holonomy_to_prelink_with_constraints`, no constraint on the
-    corner holonomies or on the boundary consistency is required. The
-    semi-global gauge freedoms P and Q are solved from the corner holonomies
-    and incorporated into the reconstruction.
+    Constraint A (relaxed):
+        ``C_00 C_01† C_11 C_10† = I`` need **not** hold.  P and Q are solved
+        from the corner holonomies and incorporated into the reconstruction.
+
+    Constraint B (still assumed):
+        ``h_{mu, 0}(t=N_0)† @ h_{mu, 0}(t=0)`` independent of mu.  Step 2
+        determines V_0(N_0) using only h_{1,0}; for mu >= 2 the formula
+        V_mu = h @ V_0 is consistent only when constraint B holds.
 
     The reconstruction proceeds in three parts:
 
@@ -290,6 +294,8 @@ def holonomy_to_prelink_no_constraints(
     3. **V_mu (mu >= 1)**: recovered from the definition h = V_mu V_0†:
 
            V_mu = h @ V_0.
+
+       For mu >= 2 this is correct only when constraint B holds.
 
     Parameters
     ----------
