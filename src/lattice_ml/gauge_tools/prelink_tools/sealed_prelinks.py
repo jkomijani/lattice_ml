@@ -212,13 +212,14 @@ def compute_sealed_prelinks(
     # Allocate container for resulting *sealed* prelinks
     sealed_prelinks_stack: list[torch.Tensor] = [None] * spatial_ndim
 
-    # Apply forward difference with zero boundary along each direction
+    # Apply forward difference with zero boundary along each direction.
     for mu, staple_mu in enumerate(sealed_staples_stack):
         dim_mu = prefix_dims + mu  # axis along which to difference
         diff = forward_difference_zero_boundary(staple_mu, dim=dim_mu)
         sealed_prelinks_stack[mu] = diff
 
-    # Stack along the link axis; pad to maximum spatial shape if necessary
+    # Pad transverse directions to a common shape with zeros: extended-strip
+    # sites have no true degree of freedom and their zero force is intentional.
     out = torch.stack(
         pad_to_max_shape(sealed_prelinks_stack, pad_value=0),
         dim=link_axis
@@ -236,7 +237,10 @@ def forward_difference_zero_boundary(x: torch.Tensor, dim: int):
         (x_0, ..., x_{N-1})
         → (x_0, x_1 - x_0, ..., x_{N-1} - x_{N-2}, -x_{N-1}).
 
-    Implemented as `torch.diff` with zero prepend and append.
+    The zero prepend and append enforce that the force at the two boundary
+    sites (index 0 and N) is determined solely by their single neighbor,
+    which is the correct variational derivative when those boundary values
+    are not independent degrees of freedom.
     """
     zero = torch.zeros_like(x.narrow(dim, 0, 1))
     return torch.diff(x, dim=dim, prepend=zero, append=zero)

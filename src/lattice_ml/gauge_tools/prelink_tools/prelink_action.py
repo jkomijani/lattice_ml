@@ -15,7 +15,8 @@ __all__ = ['WilsonPrelinkAction']
 
 class WilsonPrelinkAction:
     r"""
-    Wilson gauge-prelink action and force calculations for lattice gauge theory.
+    Wilson gauge-prelink action and force calculations for lattice gauge
+    theory.
 
     Implements the Wilson gauge action for SU(N_c) gauge group, together with
     the corresponding gauge force used in HMC simulations.
@@ -98,7 +99,7 @@ class WilsonPrelinkAction:
             Force on each prelink of the same shape of V.
         """
         # The algebra force is multiplied by prelinks to map to group space
-        return self.algebra_force(V) @ V 
+        return self.algebra_force(V) @ V
 
     def algebra_force(self, V: torch.Tensor) -> torch.Tensor:
         """
@@ -119,6 +120,12 @@ class WilsonPrelinkAction:
             same shape of V.
 
         Note:
+            The force at extended-strip sites (outside the physical lattice)
+            is zero by construction: ``compute_sealed_prelinks`` internally
+            calls ``pad_to_max_shape(pad_value=0)`` and applies
+            ``forward_difference_zero_boundary``, so those sites carry no
+            dynamics regardless of the values of V there.
+
             The magnitude of this force depends on the normalization of
             the SU(N_c) generators T^a. Lattice QCD literature often uses
             Tr(T^a T^b) = -1/2 δ^ab, but this code uses Tr(T^a T^b) = -δ^ab.

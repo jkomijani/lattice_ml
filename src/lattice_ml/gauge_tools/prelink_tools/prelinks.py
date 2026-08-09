@@ -138,11 +138,14 @@ def link_to_prelink(
     sites_before_link : bool, default=True
         If True, the spatial lattice axes precede the link direction axis.
     transverse_boundary_mode : {'zero', 'periodic'}, default='zero'
-        Boundary condition applied to the transverse directions when extending
-        the lattice: 'zero' zero-pads the transverse directions and 'periodic'
-        extends the transverse directions periodically.
-        Use 'zero' for the prelink parametrization
-        and 'periodic' for the holonomy parametrization.
+        Boundary condition for sites in the extended strip that have no true
+        degree of freedom (transverse directions beyond the physical lattice).
+        Use 'zero' (default) for the prelink parametrization: zero matrices
+        are not group elements, so any force or gradient through those sites
+        vanishes automatically — no explicit masking needed, the dynamics
+        simply ignores them.
+        Use 'periodic' only for the 2D holonomy parametrization, where the
+        single extended transverse strip has a valid periodic interpretation.
 
     Returns
     -------
@@ -593,19 +596,25 @@ def pad_to_max_shape(tensor_list, pad_value=0):
     transverse directions. This function pads them to a common shape, and the
     resulting stacked tensor is referred to as V.
 
-    The choice of padding mode matters depending on how V is subsequently used:
+    Sites in the extended strip along a transverse direction nu != mu carry no
+    true degree of freedom for V_mu: they are artefacts of stacking components
+    of different shapes into a single tensor.  The choice of fill value for
+    those sites matters depending on how V is subsequently used:
 
     - For prelink-to-link computations (forward differences along axis mu),
-      the transverse padded boundary sites of V_mu are never accessed, so any
-      padding value (including zero) is harmless.
+      the transverse extended sites of V_mu are never accessed, so any fill
+      value (including zero) is harmless.
 
-    - For the prelink holonomy q_{0,mu}(x) = V_0(x) V_mu(x)^\dagger, both
-      components of V are evaluated at the *same* site x. At sites that fall
-      in the padded region of either V_0 or V_mu, a zero pad would yield a
-      zero matrix instead of a valid group element. Periodic padding is correct
-      here because the physical gauge links are periodic, and the padded
-      boundary value of V_mu along a transverse direction nu should reflect
-      the periodicity of the underlying link configuration.
+    - For the prelink parametrization (the intended use), zero is the correct
+      choice: a zero matrix is not a group element, so any force or gradient
+      flowing through those sites vanishes automatically.  No explicit mask is
+      needed — the dynamics simply ignores them.
+
+    - Periodic padding is provided for the 2D holonomy parametrization, where
+      the single transverse extended strip has a physically meaningful periodic
+      interpretation.  In 3D+, periodic padding at mixed-corner sites (two or
+      more transverse directions simultaneously extended) produces artefacts
+      with no valid physical interpretation and should not be used.
 
     Parameters
     ----------
