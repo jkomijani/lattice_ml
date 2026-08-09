@@ -1,16 +1,6 @@
 # Copyright (c) 2026 Javad Komijani
 
-r"""Wilson gauge action and HMC force in the holonomy parametrization.
-
-.. warning::
-    The force (HMC) calculation is not fully correct at the corner sites of
-    the extended lattice.  The four corner holonomies satisfy the constraint
-    ``C_01† C_00 C_10† C_11 = I`` and are therefore not all independent — but
-    the current implementation treats them as independent, violating this
-    constraint after each leapfrog step.  In 3D+, an additional constraint
-    applies: ``h_{mu,0}(t=N_0)`` for mu >= 2 are further constrained by
-    ``h_{1,0}(t=N_0)`` and the t = 0 values.
-"""
+r"""Wilson gauge action and HMC force in the holonomy parametrization."""
 
 # pylint: disable=invalid-name
 
@@ -41,27 +31,10 @@ class WilsonHolonomyAction:
     where Pi_su projects onto the traceless anti-Hermitian algebra and
     G is the holonomy clover sum; see :func:`compute_holonomy_clover`.
 
-    The four corner holonomies satisfy the constraint C_01† C_00 C_10† C_11 = I
-    and are not all independent. The ``corner_mode`` parameter selects how this
-    is handled in the force:
-
-    - 'none': ignore the constraint, which is incorrect at corner sites.
-    - 'penalty': add the gradient of `lambda * Re Tr[C_01† C_00 C_10† C_11]`
-        to the clover G at corner sites before computing the force. Large value
-        of `lambda`` acts as a stiff restoring force that keeps the constraint
-        nearly satisfied.
-    - 'elimination': treat C_11 as dependent (C_11 = C_10 C_00† C_01) and zero
-        its force, redistributing the chain-rule contributions to C_00, C_01,
-        and C_10.
-
     Parameters
     ----------
     beta : float
         Inverse gauge coupling.
-    corner_mode : {'none', 'penalty', 'elimination'}, default='none'
-        How to handle the corner constraint in the HMC force.
-    corner_lambda : float, default=0.
-        Penalty coefficient; used only when ``corner_mode='penalty'``.
     sites_before_link : bool, default=True
         Whether spatial lattice axes precede the link axis.
     """
@@ -69,13 +42,9 @@ class WilsonHolonomyAction:
     def __init__(
         self,
         beta: float,
-        corner_mode: str = 'none',
-        corner_lambda: float = 0.,
         sites_before_link: bool = True,
     ):
         self.beta = beta
-        self.corner_mode = corner_mode
-        self.corner_lambda = corner_lambda
         self.sites_before_link = sites_before_link
         self._project_onto_algebra_space = anti_hermitian_traceless
 
@@ -145,10 +114,7 @@ class WilsonHolonomyAction:
         n_c = h.shape[-1]
         kws = {'prefix_dims': 1, 'sites_before_link': self.sites_before_link}
 
-        if self.corner_mode == 'none':
-            G = compute_holonomy_clover(h, **kws)
-        else:
-            raise ValueError(f"corner_mode = {self.corner_mode} NOT implemend")
+        G = compute_holonomy_clover(h, **kws)
 
         coeff = self.beta / n_c  # (-1 from action) x (-1 from h†(x) in P)
         algebra_force = coeff * self._project_onto_algebra_space(G)
