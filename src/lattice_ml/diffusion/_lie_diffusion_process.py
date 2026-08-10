@@ -45,7 +45,8 @@ class SUnDiffusionProcess(torch.nn.Module):
     """
 
     def __init__(
-        self, score_fn: Callable,
+        self,
+        score_fn: Callable,
         sigma_0: float = 1.0,
         sigma_schedule: Callable | None = None,
         n_random_walk_steps: int = 4,
@@ -103,9 +104,10 @@ class SUnDiffusionProcess(torch.nn.Module):
 
         # contribution from t = 0 if loss_c0 > 0
         if self.training_config.loss_c0 > 0:
-            ind = np.random.randint(0, len(x_0))  # choose only one sample
-            score0 = self.score_fn(0 * t[ind:ind+1], x_0[ind:ind+1])
-            force0 = self.training_config.force0_fn(x_0[ind:ind+1])
+            idx = (slice(None) if self.training_config.all_samples_c0
+                   else np.random.randint(0, len(x_0), size=1))
+            score0 = self.score_fn(0 * t[idx], x_0[idx])
+            force0 = self.training_config.force0_fn(x_0[idx])
             res = score0 - force0
             loss0 = torch.mean(res * res.conj()).real
             loss = loss + self.training_config.loss_c0 * loss0
@@ -313,6 +315,7 @@ class TrainingConfiguration(pydantic.BaseModel):
     loss_c0: float = 0
     force0_fn: Callable | None = None
     variance_weight_for_time: bool = True
+    all_samples_c0: bool = False  # use a single random sample
 
     def update(self, **kwargs):
         """Update the attributes."""
