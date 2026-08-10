@@ -23,6 +23,8 @@ __all__ = [
     "pow_special_unitary_group_",
     "matrix_exp1jh",
     "matrix_angleu",
+    "matrix_cumprod",
+    "matrix_prod",
     "enforce_zero_sum",
     "kronecker_product",
     "eye_like"
@@ -152,7 +154,7 @@ def enumerate_sun_preimages(logU: torch.Tensor, max_branch_shift: int = 1):
     for shift_tuple in itertools.product(rng, repeat=n_c):
         if all(s == 0 for s in shift_tuple):
             continue
-        if sum([s**2 for s in shift_tuple]) > max_branch_shift**2:
+        if sum(s**2 for s in shift_tuple) > max_branch_shift**2:
             continue
         shift = torch.tensor(shift_tuple, dtype=vals.dtype, device=vals.device)
         shift = shift * (2.0 * math.pi)
@@ -259,6 +261,96 @@ def matrix_angleu(U: torch.Tensor) -> torch.Tensor:
     vals, vecs = eigu(U)
     f_vals = torch.angle(vals)
     return inverse_eign(f_vals, vecs)
+
+
+# =============================================================================
+def matrix_cumprod(
+    W: torch.Tensor,
+    dim: int,
+    prepend_identity: bool = False,
+    use_scan: bool = False,
+) -> torch.Tensor:
+    """
+    Cumulative ordered matrix product along a given axis.
+
+    Computes, for each index k along `dim`:
+
+        Z_0 = W_0                     (or Z_0 = I if prepend_identity=True)
+        Z_k = Z_{k-1} @ W_k
+
+    Parameters
+    ----------
+    W : torch.Tensor
+        Tensor of square matrices with shape [..., L, ..., N, N].
+
+    dim : int
+        Axis along which to accumulate the product (any axis except the
+        last two, which are reserved for the matrix indices).
+
+    prepend_identity : bool, default=False
+        If False, output has L entries along `dim`, with Z_0 = W_0.
+        If True, prepends Z_0 = I instead, giving L + 1 entries.
+
+    use_scan : bool, default=False
+        If False (default), accumulates with a plain sequential loop: O(L)
+        sequential matmuls, O(L) total work.  If True, uses a Hillis-Steele
+        parallel scan: O(log L) sequential batched-matmul steps instead of
+        O(L), at the cost of O(L log L) total work instead of O(L).
+
+    Returns
+    -------
+    torch.Tensor
+        Cumulative products, same shape as `W` except along `dim`, which has
+        size L (prepend_identity=False) or L + 1 (prepend_identity=True).
+    """
+    L = W.shape[dim]
+
+    if use_scan:
+        Z = W
+        offset = 1
+        while offset < L:
+            n = L - offset
+            prefix = Z.narrow(dim, 0, n)
+            suffix = Z.narrow(dim, offset, n)
+            updated = prefix @ suffix
+            unchanged = Z.narrow(dim, 0, offset)
+            Z = torch.cat([unchanged, updated], dim=dim)
+            offset *= 2
+    else:
+        outs = [W.select(dim, 0)]
+        for k in range(1, L):
+            outs.append(outs[-1] @ W.select(dim, k))
+        Z = torch.stack(outs, dim=dim)
+
+    if prepend_identity:
+        eye = eye_like(Z.select(dim, 0)).unsqueeze(dim)
+        Z = torch.cat([eye, Z], dim=dim)
+
+    return Z
+
+
+# =============================================================================
+def matrix_prod(W: torch.Tensor, dim: int) -> torch.Tensor:
+    """
+    Ordered product of matrices along a given axis: W_0 @ W_1 @ ... @ W_{L-1}.
+
+    Parameters
+    ----------
+    W : torch.Tensor
+        Tensor of square matrices with shape [..., L, ..., N, N].
+
+    dim : int
+        Axis along which to compute the product (any axis except the last two).
+
+    Returns
+    -------
+    torch.Tensor
+        The ordered product; same shape as `W` with `dim` removed.
+    """
+    result = W.select(dim, 0)
+    for i in range(1, W.shape[dim]):
+        result = result @ W.select(dim, i)
+    return result
 
 
 # =============================================================================
