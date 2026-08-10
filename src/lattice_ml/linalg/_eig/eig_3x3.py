@@ -5,7 +5,7 @@
 from typing import Callable
 import torch
 
-from .generic import fix_phase, eyes_like
+from .generic import fix_phase, eye_like
 
 __all__ = ["eigvals3x3", "eign3x3"]
 
@@ -197,7 +197,7 @@ def eign3x3(
             func_4_ind = lambda k: [k % 3, (k + 1) % 3, (k + 2) % 3]
 
     eigvecs = torch.zeros_like(matrix)
-    eye = eyes_like(matrix)
+    eye = eye_like(matrix)
 
     if subtract_trace:
         mu = torch.mean(matrix.diagonal(dim1=-1, dim2=-2), dim=-1)[..., None]

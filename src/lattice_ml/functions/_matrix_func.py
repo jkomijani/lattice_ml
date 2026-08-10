@@ -25,7 +25,7 @@ __all__ = [
     "matrix_angleu",
     "enforce_zero_sum",
     "kronecker_product",
-    "eyes_like"
+    "eye_like"
 ]
 
 
@@ -338,12 +338,13 @@ def kronecker_product(mat1, mat2):
     return mat1 * mat2
 
 
-def eyes_like(matrix):
-    """Return identity matrices of the same size of the input matrix."""
-    eye = torch.zeros_like(matrix)
-    for k in range(matrix.shape[-1]):
-        eye[..., k, k] = 1
-    return eye
+def eye_like(x: torch.Tensor) -> torch.Tensor:
+    """
+    Return identity matrices matching x's shape, dtype, and device.
+    The last two dimensions of x must be square.
+    """
+    eye = torch.eye(x.shape[-1], dtype=x.dtype, device=x.device)
+    return eye.repeat(*x.shape[:-2], 1, 1)
 
 
 # =============================================================================

@@ -213,7 +213,7 @@ def inverse_eign_and_jacobian(eigvals, eigvecs, mode='Gamma'):
     delta = calc_eig_delta(eigvals)
 
     # Identity (same shape as delta)
-    eye = eyes_like(delta)
+    eye = eye_like(delta)
 
     # Basis transform: Ω ⊗ Ω*
     jac2 = kronecker_product(eigvecs, eigvecs.conj())
@@ -291,7 +291,7 @@ def commutator_and_jacobian(mat1, mat2):
     mat = mat1 @ mat2 - mat2 @ mat1
 
     # Identity and transpose needed for vec identity
-    eye = eyes_like(mat1)
+    eye = eye_like(mat1)
     mat2_t = mat2.transpose(-2, -1)
 
     # J = I ⊗ Qᵀ − Q ⊗ I
@@ -337,7 +337,7 @@ def product_to_antihermitian_and_jacobian(mat1, mat2):
     mat = mat - mat.adjoint()
 
     # Identity and transpose for vec identity
-    eye = eyes_like(mat1)
+    eye = eye_like(mat1)
     mat2_t = mat2.transpose(-2, -1)
 
     # Jacobian: J = I ⊗ mat2ᵀ − mat2 ⊗ I
@@ -386,12 +386,13 @@ def kronecker_product(mat1, mat2):
     return mat1 * mat2
 
 
-def eyes_like(matrix):
-    """Return identity matrices of the same size of the input matrix."""
-    eye = torch.zeros_like(matrix)
-    for k in range(matrix.shape[-1]):
-        eye[..., k, k] = 1
-    return eye
+def eye_like(x: torch.Tensor) -> torch.Tensor:
+    """
+    Return identity matrices matching x's shape, dtype, and device.
+    The last two dimensions of x must be square.
+    """
+    eye = torch.eye(x.shape[-1], dtype=x.dtype, device=x.device)
+    return eye.repeat(*x.shape[:-2], 1, 1)
 
 
 def calc_eig_delta(u):

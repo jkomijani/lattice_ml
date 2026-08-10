@@ -11,11 +11,13 @@ def get_default_tolerance():
     return 2**(-46 if torch.get_default_dtype() == torch.float64 else -18)
 
 
-def eyes_like(matrix):
-    eye = torch.zeros_like(matrix)
-    for k in range(matrix.shape[-1]):
-        eye[..., k, k] = 1
-    return eye
+def eye_like(x: torch.Tensor) -> torch.Tensor:
+    """
+    Return identity matrices matching x's shape, dtype, and device.
+    The last two dimensions of x must be square.
+    """
+    eye = torch.eye(x.shape[-1], dtype=x.dtype, device=x.device)
+    return eye.repeat(*x.shape[:-2], 1, 1)
 
 
 def sort_eig(eigvals, eigvecs):
@@ -48,7 +50,7 @@ def fix_phase(eigvecs, max_row=True, firs_row=False):
 def eigvecs_accuracychecker(matrix, eig_func, return_error_norm=True, **kwargs):
     u, v = eig_func(matrix, **kwargs)
     null_error = matrix @ v - v @ (torch.diag_embed(u) + 0j)
-    unitary_error = v.adjoint() @ v - eyes_like(v)
+    unitary_error = v.adjoint() @ v - eye_like(v)
     if return_error_norm:
         null_error = torch.linalg.matrix_norm(null_error)
         unitary_error = torch.linalg.matrix_norm(unitary_error)
