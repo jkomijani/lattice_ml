@@ -92,6 +92,8 @@ Conventions
 from typing import List
 import torch
 
+from lattice_ml.functions import matrix_cumprod, matrix_prod
+
 
 __all__ = [
     "link_to_prelink",
@@ -471,7 +473,7 @@ def integrate_prelink_along_axis(
         Shape must match U with the `dim_mu` axis removed.
 
     dim_mu : int
-        Axis along which to integrate (inclduing batch axes).
+        Axis along which to integrate (including batch axes).
 
     n_steps : int or None, default=None
         Number of integration steps. Defaults to U.shape[dim_mu].
@@ -482,36 +484,12 @@ def integrate_prelink_along_axis(
         Prelink tensor V of shape as U, except the size along `dim_mu`
         is always n_steps + 1.
     """
+    if n_steps is not None:
+        U = torch.narrow(U, dim_mu, 0, n_steps)
 
-    # Length along integration axis
-    N = U.shape[dim_mu]
-    if n_steps is None:
-        n_steps = N
+    V_init = V_init.unsqueeze(dim_mu)
 
-    # Construct V shape
-    V_shape = list(U.shape)
-    V_shape[dim_mu] = n_steps + 1
-
-    V = torch.zeros(V_shape, dtype=U.dtype, device=U.device)
-
-    # Set initial value V[..., 0, :, :] = V_init
-    idx0 = [slice(None)] * V.ndim
-    idx0[dim_mu] = 0
-    V[tuple(idx0)] = V_init
-
-    # Forward group integration
-    for i in range(n_steps):
-        # Prepare index slices for current, next prelink, & corresponding link
-        idx_current = [slice(None)] * V.ndim
-        idx_next = [slice(None)] * V.ndim
-
-        idx_current[dim_mu] = i
-        idx_next[dim_mu] = i + 1
-
-        # Compute V[..., i+1, :, :] = V[..., i, :, :] @ U[..., i, :, :]
-        V[tuple(idx_next)] = V[tuple(idx_current)] @ U[tuple(idx_current)]
-
-    return V
+    return V_init @ matrix_cumprod(U, dim=dim_mu, prepend_identity=True)
 
 
 # =============================================================================
@@ -525,8 +503,7 @@ def calc_origin_polyakov(
     Parameters
     ----------
     U_mu0 : torch.Tensor
-        Links in mu=0 direction.
-        Shape: [batch..., n0, n1, ..., nd, Nc, Nc]
+        Links in mu=0 direction. Shape: [batch..., n0, n1, ..., nd, Nc, Nc].
 
     prefix_dims : int
         Number of leading batch/channel dimensions in the tensor.
@@ -536,23 +513,16 @@ def calc_origin_polyakov(
     torch.Tensor
         One matrix per batch element; Shape: [batch..., Nc, Nc].
     """
-
-    # Extract the μ=0 line through the origin
+    # Extract the mu=0 line through the origin
     line = select_spatial_cut(
         U_mu0,
         prefix_dims=prefix_dims,
-        varying_axes=[0],  # only μ=0 free
+        varying_axes=[0],  # only mu=0 free
     )
     # shape: [batch..., n0, Nc, Nc]
 
-    mu_axis = prefix_dims  # Spatial mu=0 axis
-
     # Ordered product along mu=0
-    result = line.select(mu_axis, 0)
-    for i in range(1, line.shape[mu_axis]):
-        result = result @ line.select(mu_axis, i)
-
-    return result
+    return matrix_prod(line, dim=prefix_dims)
 
 
 # =============================================================================
