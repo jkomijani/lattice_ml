@@ -1,4 +1,4 @@
-from ._accept_reject import *
+from ._metropolis_hastings import *
 from ._importance_sampling import *
 from ._resampler import *
 
