@@ -88,7 +88,7 @@ class SUnHMC:
 
         self.accept_rate_history = []
 
-    def step(self, q0: torch.Tensor):
+    def step(self, q0: torch.Tensor, return_delta_energy=False):
         """
         Perform one batched HMC proposal starting from q0.
 
@@ -129,6 +129,9 @@ class SUnHMC:
         q_new = torch.where(mask, q, q0)
 
         self.accept_rate_history.append(is_accepted.float().mean().item())
+
+        if return_delta_energy:
+            return q_new, is_accepted, (h - h0)
 
         return q_new, is_accepted
 
