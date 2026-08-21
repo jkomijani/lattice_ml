@@ -14,11 +14,14 @@ For example:
 import torch
 
 
-__all__ = ["apply_accept_reject"]
+__all__ = [
+    "apply_metropolis_hastings_accept_reject",
+    "simulate_metropolis_hastings_accept_status",
+]
 
 
 @torch.no_grad()
-def apply_accept_reject(y, logq, logp, ref=None):
+def apply_metropolis_hastings_accept_reject(y, logq, logp, ref=None):
     """
     Apply a Metropolis-Hastings accept/reject step to a batch of proposed
     samples, optionally chaining from a previous call.
@@ -52,15 +55,14 @@ def apply_accept_reject(y, logq, logp, ref=None):
         Boolean accept/reject sequence, shape (N, *chain_shape).
     """
     if ref is not None:
-        # Prepend the reference as row 0: _calc_accept_status always
-        # treats row 0 as accepted, so this seeds the chain exactly
-        # like a real previous sample would, with no special-casing.
+        # Prepend the reference as row 0 (and remove it before return):
+        # simulate_metropolis_hastings_accept_status always accepts row 0.
         y = torch.cat([ref['sample'].unsqueeze(0), y], dim=0)
         logq = torch.cat([ref['logq'].unsqueeze(0), logq], dim=0)
         logp = torch.cat([ref['logp'].unsqueeze(0), logp], dim=0)
 
-    accept_seq = _calc_accept_status(logq, logp)
-    accept_ind = _calc_accept_indices(accept_seq)
+    accept_seq = simulate_metropolis_hastings_accept_status(logq, logp)
+    accept_ind = _compute_accept_indices(accept_seq)
 
     logq = torch.gather(logq, 0, accept_ind)
     logp = torch.gather(logp, 0, accept_ind)
@@ -79,7 +81,9 @@ def apply_accept_reject(y, logq, logp, ref=None):
 
 
 @torch.no_grad()
-def _calc_accept_status(logq, logp, logq_minus_logp_ref=None):
+def simulate_metropolis_hastings_accept_status(
+    logq, logp, logq_minus_logp_ref=None
+):
     """Generate a Metropolis-Hastings accept/reject sequence.
 
     The MH algorithm is performed along the first dimension.
@@ -123,7 +127,7 @@ def _calc_accept_status(logq, logp, logq_minus_logp_ref=None):
     return status  # also called accept_seq
 
 
-def _calc_accept_indices(accept_seq):
+def _compute_accept_indices(accept_seq):
     """Return indices of the output configurations.
 
     The calculation is performed along the first dimension.
