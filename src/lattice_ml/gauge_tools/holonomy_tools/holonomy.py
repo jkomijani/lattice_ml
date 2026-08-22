@@ -427,7 +427,7 @@ def fix_corner_semiglobal_freedom(
     # Compute Z = C_00 C_10† C_11 C_01† and solve Z = X Y X† Y†.
     # solve_sun_commutator(Z) returns (X, Y) with Z = [X, Y]
     Z = C_00 @ C_10.adjoint() @ C_11 @ C_01.adjoint()
-    X, Y = solve_sun_commutator(Z)
+    X, Y = solve_sun_commutator(Z, random_twist=True)
 
     # Recover the border semi-global freedoms from the commutator solution.
     P = C_01.adjoint() @ Y @ C_00  # right column (x = N_1), acts on V_0

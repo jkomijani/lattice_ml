@@ -21,7 +21,7 @@ __all__ = ["solve_sun_commutator"]
 
 
 # =============================================================================
-def solve_sun_commutator(Z: torch.Tensor, random_twist: bool = False):
+def solve_sun_commutator(Z: torch.Tensor, random_twist: bool = True):
     r"""
     Solve `Z = X Y X† Y†` for X, Y in SU(N), given Z in SU(N), in closed form.
 
