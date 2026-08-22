@@ -14,8 +14,6 @@ where `[X, Y] = X Y X† Y†`, in closed form.
 
 import torch
 
-from lattice_ml.linalg import eigu, inverse_eign
-
 from ._matrix_func import enforce_zero_sum
 
 
@@ -63,10 +61,17 @@ def solve_sun_commutator(Z: torch.Tensor, random_twist: bool = False):
        return `(X, Y X)` (`α = 1`) instead, so `Y`'s eigenvalues vary too
        when `random_twist=True`.
 
+    Comment on eigenvalue ordering:
+    -------------------------------
+    Although any ordering of `Z`'s eigenvalues gives an equally valid solution,
+    ordering them biases the resulting eigen-angle distribution of X and Y.
+    We therefore use `torch.linalg.eig`, whose raw, uncontrolled ordering
+    showed neither effect, instead of a value-sorted eigendecomposition.
+
     Non-uniqueness exploited by `random_twist`:
     -------------------------------------------
     Right-multiplying by any `D` that *commutes* with the other matrix also
-    solves it (`[X D, Y] = X D Y D†X†Y† = [X,Y]` when `DY=YD`). `y0 -> y0 @ D`
+    solves it (`[X D, Y] = X D Y D†X†Y† = [X,Y]` when `DY=YD`). `Y0 -> Y0 @ D`
     for any diagonal `D` in SU(N) commutes with `X0` (both diagonal);
     and `X -> X @ D'` for any `D'` diagonal in `Y`'s own eigenbasis commutes
     with `Y`. Each is an `(N-1)`-real-parameter family, and together they
@@ -84,7 +89,7 @@ def solve_sun_commutator(Z: torch.Tensor, random_twist: bool = False):
     batch_shape = Z.shape[:-2]
 
     # Diagonalize Z = Ω Λ Ω†, Λ = diag(e^{iθ_k}).
-    vals, omega = eigu(Z)
+    vals, omega = torch.linalg.eig(Z)
     theta = torch.angle(vals)
     theta = enforce_zero_sum(theta, dim=-1)
 
@@ -94,26 +99,27 @@ def solve_sun_commutator(Z: torch.Tensor, random_twist: bool = False):
     phi = torch.einsum('jk,...k->...j', p_pinv, theta)
 
     # Y0 = S, the cyclic-shift matrix; rescale for even N to keep det = 1.
-    y0 = _cyclic_shift_matrix(N, dtype, device)
+    Y0 = _cyclic_shift_matrix(N, dtype, device)
     if N % 2 == 0:
         angle = torch.tensor(torch.pi / N, dtype=theta.dtype)
-        y0 = y0 * torch.exp(1j * angle)
+        Y0 = Y0 * torch.exp(1j * angle)
 
-    # For random_twist, right-multiply y0 by a random diagonal SU(N)
-    # matrix -- it commutes with X0 (both diagonal), giving Y its full
-    # (N-1)-parameter continuous freedom.
+    # For random_twist, right-multiply Y0 by a random diagonal SU(N) matrix.
+    # It commutes with X0 (both diagonal), giving Y its full (N-1)-parameter
+    # continuous freedom.
     if random_twist:
-        y0 = y0 @ _random_diagonal_sun(batch_shape, N, theta.dtype, device)
+        Y0 = Y0 @ _random_diagonal_sun(batch_shape, N, theta.dtype, device)
 
     # X = Ω X0 Ω†, Y = Ω Y0 Ω†.
-    X = inverse_eign(torch.exp(1j * phi), omega)
-    Y = omega @ y0 @ omega.adjoint()
+    X0 = torch.diag_embed(torch.exp(1j * phi))
+    X = omega @ X0 @ omega.adjoint()
+    Y = omega @ Y0 @ omega.adjoint()
 
     # For random_twist, also right-multiply X by a random matrix diagonal
     # in Y's own eigenbasis -- it commutes with Y, so [X @ D', Y] = [X, Y]
     # still holds, giving X the same kind of continuous freedom as Y.
     if random_twist:
-        _, v = eigu(Y)
+        _, v = torch.linalg.eig(Y)
         d_prime = _random_diagonal_sun(batch_shape, N, theta.dtype, device)
         X = X @ (v @ d_prime @ v.adjoint())
 
