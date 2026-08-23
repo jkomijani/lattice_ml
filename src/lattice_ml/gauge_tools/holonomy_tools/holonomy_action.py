@@ -4,6 +4,7 @@ r"""Wilson gauge action and HMC force in the holonomy parametrization."""
 
 # pylint: disable=invalid-name
 
+import math
 import torch
 
 from .holonomy import compute_h_munu
@@ -18,8 +19,8 @@ class WilsonHolonomyAction:
 
     The action is
 
-        S[h] = -(beta / N_c / 2) sum_{x, mu != nu} Re Tr[P_{mu,nu}(x)],
-             = -(beta / N_c) sum_{x, mu > nu} Re Tr[P_{mu,nu}(x)],
+        S[h] = (beta / N_c / 2) sum_{x, mu != nu} Re Tr[I - P_{mu,nu}(x)],
+             = (beta / N_c) sum_{x, mu > nu} Re Tr[I - P_{mu,nu}(x)],
 
     where P_{mu,nu}(x) = h†(x) h(x+mu) h†(x+mu+nu) h(x+nu) is the plaquette
     expressed in terms of h_{mu,nu}(x) = h_{mu,0}(x) h_{nu,0}(x)†.
@@ -65,7 +66,10 @@ class WilsonHolonomyAction:
         """
         n_c = h.shape[-1]
         prefix_dims = 1
-        spatial_ndim = h.ndim - prefix_dims - 3
+        spatial_ndim = h.ndim - prefix_dims - 3  # -3 for direction & matrix
+
+        shape = _calc_physical_shape(h, prefix_dims, self.sites_before_link)
+        num_plaq = math.prod(shape) * spatial_ndim * (spatial_ndim - 1) / 2
 
         total = h.new_zeros(h.shape[0], dtype=h.real.dtype)
 
@@ -81,7 +85,7 @@ class WilsonHolonomyAction:
                 dim_nu = prefix_dims + nu
                 total = total + _planar_action_sum(h_munu, dim_mu, dim_nu)
 
-        return (-self.beta / n_c) * total
+        return self.beta * (num_plaq - total / n_c)
 
     def force(self, h: torch.Tensor) -> torch.Tensor:
         """Compute the group-valued HMC force: algebra_force(h) @ h.
@@ -119,6 +123,15 @@ class WilsonHolonomyAction:
         coeff = self.beta / n_c  # (-1 from action) x (-1 from h†(x) in P)
         algebra_force = coeff * self._project_onto_algebra_space(G)
         return algebra_force
+
+
+def _calc_physical_shape(h, prefix_dims=1, sites_before_link=True):
+    if sites_before_link:
+        extended_shape = h.shape[prefix_dims:-3]
+    else:
+        extended_shape = h.shape[prefix_dims + 1:-2]
+    physical_shape = [n - 1 for n in extended_shape]
+    return physical_shape
 
 
 def _planar_action_sum(h_munu: torch.Tensor, dim_mu: int, dim_nu: int):

@@ -4,6 +4,7 @@
 Wilson gauge action and force calculations for lattice gauge theory.
 """
 
+import math
 import torch
 
 from .wilson_loops_u1 import compute_u1_wilson_1x1_loop
@@ -23,12 +24,12 @@ class WilsonU1GaugeAction:
     The action is defined as:
 
     .. math::
-        S = - \beta \sum_{\nu \neq \mu} \text{Plaq}_{mu, nu} / 2 ,
-          = - \beta \sum_{\nu < \mu} Re \text{Plaq}_{mu, nu} .
+        S = \beta \sum_{\nu \neq \mu} (1 - P_{mu, nu}) / 2 ,
+          = \beta \sum_{\nu < \mu} (1 - Re P_{mu, nu}) .
 
     Here:
         - :math:`\beta` is the inverse coupling.
-        - :math:`\text{Plaq}_{\mu\nu}` is the plaquette in the (mu, nu) plane.
+        - :math:`P_{\mu\nu}` is the plaquette in the (mu, nu) plane.
 
     Two axis layouts are supported:
 
@@ -75,6 +76,7 @@ class WilsonU1GaugeAction:
         spatial_ndim = x.ndim - 2  # exclude batch, direction
         sum_dims = tuple(range(1, 1 + spatial_ndim))  # sum over spatial dims
 
+        num_plaq = math.prod(x.shape[1:]) * (spatial_ndim - 1) / 2
         plaq_sum = torch.zeros(len(x), device=x.device, dtype=x.real.dtype)
 
         for mu in range(1, spatial_ndim):
@@ -84,7 +86,7 @@ class WilsonU1GaugeAction:
                 ))
                 plaq_sum += torch.sum(plaq, dim=sum_dims)
 
-        return -self.beta * plaq_sum
+        return self.beta * (num_plaq - plaq_sum)
 
     def force(self, x: torch.Tensor) -> torch.Tensor:
         """
