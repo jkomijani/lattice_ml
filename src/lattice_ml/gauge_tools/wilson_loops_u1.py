@@ -9,7 +9,7 @@ parallel transport and the averaged rectangular Wilson loops of size m×n across
 all lattice planes.
 """
 
-from typing import Tuple
+from typing import List, Tuple
 import math
 import torch
 
@@ -18,7 +18,8 @@ __all__ = [
     'compute_mean_u1_wilson_mxn_loop',
     'calc_2dim_u1_topological_charge',
     'compute_u1_wilson_1x1_loop',
-    'compute_u1_wilson_1x1_loop_response',
+    'compute_planar_u1_wilson_1x1_loop',
+    'compute_planar_u1_wilson_1x1_loop_response',
     'u1_parallel_transport'
 ]
 
@@ -72,7 +73,7 @@ def compute_mean_u1_wilson_mxn_loop(
                 continue  # avoid double counting
 
             if m == 1 and n == 1:
-                w_mxn = compute_u1_wilson_1x1_loop(
+                w_mxn = compute_planar_u1_wilson_1x1_loop(
                     x, mu, nu, prefix_dims, sites_before_link
                 )
             else:
@@ -138,7 +139,7 @@ def calc_2dim_u1_topological_charge(
     topo_charge = 0
 
     # In 2D, there is only one plaquette orientation: (μ, ν) = (0, 1)
-    w_1x1 = compute_u1_wilson_1x1_loop(x, 0, 1, prefix_dims, sites_before_link)
+    w_1x1 = compute_planar_u1_wilson_1x1_loop(x, 0, 1, prefix_dims, sites_before_link)
 
     # Sum the plaquette angles and normalize by 2π
     topo_charge = torch.angle(w_1x1).sum(dim=sum_dims) / (2 * math.pi)
@@ -147,6 +148,55 @@ def calc_2dim_u1_topological_charge(
 
 
 def compute_u1_wilson_1x1_loop(
+    x: torch.Tensor,
+    prefix_dims: int = 1,
+    sites_before_link: bool = True
+):
+    """
+    Compute all oriented 1×1 Wilson loops and stack them along a channel axis.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Tensor containing the gauge links. After any batch and channel axes,
+        the spatial lattice axes come first (if sites_before_link=True),
+        followed by the link direction axis.
+    prefix_dims : int, default=1
+        Number of leading batch and channel dimensions in the tensor.
+        For example, if x.shape = (batch, channel, Lx, Ly, Lz, Lt, mu),
+        then prefix_dims=2. If only a single batch dimension, prefix_dims=1.
+    sites_before_link : bool, default=True
+        Whether the spatial lattice axes come before the link axis.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor of 1×1 Wilson loops. All planar loops associated to a point are
+        stacked along a new axis inserted at `prefix_dims`.
+    """
+    kws = {
+        'prefix_dims': prefix_dims,
+        'sites_before_link': sites_before_link
+    }
+
+    # Determine the number of spatial dimensions
+    spatial_ndim = x.ndim - prefix_dims - 1  # exclude batch, direction
+
+    n_plaq = spatial_ndim * (spatial_ndim - 1)
+    plaq_stack: List[torch.Tensor] = [None] * n_plaq
+
+    ind = 0
+    for mu in range(1, spatial_ndim):
+        for nu in range(mu):
+            plaq = compute_planar_u1_wilson_1x1_loop(x, mu, nu, **kws)
+            plaq_stack[ind] = plaq
+            plaq_stack[ind + 1] = plaq.conj()
+            ind += 2
+
+    return torch.stack(plaq_stack, dim=prefix_dims)
+
+
+def compute_planar_u1_wilson_1x1_loop(
     x: torch.Tensor,
     mu: int,
     nu: int,
@@ -197,7 +247,7 @@ def compute_u1_wilson_1x1_loop(
     return w_11
 
 
-def compute_u1_wilson_1x1_loop_response(
+def compute_planar_u1_wilson_1x1_loop_response(
     x: torch.Tensor,
     w: torch.Tensor,
     mu: int,

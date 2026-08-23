@@ -7,7 +7,7 @@ Wilson gauge action and force calculations for lattice gauge theory.
 import math
 import torch
 
-from .wilson_loops_u1 import compute_u1_wilson_1x1_loop
+from .wilson_loops_u1 import compute_planar_u1_wilson_1x1_loop
 from .wilson_staples_u1 import compute_u1_staples
 
 
@@ -81,7 +81,7 @@ class WilsonU1GaugeAction:
 
         for mu in range(1, spatial_ndim):
             for nu in range(mu):
-                plaq = torch.real(compute_u1_wilson_1x1_loop(
+                plaq = torch.real(compute_planar_u1_wilson_1x1_loop(
                     x, mu, nu, sites_before_link=self.sites_before_link
                 ))
                 plaq_sum += torch.sum(plaq, dim=sum_dims)
