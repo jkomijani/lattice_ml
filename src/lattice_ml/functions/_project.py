@@ -105,16 +105,20 @@ def project_onto_su2(matrix):
 
     v_sq = v0**2 + v1**2 + v2**2 + v3**2
 
-    r = 1 / v_sq**0.5  # for normalization
-
-    # TODO: zero v_sq is not yet taken into account
+    # v_sq = 0 means M has no SU(2)-covariant part;
+    # assign the identity there instead of dividing by zero.
+    is_degenerate = v_sq == 0
+    r = 1 / torch.where(is_degenerate, torch.ones_like(v_sq), v_sq).sqrt()
 
     out_mat = torch.zeros_like(matrix)
 
-    out_mat[..., 0, 0] = (v0 - v3*1J) * r
-    out_mat[..., 0, 1] = (-v2 - v1*1J) * r
-    out_mat[..., 1, 0] = (v2 - v1*1J) * r
-    out_mat[..., 1, 1] = (v0 + v3*1J) * r
+    out_mat[..., 0, 0] = (v0 + v3*1J) * r
+    out_mat[..., 0, 1] = (v2 + v1*1J) * r
+    out_mat[..., 1, 0] = (-v2 + v1*1J) * r
+    out_mat[..., 1, 1] = (v0 - v3*1J) * r
+
+    eye = torch.eye(2, dtype=matrix.dtype, device=matrix.device)
+    out_mat = torch.where(is_degenerate[..., None, None], eye, out_mat)
 
     return out_mat
 
@@ -214,6 +218,8 @@ def jacobi_project_onto_su3(matrix, n_hits=2):
 def _project_su2_hit(omega_dagger, matrix, p=0, q=1):
     # Decompose the (p, q) subgroups of V = Q† M using Pauli matrices,
     # with a method similar to the one used in ``project_onto_su2``.
+    #
+    # Note: unlike `project_onto_su2`, this hit maximizes `Re Tr(h @ V)`
 
     # The SU(2) hit matrix is represented as v0 + i * sum_j (sigma_j * vj)
     #
@@ -241,14 +247,22 @@ def _project_su2_hit(omega_dagger, matrix, p=0, q=1):
     for i in range(h.shape[-1]):
         h[..., i, i] = 1
 
-    r = 1 / v_sq**0.5  # for normalization
+    # v_sq = 0 means the (p, q) subblock has no SU(2)-covariant part;
+    # leave that block as identity instead of dividing by zero.
+    is_degenerate = v_sq == 0
+    r = 1 / torch.where(is_degenerate, torch.ones_like(v_sq), v_sq).sqrt()
 
-    # TODO: zero v_sq is not yet taken into account
+    h_pp = (v0 - v3 * 1J) * r
+    h_pq = (-v2 - v1 * 1J) * r
+    h_qp = (v2 - v1 * 1J) * r
+    h_qq = (v0 + v3 * 1J) * r
 
-    h[..., p, p] = (v0 - v3 * 1J) * r
-    h[..., p, q] = (-v2 - v1 * 1J) * r
-    h[..., q, p] = (v2 - v1 * 1J) * r
-    h[..., q, q] = (v0 + v3 * 1J) * r
+    ones = torch.ones_like(h_pp)
+    zeros = torch.zeros_like(h_pp)
+    h[..., p, p] = torch.where(is_degenerate, ones, h_pp)
+    h[..., p, q] = torch.where(is_degenerate, zeros, h_pq)
+    h[..., q, p] = torch.where(is_degenerate, zeros, h_qp)
+    h[..., q, q] = torch.where(is_degenerate, ones, h_qq)
     omega_dagger = h @ omega_dagger
 
     return omega_dagger
