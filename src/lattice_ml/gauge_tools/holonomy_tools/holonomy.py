@@ -67,6 +67,7 @@ Conventions
 import torch
 
 from lattice_ml.functions import solve_sun_group_commutator
+from lattice_ml.functions import compute_sun_group_commutator_log_density
 
 from ..prelink_tools.prelinks import link_to_prelink, prelink_to_link
 
@@ -144,16 +145,30 @@ def holonomy_to_link(
     prefix_dims: int = 1,
     sites_before_link: bool = True,
     constrained: bool = False,
-) -> torch.Tensor:
-    """
+    return_log_density: bool = False,
+):
+    r"""
     This function composes the maps
 
-        h → V = holonomy_to_prelink(h, constrained=constrained)
+        h → V = holonomy_to_prelink(h, constrained, return_log_density)
         V → U = prelink_to_link(V)
 
-    See :func:`holonomy_to_prelink` for the meaning of ``constrained``.
+    See func:`holonomy_to_prelink` for the meaning of `constrained` and
+    `return_log_density`.
+
+    Returns
+    -------
+    torch.Tensor
+        Link variables U.
+    torch.Tensor, optional
+        `log J(Z)`, only if `return_log_density=True`.
     """
     kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
+    if return_log_density:
+        V, log_density = holonomy_to_prelink(
+            h, constrained=constrained, return_log_density=True, **kws
+        )
+        return prelink_to_link(V, **kws), log_density
     V = holonomy_to_prelink(h, constrained=constrained, **kws)
     return prelink_to_link(V, **kws)
 
@@ -164,7 +179,8 @@ def holonomy_to_prelink(
     prefix_dims: int = 1,
     sites_before_link: bool = True,
     constrained: bool = False,
-) -> torch.Tensor:
+    return_log_density: bool = False,
+):
     r"""
     Reconstruct prelinks from the prelink holonomy h_{mu, 0}(x).
 
@@ -184,17 +200,33 @@ def holonomy_to_prelink(
         no assumptions on the corner holonomies; P and Q are solved directly.
         If True, use :func:`holonomy_to_prelink_with_constraints`: assumes
         constraints A and B hold.
+    return_log_density : bool, default=False
+        If True, also return `log J(Z)`, the log-density of the corner
+        commutator target `Z` under Haar-random, *independent* corner-fixing
+        solutions `(X, Y)` (see `compute_sun_group_commutator_log_density`).
+
+        `constrained=True` never solves the corner commutator at all, so
+        `log J(Z)` is undefined for it; combining it with
+        `return_log_density=True` raises `AssertionError`.
 
     Returns
     -------
     torch.Tensor
         Prelinks V in temporal gauge, same shape as h but ndim entries on
         the direction axis (mu = 0, ..., ndim-1).
+    torch.Tensor, optional
+        `log J(Z)`, only if `return_log_density=True`. Shape is `h`'s shape
+        with the time, spatial (mu=1 direction), and link axes removed.
     """
+    assert not (constrained and return_log_density), (
+        "log J(Z) is undefined when constrained=True."
+    )
     kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
     if constrained:
         return holonomy_to_prelink_with_constraints(h, **kws)
-    return holonomy_to_prelink_no_constraints(h, **kws)
+    return holonomy_to_prelink_no_constraints(
+        h, return_log_density=return_log_density, **kws
+    )
 
 
 # =============================================================================
@@ -268,7 +300,8 @@ def holonomy_to_prelink_no_constraints(
     h: torch.Tensor,
     prefix_dims: int = 1,
     sites_before_link: bool = True,
-) -> torch.Tensor:
+    return_log_density: bool = False,
+):
     r"""
     Reconstruct prelinks from h_{mu, 0}(x), relaxing constraint A only.
 
@@ -308,19 +341,23 @@ def holonomy_to_prelink_no_constraints(
         Number of leading batch/channel dimensions.
     sites_before_link : bool, default=True
         If True, spatial axes precede the link-direction axis.
+    return_log_density : bool, default=False
+        If True, also return `log J(Z)`, `Z` the corner commutator target.
 
     Returns
     -------
     torch.Tensor
         Prelinks V in temporal gauge with corner fix applied, same shape as h
         but ndim entries on the direction axis.
+    torch.Tensor, optional
+        `log J(Z)`, for corner target Z; only if `return_log_density=True`.
     """
     link_axis = -3 if sites_before_link else prefix_dims
     time_axis = prefix_dims if sites_before_link else prefix_dims + 1
     spatial_axis = prefix_dims + 1 if sites_before_link else prefix_dims + 2
 
     # Part 1: corner semi-global freedoms.
-    P, Q = fix_corner_semiglobal_freedom(
+    P, Q, Z = fix_corner_semiglobal_freedom(
         h, prefix_dims=prefix_dims, sites_before_link=sites_before_link,
         keepdim=True,
     )
@@ -347,7 +384,10 @@ def holonomy_to_prelink_no_constraints(
     # V_0 has size 1 on the link axis and broadcasts over all mu in h.
     V_mu = h @ V_0
 
-    return torch.cat([V_0, V_mu], dim=link_axis)
+    V = torch.cat([V_0, V_mu], dim=link_axis)
+    if not return_log_density:
+        return V
+    return V, compute_sun_group_commutator_log_density(Z)
 
 
 # =============================================================================
@@ -403,6 +443,9 @@ def fix_corner_semiglobal_freedom(
     Q : torch.Tensor
         Semi-global freedom for the top row, ``t = N_0``, acts on ``V_1``.
         Same shape convention as ``P``.
+    Z : torch.Tensor
+        The corner commutator target, `Z = C_00 C_10† C_11 C_01†`, shape
+        `(...batch..., Nc, Nc)` regardless of `keepdim`.
     """
     link_axis = -3 if sites_before_link else prefix_dims
     time_axis = prefix_dims         # axis for t
@@ -440,7 +483,7 @@ def fix_corner_semiglobal_freedom(
         P = P.unsqueeze(time_axis).unsqueeze(spatial_axis).unsqueeze(link_axis)
         Q = Q.unsqueeze(time_axis).unsqueeze(spatial_axis).unsqueeze(link_axis)
 
-    return P, Q
+    return P, Q, Z
 
 
 # =============================================================================
