@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Javad Komijani
 
 r"""
-Exact, closed-form solution of the SU(N) commutator equation.
+Exact, closed-form solution of the SU(N) group commutator equation.
 
 Given any Z in SU(N), this module returns X, Y in SU(N) satisfying
 
@@ -17,11 +17,11 @@ import torch
 from ._matrix_func import enforce_zero_sum
 
 
-__all__ = ["solve_sun_commutator"]
+__all__ = ["solve_sun_group_commutator"]
 
 
 # =============================================================================
-def solve_sun_commutator(Z: torch.Tensor, random_twist: bool = True):
+def solve_sun_group_commutator(Z: torch.Tensor, random_twist: bool = True):
     r"""
     Solve `Z = X Y X† Y†` for X, Y in SU(N), given Z in SU(N), in closed form.
 
@@ -30,7 +30,7 @@ def solve_sun_commutator(Z: torch.Tensor, random_twist: bool = True):
     Z : torch.Tensor
         Special unitary input matrix of shape `(..., N, N)`.
 
-    random_twist : bool, default=False
+    random_twist : bool, default=True
         If True, draw X and Y independently and uniformly at random from
         their `(N-1)`-parameter families of equally-valid solutions (see
         "Non-uniqueness exploited by `random_twist`" below).
@@ -138,9 +138,9 @@ def solve_sun_commutator(Z: torch.Tensor, random_twist: bool = True):
 # =============================================================================
 def _random_diagonal_sun(batch_shape, N, real_dtype, device):
     """
-    A uniformly random diagonal SU(N) matrix per batch element: the
-    first `N-1` phases are drawn i.i.d. uniform on the circle; the
-    last is fixed as minus their sum, so `det = 1`.
+    A uniformly random diagonal SU(N) matrix per batch element:
+        1. the first `N-1` phases are drawn i.i.d. uniform on the circle;
+        2. the last is fixed as minus their sum, so `det = 1`.
     """
     # Unlike subtracting the mean of all N phases, this keeps each phase
     # uniform on the full circle instead of concentrating it near zero.
@@ -155,9 +155,9 @@ def _random_diagonal_sun(batch_shape, N, real_dtype, device):
 # =============================================================================
 def _circulant_difference_pinv(N, dtype, device):
     """
-    Moore-Penrose pseudo-inverse of `P = I - S`, the circulant matrix that
-    the commutator equation reduces to (see `solve_sun_commutator`). P is
-    normal with a one-dimensional kernel spanned by the all-ones vector.
+    Moore-Penrose pseudo-inverse of `P = I - S`, the circulant matrix that the
+    group commutator equation reduces to (see `solve_sun_group_commutator`).
+    P is normal with a one-dimensional kernel spanned by the all-ones vector.
     """
     shift = _cyclic_shift_matrix(N, dtype, device)
     p = torch.eye(N, dtype=dtype, device=device) - shift
