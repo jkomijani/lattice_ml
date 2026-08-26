@@ -15,9 +15,15 @@ where `[X, Y] = X Y X† Y†`, in closed form.
 import torch
 
 from ._matrix_func import enforce_zero_sum
+from ._sun_group_commutator_density import (
+    compute_sun_group_commutator_log_density,
+)
 
 
-__all__ = ["solve_sun_group_commutator"]
+__all__ = [
+    "solve_sun_group_commutator",
+    "solve_sun_group_commutator_and_compute_log_density",
+]
 
 
 # =============================================================================
@@ -133,6 +139,53 @@ def solve_sun_group_commutator(Z: torch.Tensor, random_twist: bool = True):
     # reshape the eigenangle distribution of X, Y; empirically it never
     # makes that distribution match Z's exactly, so it isn't done here.
     return X, Y @ X
+
+
+# =============================================================================
+def solve_sun_group_commutator_and_compute_log_density(
+    Z: torch.Tensor, random_twist: bool = True, **kwargs
+):
+    r"""
+    Bundles two independent computations for a given `Z` into one call:
+
+    1. `X, Y`: *some* solution of `Z = X Y X† Y†` from
+       `solve_sun_group_commutator`, which picks one point on the large
+       solution family.
+
+    2. `log_density`: `log J(Z)`, the log of the *group commutator density*
+       (see `compute_sun_group_commutator_log_density` and its module
+       docstring). Unlike (1), it does not depend on the particular pair
+       this function returns for `X, Y`: it is the density of `Z` obtained
+       by drawing `X, Y` independently and uniformly and integrating over
+       the *entire* solution family -- indeed it is a class function of `Z`
+       alone, `J(gZg†) = J(Z)`.
+
+    Only `N = 2` (exact) and `N = 3` (heat-kernel-regularized) are supported
+    for `log_density` -- see `compute_sun_group_commutator_log_density`.
+
+    Parameters
+    ----------
+    Z : torch.Tensor
+        Special unitary input matrix of shape `(..., N, N)`, `N in {2, 3}`.
+    random_twist : bool, default=True
+        Passed to :func:`solve_sun_group_commutator` for `X, Y`; see (1)
+        above for why any value is fine -- `log_density` is unaffected
+        either way.
+    **kwargs
+        Passed to :func:`compute_sun_group_commutator_log_density` for
+        `log_density` (`N = 3`'s `t`, `p_max`; ignored for `N = 2`).
+
+    Returns
+    -------
+    X, Y : torch.Tensor
+        A solution of `Z = X Y X† Y†`, as in `solve_sun_group_commutator`.
+    log_density : torch.Tensor
+        `log J(Z)`, the log-density of the group commutator of `Z`.
+        Shape `Z.shape[:-2]`.
+    """
+    X, Y = solve_sun_group_commutator(Z, random_twist=random_twist)
+    log_density = compute_sun_group_commutator_log_density(Z, **kwargs)
+    return X, Y, log_density
 
 
 # =============================================================================

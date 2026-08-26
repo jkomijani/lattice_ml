@@ -10,5 +10,6 @@ from ._spectral_split_cat import splitted_ifftn
 from ._matrix_func import *
 from ._project import *
 from ._sun_group_commutator import *
+from ._sun_group_commutator_density import *
 
 from ._matrix_func_and_jacobian import *
