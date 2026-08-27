@@ -48,11 +48,10 @@ class Trainer:
     Device selection:
         Single- or multi-GPU execution is determined automatically based on the
         runtime environment and launch method. When the script is launched via
-        ``torchrun`` and the environment variable ``WORLD_SIZE`` is greater
-        than 1, the Trainer uses Distributed Data Parallel (DDP) for multi-GPU
-        training. When launched via standard ``python`` (or when
-        ``WORLD_SIZE == 1``), training runs in a single process on one device
-        (GPU if available, CPU otherwise).
+        `torchrun` and the environment variable `WORLD_SIZE` is greater than 1,
+        this class uses Distributed Data Parallel (DDP) for multi-GPU training.
+        When launched via standard `python` (or when `WORLD_SIZE == 1`),
+        training runs in a single process on one device.
 
     Training configuration:
         Training-related configuration (e.g. optimizer, scheduler, and
@@ -94,7 +93,7 @@ class Trainer:
             training_device (str): Selects the training device.
             **training_config: Additional kweword arguments, including:
                 optimizer_class: Callable = torch.optim.AdamW
-                scheduler_class: Callable | None = None
+                lr_scheduler_class: Callable | None = None
                 hyperparam: Dict = {}
 
         Notes:
@@ -112,10 +111,13 @@ class Trainer:
         self.device_handler = DeviceHandler(training_device)
         self.logger = logger or CSVLogger()
         self.optimizer = None
-        self.scheduler = None
-        self.config = TrainingConfiguration(**training_config)
+        self.lr_scheduler = None
+        self.config = self._build_config(training_config)
         self._step_metrics = {}
         self._epoch_metrics = {}
+
+    def _build_config(self, training_config):
+        return TrainingConfiguration(**training_config)
 
     def configure_optimizers(self, **kwargs):
         """Configure the optimizers and logging."""
@@ -134,10 +136,10 @@ class Trainer:
         hyperparam = self.config.hyperparam
         self.optimizer = self.config.optimizer_class(parameters, **hyperparam)
 
-        if self.config.scheduler_class is None:
-            self.scheduler = None
+        if self.config.lr_scheduler_class is None:
+            self.lr_scheduler = None
         else:
-            self.scheduler = self.config.scheduler_class(self.optimizer)
+            self.lr_scheduler = self.config.lr_scheduler_class(self.optimizer)
 
     def run_training(self, training_dataloader, n_epochs: int, **config):
         """Run the training workflow (distributed or non-distributed).
@@ -203,7 +205,7 @@ class Trainer:
             # the start of each epoch. Otherwise, all ranks shuffle the dataset
             # identically across epochs, reducing statistical diversity.
             sampler = self.training_dataloader.sampler
-            if isinstance(sampler, torch.utils.data.DistributedSampler):
+            if isinstance(sampler, DistributedSampler):
                 sampler.set_epoch(self.current_epoch)
             # -----------------------------
 
@@ -212,9 +214,9 @@ class Trainer:
                 self.current_epoch, {'loss': loss, **self._epoch_metrics}
             )
 
-            if self.scheduler is not None:
-                if not self.config.scheduler_per_batch:
-                    self.scheduler.step()
+            if self.lr_scheduler is not None:
+                if not self.config.lr_scheduler_per_batch:
+                    self.lr_scheduler.step()
 
         self.save_checkpoint(save_checkpoint_path)
 
@@ -298,8 +300,9 @@ class Trainer:
 
             self.optimizer.step()
 
-            if self.scheduler is not None and self.config.scheduler_per_batch:
-                self.scheduler.step()
+            if self.lr_scheduler is not None \
+                    and self.config.lr_scheduler_per_batch:
+                self.lr_scheduler.step()
 
             bsize = batch[0].shape[0]
             loss_sum += bsize * loss.detach()
@@ -356,10 +359,10 @@ class TrainingConfiguration(pydantic.BaseModel):
     """Training Configuration."""
 
     optimizer_class: Callable = torch.optim.AdamW
-    scheduler_class: Callable | None = None
+    lr_scheduler_class: Callable | None = None
     hyperparam: Dict = {}
     clip_grad_norm: bool = False
-    scheduler_per_batch: bool = False  # True/False: step every batch/epoch
+    lr_scheduler_per_batch: bool = False  # True/False: step every batch/epoch
 
     def update(self, **kwargs):
         """Update the attributes."""
