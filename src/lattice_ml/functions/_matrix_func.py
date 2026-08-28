@@ -443,9 +443,9 @@ def eye_like(x: torch.Tensor) -> torch.Tensor:
 def _test_enforce_zero_sum(n_samples):
     saved_dtype = torch.get_default_dtype()
     # pylint: disable=import-outside-toplevel
-    from normflow.prior import SUnPrior
+    from normflow.prior import UniformSUnPrior
     torch.set_default_dtype(saved_dtype)  # importing normflow may change dtype
-    samples = SUnPrior(n=3, shape=(1,)).sample(n_samples)
+    samples = UniformSUnPrior(n=3, shape=(1,)).sample(n_samples)
     vals, _ = eigu(samples)
     angs = torch.angle(vals)
     angs_p = enforce_zero_sum(angs)

@@ -388,12 +388,12 @@ def _test_gauge_equivaraince():
     """Shows the gauge equivariance of the transformation in GaugeLinkConv."""
 
     # pylint: disable=import-outside-toplevel
-    from normflow.prior import SUnPrior
+    from normflow.prior import UniformSUnPrior
 
     t = torch.rand(1)
 
     shape = (2, 2, 2, 2, 4)  # 2^4 lattice; the last axis is the "mu" axis.
-    prior = SUnPrior(3, shape=shape)
+    prior = UniformSUnPrior(3, shape=shape)
 
     # Define `x` and transform it with instances of GaugeLinkConv
     gauge_link_conv1 = GaugeLinkConv(
