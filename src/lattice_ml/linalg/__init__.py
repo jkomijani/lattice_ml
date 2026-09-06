@@ -10,3 +10,6 @@ from ._autograd import svd_with_simplified_ad
 from ._autograd import reciprocal
 
 from ._autograd import project_grad_sun, project_data_and_grad_sun
+
+from ._decompositions import haar_qr, haar_sqr, qr_on_cpu
+from ._decompositions import su2_to_euler_angles, euler_angles_to_su2
