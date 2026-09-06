@@ -9,11 +9,78 @@ from math import log, lgamma, pi  # lgamma: log gamma
 import torch
 import numpy as np
 
-from ..linalg import haar_qr
+from lattice_ml.linalg import haar_qr
 from ._ginibre_dist import GinibreCMatrixDist
 
 
-__all__ = ["UnGroup", "SUnGroup", "U1Group"]
+__all__ = [
+    "rand_sun_group_like",
+    "rand_diagonal_sun_group_like",
+    "SUnGroup",
+    "UnGroup",
+    "U1Group",
+]
+
+
+# =============================================================================
+def rand_sun_group_like(x: torch.Tensor) -> torch.Tensor:
+    """Return a tensor of random SU(n) matrices with the same shape as `x`.
+
+    Each matrix in the last two dimensions is drawn independently and uniformly
+    with respect to the Haar measure on SU(n), following the same construction
+    as `normflow`'s `SUnGroup`.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        A complex tensor of shape (..., n, n); only its shape, dtype, and
+        device are used to determine those of the output.
+
+    Returns
+    -------
+    torch.Tensor
+        A tensor of shape (..., n, n) of random SU(n) matrices.
+    """
+    assert x.shape[-2] == x.shape[-1], "x must have shape (..., n, n)"
+    n = x.shape[-1]
+    ginibre = torch.randn(x.shape, dtype=x.dtype, device=x.device)
+    q = haar_qr(ginibre, q_only=True)
+    det = torch.linalg.det(q).unsqueeze(-1).unsqueeze(-1)
+    return q / torch.pow(det, 1 / n)
+
+
+# =============================================================================
+def rand_diagonal_sun_group_like(x: torch.Tensor) -> torch.Tensor:
+    """Return a tensor of random diagonal SU(n) matrices, shaped like `x`.
+
+    Each output matrix lies in the maximal torus of SU(n): the first `n - 1`
+    phases are drawn i.i.d. uniform on the circle, and the last is fixed to
+    minus their sum so that `det = 1`.
+
+    Note that this is *not* the eigenvalue distribution of a Haar-random SU(n)
+    matrix as produced by `rand_sun_group_like`: those eigenvalues repel each
+    other under the Weyl integration formula (density proportional to the
+    squared Vandermonde determinant, as in the circular unitary ensemble),
+    whereas the phases drawn here are independent.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        A tensor of shape (..., n, n); only its shape, dtype, and device
+        are used to determine those of the output (the output is always
+        complex-valued, matching the floating-point precision of `x`).
+
+    Returns
+    -------
+    torch.Tensor
+        A tensor of shape (..., n, n) of random diagonal SU(n) matrices.
+    """
+    assert x.shape[-2] == x.shape[-1], "x must have shape (..., n, n)"
+    n = x.shape[-1]
+    free = torch.rand(*x.shape[:-2], n-1, dtype=x.real.dtype, device=x.device)
+    last = -free.sum(dim=-1, keepdim=True)
+    angles = 2 * torch.pi * torch.cat([free, last], dim=-1)
+    return torch.diag_embed(torch.exp(1j * angles))
 
 
 # =============================================================================
