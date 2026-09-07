@@ -66,7 +66,8 @@ Conventions
 
 import torch
 
-from lattice_ml.functions import solve_sun_group_commutator
+# from lattice_ml.functions import solve_sun_group_commutator
+from lattice_ml.random import sample_sun_group_commutator
 from lattice_ml.functions import compute_sun_group_commutator_log_density
 
 from ..prelink_tools.prelinks import link_to_prelink, prelink_to_link
@@ -410,7 +411,7 @@ def fix_corner_semiglobal_freedom(
     produces inconsistent prelinks at the spatial boundary.
 
     This function factors ``Z = X Y X† Y†`` (group commutator) via
-    :func:`solve_sun_group_commutator` and recovers
+    :func:`sample_sun_group_commutator` and recovers
 
         P = C_01† Y C_00   (semi-global freedom for the right column, x = N_1)
         Q = C_10 C_00† X   (semi-global freedom for the bottom row, t = N_0)
@@ -468,9 +469,9 @@ def fix_corner_semiglobal_freedom(
     C_11 = h_tN.select(spatial_axis - 1, -1)  # t=N_0, x=N_1
 
     # Compute Z = C_00 C_10† C_11 C_01† and solve Z = X Y X† Y†.
-    # solve_sun_group_commutator(Z) returns (X, Y) with Z = [X, Y]
+    # sample_sun_group_commutator(Z) returns (X, Y) with Z = [X, Y]
     Z = C_00 @ C_10.adjoint() @ C_11 @ C_01.adjoint()
-    X, Y = solve_sun_group_commutator(Z, random_twist=True)
+    X, Y = sample_sun_group_commutator(Z)
 
     # Recover the border semi-global freedoms from the commutator solution.
     P = C_01.adjoint() @ Y @ C_00  # right column (x = N_1), acts on V_0
