@@ -115,7 +115,7 @@ def euler_angles_to_su2(
         angle01 = TWO_PI * (c_2 - 0.5)
 
     m00 = abs00 * torch.exp(1j * angle00)
-    m01 = 1j * torch.sqrt((1 - abs00**2).clamp_min(0)) * torch.exp(1j * angle01)
+    m01 = 1j * torch.sqrt((1 - abs00**2).clamp_min(0)) * torch.exp(1j*angle01)
 
     matrix = torch.stack([m00, m01, -m01.conj(), m00.conj()], dim=-1)
     matrix = matrix.reshape(*m00.shape, 2, 2)
@@ -134,6 +134,8 @@ def su2_log_jacobian(abs00, coords):
     SIGN: this is the Jacobian of the FORWARD map `matrix -> coords`;
     `euler_angles_to_su2` returns its negative. A sign error here silently
     breaks every flow built on this handle, so it is pinned by a test.
+
+    Note: See eq (4.8) in arXiv:math-ph/0210033.
 
     Args:
         abs00: `|M_00| = cos(theta/2)`, of shape `matrix.shape[:-2]`.
