@@ -400,3 +400,119 @@ def calc_eig_delta(u):
     n = u.shape[-1]
     delta = u.view(-1, 1, n).repeat(1, n, 1) - u.view(-1, n, 1).repeat(1, 1, n)
     return delta.view(*u.shape[:-1], n, n)
+
+
+# =============================================================================
+# self-tests
+# =============================================================================
+# These checks are finite-difference based, so they are meaningless in single
+# precision. Rather than touching `torch.set_default_dtype`, which would leak
+# out of this module, the inputs are built in complex128 explicitly: every
+# function above takes its dtype from its arguments (`eye_like` included), so
+# that is enough to make the whole computation double precision.
+
+def _make_hermitian(n):
+    """Random Hermitian matrix, always in complex128."""
+    mat = (torch.randn(n, n, dtype=torch.float64)
+           + 1j * torch.randn(n, n, dtype=torch.float64))
+    return mat + mat.adjoint()
+
+
+def _flatten(mat):
+    return mat.reshape(-1)
+
+
+def test_equivalence_commutator_vs_product_form(n=5, tol=1e-6):
+    """Compare [P, Q] against P Q - (P Q)^dagger for Hermitian P, Q."""
+    mat1, mat2 = _make_hermitian(n), _make_hermitian(n)
+
+    comm, _ = commutator_and_jacobian(mat1, mat2)
+    anti, _ = product_to_antihermitian_and_jacobian(mat1, mat2)
+
+    err = (comm - anti).norm().item()
+    print("equivalence error:", err)
+    assert err < tol, f"Mismatch: {err}"
+
+
+def test_antihermitian_property(n=5, tol=1e-6):
+    """Check that the result is anti-Hermitian: A^dagger = -A."""
+    mat1, mat2 = _make_hermitian(n), _make_hermitian(n)
+
+    res, _ = product_to_antihermitian_and_jacobian(mat1, mat2)
+
+    err = (res + res.adjoint()).norm().item()
+    print("anti-Hermitian error:", err)
+    assert err < tol, f"Not anti-Hermitian: {err}"
+
+
+def test_commutator_antihermitian_structure(n=5, tol=1e-6):
+    """Check the commutator is anti-Hermitian for Hermitian inputs."""
+    mat1, mat2 = _make_hermitian(n), _make_hermitian(n)
+
+    res, _ = commutator_and_jacobian(mat1, mat2)
+
+    err = (res + res.adjoint()).norm().item()
+    print("commutator anti-Hermitian error:", err)
+    assert err < tol, f"Commutator not anti-Hermitian: {err}"
+
+
+def test_commutator_jacobian_fd(n=3, eps=1e-8, tol=1e-3):
+    """Analytic Jacobian of [P, Q] against a finite difference."""
+    mat1, mat2 = _make_hermitian(n), _make_hermitian(n)
+    delta = _make_hermitian(n)
+
+    val0, jac = commutator_and_jacobian(mat1, mat2)
+    val1, _ = commutator_and_jacobian(mat1 + eps * delta, mat2)
+
+    fin_diff = (val1 - val0) / eps
+    jac_delta = (jac @ _flatten(delta)).reshape(n, n)
+
+    err = (fin_diff - jac_delta).norm().item()
+    print("commutator Jacobian error:", err)
+    assert err < tol, f"Jacobian mismatch: {err}"
+
+
+def test_product_antihermitian_jacobian_fd(n=3, eps=1e-5, tol=1e-3):
+    """Analytic Jacobian of P Q - (P Q)^dagger against a finite difference."""
+    mat1, mat2 = _make_hermitian(n), _make_hermitian(n)
+    delta = _make_hermitian(n)
+
+    val0, jac = product_to_antihermitian_and_jacobian(mat1, mat2)
+    val1, _ = product_to_antihermitian_and_jacobian(mat1 + eps * delta, mat2)
+
+    fin_diff = (val1 - val0) / eps
+    jac_delta = (jac @ _flatten(delta)).reshape(n, n)
+
+    err = (fin_diff - jac_delta).norm().item()
+    print("anti-Hermitian Jacobian error:", err)
+    assert err < tol, f"Jacobian mismatch: {err}"
+
+
+def test_jacobian_structure(n=3, tol=1e-6):
+    """Both Jacobians must act identically on the same direction."""
+    mat1, mat2 = _make_hermitian(n), _make_hermitian(n)
+    delta = _make_hermitian(n)
+
+    _, jac1 = commutator_and_jacobian(mat1, mat2)
+    _, jac2 = product_to_antihermitian_and_jacobian(mat1, mat2)
+
+    out1 = (jac1 @ _flatten(delta)).reshape(n, n)
+    out2 = (jac2 @ _flatten(delta)).reshape(n, n)
+
+    err = (out1 - out2).norm().item()
+    print("Jacobian consistency error:", err)
+    assert err < tol, f"Inconsistent Jacobians: {err}"
+
+
+def run_self_tests():
+    """Run every check in this module."""
+    test_equivalence_commutator_vs_product_form()
+    test_antihermitian_property()
+    test_commutator_antihermitian_structure()
+    test_commutator_jacobian_fd()
+    test_product_antihermitian_jacobian_fd()
+    test_jacobian_structure()
+
+
+if __name__ == "__main__":
+    run_self_tests()
