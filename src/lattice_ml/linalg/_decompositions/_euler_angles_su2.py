@@ -38,11 +38,14 @@ def su2_to_euler_angles(
 
     where
 
-        >>> a = |M_00|^2                        # |M_00| = cos(theta/2)
-        >>> b = angle(M_00) / (2 pi) + 0.5      # angl(M_00)   = (phi + psi) /2
+        >>> a = angle(M_00) / (2 pi) + 0.5      # angl(M_00)   = (phi + psi) /2
+        >>> b = |M_00|^2                        # |M_00| = cos(theta/2)
         >>> c = angle(-1j M_01) / (2 pi) + 0.5  # angl(M_01/i) = (phi - psi) /2
 
-    all three of which are uniform on [0, 1].
+    all three of which are uniform on [0, 1]. The modulus channel `b` sits in
+    the middle, matching `theta` in the `angles` convention. The outer two
+    carry the same information in a different basis -- `phi` and `psi` are
+    the sum and difference of the two phases that `a` and `c` give directly.
 
     Parameters
     ----------
@@ -76,8 +79,8 @@ def su2_to_euler_angles(
         )
     else:
         out = (
-            abs00**2,
             angle00 / TWO_PI + 0.5,
+            abs00**2,
             angle01 / TWO_PI + 0.5,
         )
 
@@ -110,8 +113,8 @@ def euler_angles_to_su2(
         angle00 = (phi + psi) / 2
         angle01 = (phi - psi) / 2
     else:
-        abs00 = c_0.clamp(0, 1).sqrt()
-        angle00 = TWO_PI * (c_1 - 0.5)
+        angle00 = TWO_PI * (c_0 - 0.5)
+        abs00 = c_1.clamp(0, 1).sqrt()
         angle01 = TWO_PI * (c_2 - 0.5)
 
     m00 = abs00 * torch.exp(1j * angle00)

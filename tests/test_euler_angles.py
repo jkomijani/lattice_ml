@@ -220,11 +220,21 @@ class EulerAnglesTest(unittest.TestCase):
 
     def test_su2_uniform_is_the_square_of_abs00(self):
         """Migration anchor: the removed `alt_param` returned abs00;
-        'uniform' returns abs00**2 and leaves the phase channels alone."""
+        'uniform' returns abs00**2 and leaves the phase channels alone.
+
+        Channel order anchor too: the modulus channel is the MIDDLE one, so
+        that `(s, a, d)` lines up with `(phi, theta, psi)`. It used to be
+        first; a silent revert would flip which channel a flow transforms."""
         matrix = haar_sun(2, N_SAMPLES)
-        a, _, _ = su2_to_euler_angles(matrix, coords='uniform')
+        a, b, c = su2_to_euler_angles(matrix, coords='uniform')
         abs00 = matrix[..., 0, 0].abs()
-        self.assertLess(float((a - abs00**2).abs().max()), 1e-15)
+        self.assertLess(float((b - abs00**2).abs().max()), 1e-15)
+
+        # and the phases really are the outer two, in this order
+        phase_sum = torch.angle(matrix[..., 0, 0]) / (2 * np.pi) + 0.5
+        phase_diff = torch.angle(-1j * matrix[..., 0, 1]) / (2 * np.pi) + 0.5
+        self.assertLess(float((a - phase_sum).abs().max()), 1e-15)
+        self.assertLess(float((c - phase_diff).abs().max()), 1e-15)
 
 
 if __name__ == '__main__':
