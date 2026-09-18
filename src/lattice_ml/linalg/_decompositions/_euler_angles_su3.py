@@ -49,11 +49,12 @@ Z_2, and the existing `alt_param` construction already sidesteps it).
 import torch
 import numpy as np
 
+from ._euler_angles import resolve_coords, pack, unpack
 
-__all__ = [
-    "su3_to_euler_angles",
-    "euler_angles_to_su3",
-]
+TWO_PI = 2 * np.pi
+
+
+__all__ = ["su3_to_euler_angles", "euler_angles_to_su3"]
 
 
 _TWO_PI = 2 * np.pi
@@ -65,7 +66,7 @@ def _wrap_pi(x):
     return torch.atan2(torch.sin(x), torch.cos(x))
 
 
-def su3_to_euler_angles(matrix, channel_axis=-1):
+def _su3_to_raw_angles(matrix, channel_axis=-1):
     r"""Perform Euler decomposition of SU(3) matrices and return the angles.
 
     Generalizes `su2_to_euler_angles` so that the first and last factors are
@@ -210,7 +211,7 @@ def _euler_angles_to_su3_matrix(
     return d1.unsqueeze(-1) * V * d2.unsqueeze(-2)
 
 
-def euler_angles_to_su3(angles, channel_axis=-1):
+def _raw_angles_to_su3(angles, channel_axis=-1):
     """Performing the opposite of su3_to_euler_angles.
 
     For details see su3_to_euler_angles.
@@ -233,3 +234,122 @@ def euler_angles_to_su3(angles, channel_axis=-1):
     return _euler_angles_to_su3_matrix(
         theta12, theta13, theta23, delta, alpha1, alpha2, beta1, beta2
     )
+
+
+# =============================================================================
+def su3_log_jacobian(theta12, theta13, theta23, coords):
+    r"""Return `log |det d(coords)/d(su(3))|`, up to an ADDITIVE CONSTANT.
+
+    Same sign convention and same basis-dependence caveat as
+    `su2_log_jacobian`: this is the FORWARD map `matrix -> coords`, and the
+    constant is only meaningful through differences.
+
+    For `coords='angles'` the Haar measure factorizes into a kernel
+    `sin(t12) cos(t12) * sin(t13) cos(t13)^3 * sin(t23) cos(t23)` times a
+    flat measure in the five phases -- the extra power of cosine being the
+    same (1,3)-plane asymmetry that makes `U13` carry the phase `delta`.
+    Verified against finite differences of `matrix -> coords` in
+    left-invariant coordinates.
+    """
+    if coords == 'uniform':
+        return torch.zeros_like(theta12)
+    return -(
+        torch.log(torch.sin(theta12)) + torch.log(torch.cos(theta12))
+        + torch.log(torch.sin(theta13)) + 3 * torch.log(torch.cos(theta13))
+        + torch.log(torch.sin(theta23)) + torch.log(torch.cos(theta23))
+    )
+
+
+# =============================================================================
+def _to_coords(angles, coords):
+    """Raw Euler angles -> the requested coordinates."""
+    if coords == 'angles':
+        return angles
+    theta12, theta13, theta23, delta, alpha1, alpha2, beta1, beta2 = angles
+    return (
+        torch.sin(theta12)**2,          # kernel sin(t) cos(t)
+        1 - torch.cos(theta13)**4,      # kernel sin(t) cos(t)^3
+        torch.sin(theta23)**2,          # kernel sin(t) cos(t)
+        delta / TWO_PI + 0.5,
+        alpha1 * 3 / TWO_PI + 0.5,      # alpha1 lives in (-pi/3, pi/3]
+        alpha2 / TWO_PI + 0.5,
+        beta1 / TWO_PI + 0.5,
+        beta2 / TWO_PI + 0.5,
+    )
+
+
+def _from_coords(param, coords):
+    """Inverse of `_to_coords`."""
+    if coords == 'angles':
+        return param
+    return (
+        torch.asin(param[0].clamp(0, 1).sqrt()),
+        torch.acos(((1 - param[1]).clamp(0, 1))**0.25),
+        torch.asin(param[2].clamp(0, 1).sqrt()),
+        (param[3] - 0.5) * TWO_PI,
+        (param[4] - 0.5) * TWO_PI / 3,
+        (param[5] - 0.5) * TWO_PI,
+        (param[6] - 0.5) * TWO_PI,
+        (param[7] - 0.5) * TWO_PI,
+    )
+
+
+# =============================================================================
+def su3_to_euler_angles(matrix, channel_axis=None, coords=None,
+                        return_logj=False):
+    """Perform Euler decomposition of SU(3) matrices and return the
+    coordinates.
+
+    See `_su3_to_raw_angles` for the decomposition itself, including the
+    Z_3-center redundancy it resolves. The coordinates are
+
+        (theta12, theta13, theta23, delta, alpha1, alpha2, beta1, beta2)
+
+    for `coords='angles'`, and for `coords='uniform'`
+
+        (sin^2(theta12), 1 - cos^4(theta13), sin^2(theta23), and the five
+         phases rescaled onto [0, 1]),
+
+    each of which is uniform on [0, 1] under the Haar measure.
+
+    Parameters
+    ----------
+    matrix : tensor
+        the SU(3) matrix (or batch of matrices) to be decomposed.
+    coords : {'angles', 'uniform'} or None (optional)
+        Which coordinates to return; None means 'angles'. See the
+        `_euler_angles` module docstring for the two conventions.
+
+    channel_axis : int or None (optional)
+        If integer, the 8 coordinates are stacked along this axis (default
+        is -1); if None, they are returned as a tuple instead.
+
+    return_logj : bool (optional)
+        Also return `su3_log_jacobian(...)`, of shape `matrix.shape[:-2]`
+        (default is False). It is NOT summed over any field axes.
+    """
+    coords = resolve_coords(coords)
+    angles = _su3_to_raw_angles(matrix, channel_axis=None)
+    out = pack(_to_coords(angles, coords), channel_axis)
+
+    if not return_logj:
+        return out
+    return out, su3_log_jacobian(angles[0], angles[1], angles[2], coords)
+
+
+# =============================================================================
+def euler_angles_to_su3(param, channel_axis=None, coords=None,
+                        return_logj=False):
+    """Perform the opposite of `su3_to_euler_angles`.
+
+    `coords` must match the value used there. With `return_logj=True` the
+    returned log-Jacobian is the negative of the forward one, so the two
+    cancel.
+    """
+    coords = resolve_coords(coords)
+    angles = _from_coords(unpack(param, channel_axis, 8), coords)
+    matrix = _euler_angles_to_su3_matrix(*angles)
+
+    if not return_logj:
+        return matrix
+    return matrix, -su3_log_jacobian(angles[0], angles[1], angles[2], coords)
