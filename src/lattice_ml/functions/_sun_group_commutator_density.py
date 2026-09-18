@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Javad Komijani
+# Copyright (c) 2026 Claude, under supervision of Javad Komijani
 
 r"""
 Group commutator density.
@@ -115,11 +115,20 @@ def _su3_log_density(
     truncated at `p, q <= p_max`. (`t=0.05, p_max=20` give a stable values.)
 
     Unlike SU(2), this has not been independently re-derived in closed form;
-    only checked against two Schur-orthogonality moments,
+    only checked against the normalization `int J dZ = 1` and two
+    Schur-orthogonality moments,
 
          <Tr Z> = 1/3  and  <|Tr Z|^2> = 9/8,
 
     and against the class-function symmetry `J(gZg†) = J(Z)`.
+
+    The normalization holds exactly for every `t`, but the *shape* carries an
+    O(t) regulator bias: by Weyl-torus quadrature the first moment comes out
+    0.2917 / 0.3118 / 0.3246 / 0.3289 / 0.3311 for
+    `t = 0.1 / 0.05 / 0.02 / 0.01 / 0.005` (with `p_max` raised to keep
+    `t * C_2(p_max, p_max) >~ 20`), converging linearly in `t` to 1/3. So the
+    defaults below are accurate to ~6% in the first moment; pass a smaller `t`
+    (and a correspondingly larger `p_max`) when the shape matters.
 
     Parameters
     ----------
@@ -144,7 +153,13 @@ def _su3_log_density(
             weight = math.exp(-t * su3_casimir(p, q)) / su3_dim(p, q)
             total = total + chi * weight
 
-    return torch.log(2 * total)
+    # NOTE: `su3_dim(p, q) = (p+1)(q+1)(p+q+2)/2`, so `chi / su3_dim` already
+    # carries the factor of 2 written in the series above; `total` is thus
+    # `sum_R chi_R / d_R = J(Z)`. Multiplying by 2 again here made J(Z) twice
+    # too large. Verified by Weyl-torus quadrature: `int J dZ` is 1.000000 as
+    # written, and was 2.000000 with the extra factor (t-independent, so not a
+    # regulator artifact).
+    return torch.log(total)
 
 
 # =============================================================================
