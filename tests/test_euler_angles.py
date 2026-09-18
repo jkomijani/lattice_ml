@@ -236,6 +236,60 @@ class EulerAnglesTest(unittest.TestCase):
         self.assertLess(float((a - phase_sum).abs().max()), 1e-15)
         self.assertLess(float((c - phase_diff).abs().max()), 1e-15)
 
+    def test_su3_channel_order(self):
+        """Channel order anchor for SU(3): the factorization order
+
+            D1(alpha1, alpha2) R23(theta23) U13(theta13, delta)
+                               R12(theta12) D2(beta1, beta2)
+
+        so the four CKM-core parameters sit contiguously in channels 2..5 and
+        the diagonal factors' phases sit outside. Each mixing angle is pinned
+        by the matrix entry it is read off, which names it uniquely -- a
+        permutation of the three would pass a round-trip test but fail here.
+        """
+        matrix = haar_sun(3, N_SAMPLES)
+        angles = sun_to_euler_angles(matrix, coords='angles', channel_axis=-1)
+
+        u01, u00 = matrix[..., 0, 1].abs(), matrix[..., 0, 0].abs()
+        u12, u22 = matrix[..., 1, 2].abs(), matrix[..., 2, 2].abs()
+        for k, expected in [
+            (2, torch.atan2(u12, u22)),                              # theta23
+            (3, torch.asin(matrix[..., 0, 2].abs().clamp(max=1.0))),  # t13
+            (5, torch.atan2(u01, u00)),                              # theta12
+        ]:
+            with self.subTest(channel=k):
+                self.assertLess(
+                    float((angles[:, k] - expected).abs().max()), 1e-14
+                )
+
+        # alpha1 carries the Z_3 quotient, so its range is a third of the
+        # others'; that asymmetry is the thing most likely to be "tidied" away.
+        self.assertLessEqual(
+            float(angles[:, 0].abs().max()), np.pi / 3 + 1e-12
+        )
+        for k in (1, 4, 6, 7):
+            with self.subTest(phase=k):
+                self.assertLessEqual(
+                    float(angles[:, k].abs().max()), np.pi + 1e-12
+                )
+
+    def test_su3_uniform_matches_the_angle_channels(self):
+        """'uniform' must be the stated substitution of 'angles', channel for
+        channel -- which also pins the two conventions to the same order."""
+        matrix = haar_sun(3, N_SAMPLES)
+        angles = sun_to_euler_angles(matrix, coords='angles', channel_axis=-1)
+        unit = sun_to_euler_angles(matrix, coords='uniform', channel_axis=-1)
+        a1, a2, t23, t13, delta, t12, b1, b2 = angles.unbind(-1)
+        expected = [
+            a1 * 3 / (2 * np.pi) + 0.5, a2 / (2 * np.pi) + 0.5,
+            torch.sin(t23) ** 2, 1 - torch.cos(t13) ** 4,
+            delta / (2 * np.pi) + 0.5, torch.sin(t12) ** 2,
+            b1 / (2 * np.pi) + 0.5, b2 / (2 * np.pi) + 0.5,
+        ]
+        for k, e in enumerate(expected):
+            with self.subTest(channel=k):
+                self.assertLess(float((unit[:, k] - e).abs().max()), 1e-14)
+
 
 if __name__ == '__main__':
     unittest.main()
