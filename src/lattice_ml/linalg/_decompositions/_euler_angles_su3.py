@@ -49,7 +49,7 @@ Z_2, and the existing `alt_param` construction already sidesteps it).
 import torch
 import numpy as np
 
-from ._euler_angles import resolve_coords, pack, unpack
+from ._euler_angles_su2 import resolve_coords, pack, unpack
 
 TWO_PI = 2 * np.pi
 
