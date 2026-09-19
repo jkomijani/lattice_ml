@@ -32,7 +32,13 @@ X, Y are independently Haar distributed: for any integrable f,
 Since the product Haar measure is invariant under simultaneous conjugation,
 J(Z) is a *class function*: J(g Z g†) = J(Z) for all g, Z in SU(N).
 
-Only SU(2) and SU(3) are implemented.
+Only SU(2) and SU(3) are implemented, both in exact closed form. Writing
+phi_1, ..., phi_N in [0, 2pi) for the eigen-angles of Z, both read
+
+    J(Z) = (1/N) prod_{i<j} [ (phi_i - phi_j)/2 ] / sin[ (phi_i - phi_j)/2 ]
+
+i.e. one factor x/(2 sin(x/2)) per pair of eigenvalues. (Verified for
+N = 2, 3 only; not claimed for N > 3.)
 """
 
 # pylint: disable=invalid-name
@@ -45,24 +51,18 @@ __all__ = ["compute_sun_group_commutator_log_density"]
 
 
 # =============================================================================
-def compute_sun_group_commutator_log_density(
-    Z: torch.Tensor, **kwargs
-) -> torch.Tensor:
+def compute_sun_group_commutator_log_density(Z: torch.Tensor) -> torch.Tensor:
     r"""
-    log J(Z), the log of the group commutator density (see module
-    docstring):
+    log J(Z), the log of the group commutator density (see module docstring):
 
         J(Z) = integral dX dY delta_{SU(N)}(Z† X Y X† Y†)
 
-    for Haar-random, independent X, Y in SU(N).
+    for Haar-random, independent X, Y in SU(N). Exact for both N = 2 and N = 3.
 
     Parameters
     ----------
     Z : torch.Tensor
         Special unitary input matrix of shape `(..., N, N)`, `N in {2, 3}`.
-    **kwargs
-        Passed to `_su3_log_density` for `N = 3` (`t`, `p_max`);
-        ignored for `N = 2`, which is exact.
 
     Returns
     -------
@@ -73,7 +73,7 @@ def compute_sun_group_commutator_log_density(
     if N == 2:
         return _su2_log_density(Z)
     if N == 3:
-        return _su3_log_density(Z, **kwargs)
+        return _su3_log_density(Z)
     raise NotImplementedError("Implemented only for SU(2) and SU(3).")
 
 
@@ -93,42 +93,96 @@ def _su2_log_density(Z: torch.Tensor) -> torch.Tensor:
 
 
 # =============================================================================
-def _su3_log_density(
+def _su3_log_density(Z: torch.Tensor) -> torch.Tensor:
+    r"""
+    Exact closed form for SU(3): with phi_1, phi_2, phi_3 in [0, 2pi) the
+    eigen-angles of Z,
+
+        J(Z) = (1/3) prod_{i<j} [ (phi_i - phi_j)/2 ] / sin[ (phi_i - phi_j)/2]
+
+    the same one-factor-per-pair shape as `_su2_log_density` (see the module
+    docstring). Each factor is even in its argument, so neither the ordering
+    of the eigenvalues nor -- because `det Z = 1` -- the 0 vs 2pi ambiguity of
+    an eigenvalue at 1 affects the result.
+
+    Derivation:
+    -----------
+    The Weyl character formula turns `sum_R chi_R(Z) / d_R` into a single
+    lattice sum over weights, since `d_R = prod_{i<j}(l_i - l_j) / 2` cancels
+    against the Vandermonde `Delta(x) = prod_{i<j}(x_i - x_j)`:
+
+        J(Z) Delta = 2 sum_n x^n / [(n_1-n_2)(n_1-n_3)(n_2-n_3)]
+
+    summed over integer triples `n` with distinct entries, modulo an overall
+    shift. Writing `J Delta = 2i H` with `n = (p, q, 0)` and differentiating,
+    the substitution `r = p - q` factorizes each derivative into two
+    sawtooth series `S(x) = sum_{m!=0} e^{imx}/m` plus the excluded diagonal
+    `C(x) = sum_{m!=0} e^{imx}/m^2`:
+
+        d_1 H = sigma(theta_1) sigma(theta_3) + C(theta_2),   S = i sigma
+
+    Both are *piecewise quadratic polynomials* (no Clausen functions survive),
+    so H is piecewise cubic; the integration constant is fixed by evaluating
+    the lattice sum on the wall `theta_2 = 0`, where the inner sum telescopes
+    to `-2/p^3`. The pieces then assemble into the product above.
+
+    Notes
+    -----
+    `Z = 1` is a genuine singularity, `J = inf`; there this expression instead
+    returns the finite value 1/3, as all `phi_i` collapse to 0 and the lift
+    that produces the divergence is lost.
+
+    Parameters
+    ----------
+    Z : torch.Tensor
+        Special unitary input matrix of shape `(..., 3, 3)`.
+
+    Returns
+    -------
+    torch.Tensor
+        log J(Z), shape `Z.shape[:-2]`.
+    """
+    phi = torch.angle(torch.linalg.eigvals(Z)) % (2 * math.pi)
+    diff = phi.unsqueeze(-1) - phi.unsqueeze(-2)
+    i, j = torch.triu_indices(3, 3, offset=1)
+    # x / (2 sin(x/2)) = 1 / sinc(x / 2pi), with torch's normalized sinc.
+    log_sinc = torch.log(torch.sinc(diff[..., i, j] / (2 * math.pi)))
+    return -math.log(3) - log_sinc.sum(-1)
+
+
+# =============================================================================
+def su3_log_density_heat_kernel(
     Z: torch.Tensor,
     t: float = 0.05,
     p_max: int = 20,
 ) -> torch.Tensor:
     r"""
-    Heat-kernel-regularized, truncated evaluation of SU(3)'s group
-    commutator density,
+    Heat-kernel-regularized, truncated evaluation of SU(3)'s group commutator
+    density,
 
         J(Z) = 2 sum_{p,q=0}^inf chi_{p,q}(Z) / [(p+1)(q+1)(p+q+2)]
 
     (using chi_{p,q}(Z) rather than chi_{p,q}(Z†) -- summing symmetrically
-    over all (p, q) makes these equal, since the representation set is
-    closed under conjugation, (p,q) <-> (q,p)).
+    over all (p, q) makes these equal, since the representation set is closed
+    under conjugation, (p,q) <-> (q,p)).
 
-    This series is only *conditionally* convergent, so it is regularized by
+    **Superseded by `_su3_log_density`, which evaluates the same quantity in
+    exact closed form.** Kept for cross-checking: this is an independent
+    route to J(Z), and the two agree in the `t -> 0` limit.
+
+    The series is only *conditionally* convergent, so it is regularized by
     damping each term with `exp(-t * C_2(p, q))`, `C_2` the quadratic Casimir
     -- the standard heat-kernel regularization of the group delta function.
     The sum is then absolutely and rapidly convergent for any `t > 0`, and is
-    truncated at `p, q <= p_max`. (`t=0.05, p_max=20` give a stable values.)
+    truncated at `p, q <= p_max`.
 
-    Unlike SU(2), this has not been independently re-derived in closed form;
-    only checked against the normalization `int J dZ = 1` and two
-    Schur-orthogonality moments,
-
-         <Tr Z> = 1/3  and  <|Tr Z|^2> = 9/8,
-
-    and against the class-function symmetry `J(gZg†) = J(Z)`.
-
-    The normalization holds exactly for every `t`, but the *shape* carries an
-    O(t) regulator bias: by Weyl-torus quadrature the first moment comes out
-    0.2917 / 0.3118 / 0.3246 / 0.3289 / 0.3311 for
-    `t = 0.1 / 0.05 / 0.02 / 0.01 / 0.005` (with `p_max` raised to keep
-    `t * C_2(p_max, p_max) >~ 20`), converging linearly in `t` to 1/3. So the
-    defaults below are accurate to ~6% in the first moment; pass a smaller `t`
-    (and a correspondingly larger `p_max`) when the shape matters.
+    The normalization `int J dZ = 1` holds exactly for every `t`, but the
+    *shape* carries an O(t) regulator bias that vanishes only linearly: on a
+    Haar sample, J comes out 9.39 / 10.14 / 10.67 / 11.06 / 11.33 at
+    `t = 0.02 / 0.01 / 0.005 / 0.0025 / 0.00125` (with `p_max` raised to keep
+    `t * C_2(p_max, p_max) >~ 20`) against the exact 11.89. Reaching a few
+    digits therefore costs a large `p_max`, which is what makes the closed
+    form worth having.
 
     Parameters
     ----------
@@ -156,9 +210,7 @@ def _su3_log_density(
     # NOTE: `su3_dim(p, q) = (p+1)(q+1)(p+q+2)/2`, so `chi / su3_dim` already
     # carries the factor of 2 written in the series above; `total` is thus
     # `sum_R chi_R / d_R = J(Z)`. Multiplying by 2 again here made J(Z) twice
-    # too large. Verified by Weyl-torus quadrature: `int J dZ` is 1.000000 as
-    # written, and was 2.000000 with the extra factor (t-independent, so not a
-    # regulator artifact).
+    # too large.
     return torch.log(total)
 
 

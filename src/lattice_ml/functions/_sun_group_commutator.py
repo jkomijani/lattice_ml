@@ -139,7 +139,7 @@ def solve_sun_group_commutator(Z: torch.Tensor, random_twist: bool = True):
 
 # =============================================================================
 def solve_sun_group_commutator_and_compute_log_density(
-    Z: torch.Tensor, random_twist: bool = True, **kwargs
+    Z: torch.Tensor, random_twist: bool = True
 ):
     r"""
     Bundles two independent computations for a given `Z` into one call:
@@ -156,8 +156,8 @@ def solve_sun_group_commutator_and_compute_log_density(
        the *entire* solution family -- indeed it is a class function of `Z`
        alone, `J(gZg†) = J(Z)`.
 
-    Only `N = 2` (exact) and `N = 3` (heat-kernel-regularized) are supported
-    for `log_density` -- see `compute_sun_group_commutator_log_density`.
+    Only `N = 2` and `N = 3` are supported for `log_density`, both exact --
+    see `compute_sun_group_commutator_log_density`.
 
     Parameters
     ----------
@@ -166,9 +166,6 @@ def solve_sun_group_commutator_and_compute_log_density(
     random_twist : bool, default=True
         Passed to :func:`solve_sun_group_commutator` for `X, Y`; see (1) above
         for why any value is fine -- `log_density` is unaffected either way.
-    **kwargs
-        Passed to :func:`compute_sun_group_commutator_log_density` for
-        `log_density` (`N = 3`'s `t`, `p_max`; ignored for `N = 2`).
 
     Returns
     -------
@@ -179,7 +176,7 @@ def solve_sun_group_commutator_and_compute_log_density(
         Shape `Z.shape[:-2]`.
     """
     X, Y = solve_sun_group_commutator(Z, random_twist=random_twist)
-    log_density = compute_sun_group_commutator_log_density(Z, **kwargs)
+    log_density = compute_sun_group_commutator_log_density(Z)
     return X, Y, log_density
 
 
