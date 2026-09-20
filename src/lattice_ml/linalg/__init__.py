@@ -12,3 +12,4 @@ from ._autograd import reciprocal
 from ._autograd import project_grad_sun, project_data_and_grad_sun
 
 from ._decompositions import haar_qr, haar_sqr, qr_on_cpu
+from ._conjugacy_vol import log_unitary_conjugacy_vol

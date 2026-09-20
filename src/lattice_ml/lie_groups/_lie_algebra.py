@@ -35,9 +35,11 @@ need. The two are not interchangeable.
 
 import torch
 
+from lattice_ml.linalg import log_unitary_conjugacy_vol
+from lattice_ml.linalg import eigh, eigu, inverse_eigh, inverse_eign
+
 from ._ordering import ZeroSumOrder
 from ._su3_eigangles_parametrization import su3_sorted_angles_to_rectangle
-from lattice_ml.linalg import eigh, eigu, inverse_eigh, inverse_eign
 
 
 __all__ = ['sun_to_algebra', 'algebra_to_sun']
@@ -164,20 +166,6 @@ def _modified_theta(eigangs, n):
     return torch.pi * w_r[..., 0]
 
 
-def log_conjugacy_vol(eigvals):
-    r"""`log prod_{k<l} |lambda_k - lambda_l|^2`, up to an additive constant.
-
-    This is the volume of the conjugacy class, i.e. the Jacobian of
-    recomposing a normal matrix from its spectrum and eigenframe.
-    """
-    log_vol = torch.zeros(eigvals.shape[:-1], dtype=eigvals.real.dtype,
-                          device=eigvals.device)
-    for k in range(eigvals.shape[-1] - 1):
-        diff = eigvals[..., k:k+1] - eigvals[..., k+1:]
-        log_vol = log_vol + 2 * torch.sum(torch.log(torch.abs(diff)), dim=-1)
-    return log_vol
-
-
 # =============================================================================
 def sun_to_algebra(matrix, repr=None, return_logj=False):
     r"""Map an SU(N) element to its Lie-algebra content.
@@ -230,7 +218,8 @@ def sun_to_algebra(matrix, repr=None, return_logj=False):
 
     # eigu contributes -log(conjugacy volume) of U's spectrum; rebuilding the
     # Hermitian generator contributes +log(conjugacy volume) of the angles.
-    logj = log_conjugacy_vol(eigangs) - log_conjugacy_vol(eigvals)
+    logj = log_unitary_conjugacy_vol(eigangs) \
+        - log_unitary_conjugacy_vol(eigvals)
     if repr_ == 'axis_angle':
         # polar coordinates on R^dim: coeffs -> (theta, t)
         logj = logj - (coeffs.shape[-1] - 1) * torch.log(theta)
@@ -264,8 +253,8 @@ def algebra_to_sun(x, repr=None, return_logj=False):
     if not return_logj:
         return matrix
 
-    logj = log_conjugacy_vol(torch.exp(1j * eigangs)) \
-        - log_conjugacy_vol(eigangs)
+    logj = log_unitary_conjugacy_vol(torch.exp(1j * eigangs)) \
+        - log_unitary_conjugacy_vol(eigangs)
     if repr_ == 'axis_angle':
         logj = logj + (coeffs.shape[-1] - 1) * torch.log(theta)
     return matrix, logj
