@@ -14,7 +14,7 @@ where `[X, Y] = X Y X† Y†`, in closed form.
 
 import torch
 
-from ._matrix_func import enforce_zero_sum
+from lattice_ml.functions._matrix_func import enforce_zero_sum
 from ._sun_group_commutator_density import (
     compute_sun_group_commutator_log_density,
 )

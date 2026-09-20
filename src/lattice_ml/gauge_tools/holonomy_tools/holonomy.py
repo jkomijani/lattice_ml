@@ -68,7 +68,7 @@ import torch
 
 # from lattice_ml.functions import solve_sun_group_commutator
 from lattice_ml.random import sample_sun_group_commutator
-from lattice_ml.functions import compute_sun_group_commutator_log_density
+from lattice_ml.lie_groups import compute_sun_group_commutator_log_density
 
 from ..prelink_tools.prelinks import link_to_prelink, prelink_to_link
 

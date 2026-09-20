@@ -7,7 +7,7 @@
 from typing import Callable
 import torch
 
-from ._matrix_func import enforce_zero_sum
+from lattice_ml.functions._matrix_func import enforce_zero_sum
 from ._spectral_twist import (
     log_jacobian_su2, log_jacobian_su3, log_jacobian_sun
 )
