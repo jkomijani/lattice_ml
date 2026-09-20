@@ -44,10 +44,14 @@ N = 2, 3 only; not claimed for N > 3.)
 # pylint: disable=invalid-name
 
 import math
+import warnings
 import torch
 
 
-__all__ = ["compute_sun_group_commutator_log_density"]
+__all__ = [
+    "compute_sun_group_commutator_log_density",
+    "compute_sun_group_commutator_log_density_from_eigvals"
+]
 
 
 # =============================================================================
@@ -59,22 +63,45 @@ def compute_sun_group_commutator_log_density(Z: torch.Tensor) -> torch.Tensor:
 
     for Haar-random, independent X, Y in SU(N). Exact for both N = 2 and N = 3.
 
-    Parameters
-    ----------
-    Z : torch.Tensor
-        Special unitary input matrix of shape `(..., N, N)`, `N in {2, 3}`.
+    Args:
+        Z: Special unitary input matrix of shape `(..., N, N)`.
 
-    Returns
-    -------
-    torch.Tensor
-        log J(Z), shape `Z.shape[:-2]`.
+    Returns:
+        torch.Tensor: log J(Z), shape `Z.shape[:-2]`.
     """
-    N = Z.shape[-1]
-    if N == 2:
-        return _su2_log_density(Z)
-    if N == 3:
-        return _su3_log_density(Z)
-    raise NotImplementedError("Implemented only for SU(2) and SU(3).")
+    return compute_sun_group_commutator_log_density_from_eigvals(
+        torch.linalg.eigvals(Z)
+    )
+
+
+# =============================================================================
+def compute_sun_group_commutator_log_density_from_eigvals(
+    eigvals: torch.Tensor
+) -> torch.Tensor:
+    r"""
+    log J(Z) from the eigenvalues of Z (see module docstring):
+
+        J(Z) = (1/N) prod_{i<j} [ (phi_i - phi_j)/2 ] / sin[ (phi_i - phi_j)/2]
+
+    with phi_k in [0, 2pi) the eigen-angles. Exact for N = 2 and N = 3.
+
+    Args:
+        eigvals: Eigenvalues of SU(N) matrix of shape `(..., N, N)`.
+
+    Returns:
+        torch.Tensor: log J(Z), shape `eigvals.shape[:-1]`.
+    """
+    N = eigvals.shape[-1]
+    if N > 3:
+        warnings.warn(
+            f"The group commutator density is derived only for SU(2) and "
+            f"SU(3); for SU({N}) this expression is only a guess.",
+        )
+    phi = torch.angle(eigvals) % (2 * math.pi)
+    diff = phi.unsqueeze(-1) - phi.unsqueeze(-2)
+    i, j = torch.triu_indices(N, N, offset=1)
+    log_sinc = torch.log(torch.sinc(diff[..., i, j] / (2 * math.pi)))
+    return -math.log(N) - log_sinc.sum(-1)
 
 
 # =============================================================================
@@ -150,6 +177,8 @@ def _su3_log_density(Z: torch.Tensor) -> torch.Tensor:
     return -math.log(3) - log_sinc.sum(-1)
 
 
+# =============================================================================
+# Below is only for TESTs and is not meant to be used
 # =============================================================================
 def su3_log_density_heat_kernel(
     Z: torch.Tensor,
