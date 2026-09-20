@@ -31,7 +31,7 @@ import unittest
 import numpy as np
 import torch
 
-from lattice_ml.linalg import (
+from lattice_ml.lie_groups import (
     su2_to_euler_angles, euler_angles_to_su2,
     sun_to_euler_angles, euler_angles_to_sun,
 )

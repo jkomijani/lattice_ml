@@ -12,6 +12,3 @@ from ._autograd import reciprocal
 from ._autograd import project_grad_sun, project_data_and_grad_sun
 
 from ._decompositions import haar_qr, haar_sqr, qr_on_cpu
-from ._decompositions import su2_to_euler_angles, euler_angles_to_su2
-from ._decompositions import su3_to_euler_angles, euler_angles_to_su3
-from ._decompositions import sun_to_euler_angles, euler_angles_to_sun

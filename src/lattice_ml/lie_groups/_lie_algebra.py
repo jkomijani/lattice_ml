@@ -37,7 +37,7 @@ import torch
 
 from ._ordering import ZeroSumOrder
 from ._su3_eigangles_parametrization import su3_sorted_angles_to_rectangle
-from .._autograd import eigh, eigu, inverse_eigh, inverse_eign
+from lattice_ml.linalg import eigh, eigu, inverse_eigh, inverse_eign
 
 
 __all__ = ['sun_to_algebra', 'algebra_to_sun']

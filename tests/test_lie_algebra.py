@@ -37,7 +37,7 @@ import unittest
 import numpy as np
 import torch
 
-from lattice_ml.linalg._decompositions._lie_algebra import (
+from lattice_ml.lie_groups._lie_algebra import (
     sun_to_algebra, algebra_to_sun
 )
 
