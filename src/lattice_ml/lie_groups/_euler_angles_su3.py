@@ -50,8 +50,8 @@ __all__ = ["su3_to_euler_angles", "euler_angles_to_su3"]
 # =============================================================================
 def su3_to_euler_angles(
     matrix,
-    channel_axis=None,
     coords=None,
+    channel_axis=None,
     return_logj=False
 ):
     """Euler decomposition of SU(3) matrices.
@@ -72,13 +72,13 @@ def su3_to_euler_angles(
     matrix : tensor
         the SU(3) matrix (or batch of matrices) to decompose.
 
-    channel_axis : int or None (optional)
-        If integer, the 8 coordinates are stacked along this axis; if None
-        (default), they are returned as a tuple instead.
-
     coords : {'angles', 'uniform'} or None (optional)
         Which coordinates to return; None means 'angles'. See the
         `_euler_angles_su2` module docstring for the two conventions.
+
+    channel_axis : int or None (optional)
+        If integer, the 8 coordinates are stacked along this axis; if None
+        (default), they are returned as a tuple instead.
 
     return_logj : bool (optional)
         Also return `su3_log_jacobian(...)`, of shape `matrix.shape[:-2]`
@@ -96,8 +96,8 @@ def su3_to_euler_angles(
 # =============================================================================
 def euler_angles_to_su3(
     param,
-    channel_axis=None,
     coords=None,
+    channel_axis=None,
     return_logj=False
 ):
     """Inverse of `su3_to_euler_angles`; `coords` must match the value used

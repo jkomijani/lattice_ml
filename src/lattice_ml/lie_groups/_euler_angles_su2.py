@@ -22,8 +22,8 @@ __all__ = ['su2_to_euler_angles', 'euler_angles_to_su2']
 # =============================================================================
 def su2_to_euler_angles(
     matrix,
-    channel_axis=None,
     coords=None,
+    channel_axis=None,
     return_logj=False
 ):
     r"""
@@ -52,13 +52,13 @@ def su2_to_euler_angles(
     matrix : tensor
         the matrix to be decomposed.
 
-    channel_axis : int or None (optional)
-        If integer, the coordinates are stacked along this axis;
-        if None (default), they are returned as a tuple instead.
-
     coords : {'angles', 'uniform'} or None (optional)
         Which coordinates to return; None means 'angles'. See the module
         docstring for what the two conventions are and why there are only two.
+
+    channel_axis : int or None (optional)
+        If integer, the coordinates are stacked along this axis;
+        if None (default), they are returned as a tuple instead.
 
     return_logj : bool (optional)
         Also return `su2_log_jacobian(...)`, of shape `matrix.shape[:-2]`
@@ -94,8 +94,8 @@ def su2_to_euler_angles(
 # =============================================================================
 def euler_angles_to_su2(
     param,
-    channel_axis=None,
     coords=None,
+    channel_axis=None,
     return_logj=False
 ):
     """Perform the opposite of `su2_to_euler_angles`.
