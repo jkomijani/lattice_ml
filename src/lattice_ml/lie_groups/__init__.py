@@ -15,3 +15,4 @@ from ._euler_angles_sun import sun_to_euler_angles, euler_angles_to_sun
 from ._sun_group_commutator import *
 from ._sun_group_commutator_density import *
 from ._sun_group_commutator_solve import *
+from ._su3_group_commutator_eigangles_dist import *
