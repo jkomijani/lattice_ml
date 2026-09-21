@@ -169,8 +169,9 @@ def solve_lambda_su2(Z, Q, descending_angle: bool = False):
     Solve `Tr[(I - Q† Z Q) Λ] = 0` for diagonal Λ in SU(2); input
     matrices Z and Q are SU(2).
 
-    Because `Q† Z Q` in SU(2), we have m_2 = conj(m_1), reducing the constraint
-    to `Re(m_1 u_1) = 0`. There are two solutions, the SU(2) center {Y, -Y}.
+    Because `Q† Z Q` is in SU(2), and with with `m = diag(I - Q† Z Q)`,
+    we have m_2 = conj(m_1), reducing the constraint to `Re(m_1 u_1) = 0`.
+    There are two solutions, the SU(2) center {Y, -Y}.
     The option `descending_angle` specifies the branch: False (default) puts
     the first eigenvalue's angle in (-pi, 0).
     """
