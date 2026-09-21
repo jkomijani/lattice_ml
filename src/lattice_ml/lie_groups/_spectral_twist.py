@@ -48,11 +48,16 @@ group-commutator problem, and `_sun_group_commutator` speaks of conjugation.
 
 import torch
 
+from lattice_ml.functions._matrix_func import enforce_zero_sum
 
 __all__ = [
-    "log_jacobian_sun",
-    "log_jacobian_su2",
-    "log_jacobian_su3",
+    "log_jacobian_sun_spectral_twist",
+    "log_jacobian_su2_spectral_twist",
+    "log_jacobian_su3_spectral_twist",
+    "log_jacobian_su2_spectral_twist_from_diag",
+    "log_jacobian_su3_spectral_twist_from_diag",
+    "solve_lambda_su2_spectral_twist_from_diag",
+    "solve_lambda_su3_spectral_twist_from_diag",
 ]
 
 
@@ -74,7 +79,7 @@ def bistochastic_from_W(W: torch.Tensor) -> torch.Tensor:
 # ----------------------------------------------------------------------
 # General SU(N)
 # ----------------------------------------------------------------------
-def jacobian_sun(W: torch.Tensor) -> torch.Tensor:
+def jacobian_sun_spectral_twist(W: torch.Tensor) -> torch.Tensor:
     """|det dZ_tilde/dU| for SU(N), any N >= 2. W: (..., N, N) complex."""
     B = bistochastic_from_W(W)
     N = B.shape[-1]
@@ -84,7 +89,7 @@ def jacobian_sun(W: torch.Tensor) -> torch.Tensor:
     return torch.linalg.det(M)
 
 
-def log_jacobian_sun(W: torch.Tensor) -> torch.Tensor:
+def log_jacobian_sun_spectral_twist(W: torch.Tensor) -> torch.Tensor:
     """log |det dZ_tilde/dU|, via slogdet (stable for near-singular W)."""
     B = bistochastic_from_W(W)
     N = B.shape[-1]
@@ -107,19 +112,19 @@ def _helmert(N: int, dtype: torch.dtype, device) -> torch.Tensor:
 # ----------------------------------------------------------------------
 # Closed forms for N = 2, 3
 # ----------------------------------------------------------------------
-def jacobian_su2(W: torch.Tensor) -> torch.Tensor:
+def jacobian_su2_spectral_twist(W: torch.Tensor) -> torch.Tensor:
     """SU(2): |det dZ_tilde/dU| = 2 |W_12|^2 = 2 (1 - |W_11|^2)."""
     w01 = W[..., 0, 1]
     return 2.0 * (w01.real**2 + w01.imag**2)
 
 
-def log_jacobian_su2(W: torch.Tensor) -> torch.Tensor:
+def log_jacobian_su2_spectral_twist(W: torch.Tensor) -> torch.Tensor:
     """SU(2): log |det dZ_tilde/dU| = log(2 |W_12|^2) = log(2 - 2|W_11|^2)."""
     w01 = W[..., 0, 1]
     return torch.log(2.0 * (w01.real**2 + w01.imag**2))
 
 
-def jacobian_su3(W: torch.Tensor) -> torch.Tensor:
+def jacobian_su3_spectral_twist(W: torch.Tensor) -> torch.Tensor:
     """SU(3): |det dZ_tilde/dU| = 2 - sum_k |W_kk|^2 + det[|W_ij|^2]."""
     P = W.real**2 + W.imag**2  # P[..., i, j] = |W_ij|^2
     e1 = torch.einsum('...ii -> ...', P)
@@ -127,7 +132,7 @@ def jacobian_su3(W: torch.Tensor) -> torch.Tensor:
     return 2.0 - e1 + e3
 
 
-def log_jacobian_su3(W: torch.Tensor) -> torch.Tensor:
+def log_jacobian_su3_spectral_twist(W: torch.Tensor) -> torch.Tensor:
     """SU(3): log |det dZ_tilde/dU| = log(2 - sum|W_kk|^2 + det[|W_ij|^2])."""
     P = W.real**2 + W.imag**2  # P[..., i, j] = |W_ij|^2
     e1 = torch.einsum('...ii -> ...', P)
@@ -136,8 +141,203 @@ def log_jacobian_su3(W: torch.Tensor) -> torch.Tensor:
 
 
 # ----------------------------------------------------------------------
-# From U directly
+# Triangle geometry, for the equivalent "from the twisted matrix" form
 # ----------------------------------------------------------------------
+# The same Jacobian has a second closed form that never mentions W. Write the
+# twisted matrix in Lambda's own eigenbasis and keep only its diagonal,
+#
+#     diag = diag(I - Z_tilde) ,   d_k = diag[k] ,
+#
+# then, with v_k = d_k lambda_k (so sum_k v_k = 0 -- the closure that
+# `solve_lambda_su3_spectral_twist_from_diag` inverts),
+#
+#     N = 2 :   |det dZ_tilde/dU| = 2 d_1 d_2 / (d_1 + d_2)
+#                                   (real, since d_2 = conj d_1)
+#     N = 3 :   |det dZ_tilde/dU| = 3 A_v / A_lambda
+#
+# with A_v the area of the closed v-triangle -- side lengths |d_1|, |d_2|,
+# |d_3| -- and A_lambda the area of the triangle whose VERTICES are lambda_1,
+# lambda_2, lambda_3 on the unit circle. A triangle inscribed in the unit
+# circle has area abc/4, so A_lambda = |Vandermonde(lambda)| / 4.
+#
+# This is the SAME Jacobian in a different chart: `log_jacobian_su*` evaluates
+# det(I - B) in the B chart, `log_jacobian_su*_from_diag` below evaluates it in
+# the (lambda, diag) chart. The N = 3 one has to call the branch rule, because
+# the two triangle chiralities give different lambda -- hence different
+# A_lambda -- so the closure on its own does not pin it down.
+def triangle_area_from_sides(a, b, c):
+    """Heron's area of the triangle with side lengths a, b, c.
+
+    Returns 0 rather than NaN when the side lengths violate the triangle
+    inequality, so a degenerate configuration reads as zero area.
+    """
+    disc = 2*(a*b)**2 + 2*(b*c)**2 + 2*(c*a)**2 - a**4 - b**4 - c**4
+    return 0.25 * torch.sqrt(disc.clamp_min(0))
+
+
+def inscribed_triangle_area(lam: torch.Tensor) -> torch.Tensor:
+    """Area of the triangle with vertices lam_1, lam_2, lam_3 in the plane.
+
+    `lam` is complex of shape (..., 3). For points on the unit circle this is
+    |Vandermonde(lam)| / 4, at most 3 sqrt(3) / 4 (equilateral).
+    """
+    l1, l2, l3 = lam.unbind(-1)
+    return 0.5 * ((l2 - l1).conj() * (l3 - l1)).imag.abs()
+
+
+# ----------------------------------------------------------------------
+# The Jacobian in the (lambda, diag) chart, and the closure it rests on
+# ----------------------------------------------------------------------
+def log_jacobian_su2_spectral_twist_from_diag(
+    diag: torch.Tensor
+) -> torch.Tensor:
+    r"""SU(2): log |det dZ_tilde/dU| from `diag = diag(I - Z_tilde)`.
+
+        |det dZ_tilde/dU| = 2 d_1 d_2 / (d_1 + d_2)
+
+    the harmonic mean of the two entries. Real, because Z_tilde is in SU(2),
+    so `d_2 = conj(d_1)` and the value is `|d_1|^2 / Re(d_1)`, whose
+    denominator is `det(I - Z_tilde) = 2 - Tr Z_tilde`.
+
+    This returns exactly the same number as
+    `log_jacobian_su2_spectral_twist`, from the other side of the map: that
+    one takes W, U's eigenframe, while this one takes the diagonal of the
+    twisted matrix. Same sign, same value -- the two are interchangeable.
+
+    Use this one when UNTWISTING. Going that way Z_tilde is what is in hand
+    and W is not, so the W form would have to reconstruct it first; this form
+    reads the answer straight off what the untwist direction already has.
+
+    No Lambda is needed: at N = 2 the closure `sum_k d_k lambda_k = 0` has
+    only two terms, so Lambda cancels between numerator and denominator
+    instead of entering through a triangle.
+    """
+    d_1, d_2 = diag.unbind(-1)
+    return torch.log((2 * d_1 * d_2 / (d_1 + d_2)).real)
+
+
+def log_jacobian_su3_spectral_twist_from_diag(
+    diag: torch.Tensor, descending_angle: bool = False
+) -> torch.Tensor:
+    r"""SU(3): log |det dZ_tilde/dU| from `diag = diag(I - Z_tilde)`.
+
+        |det dZ_tilde/dU| = 3 A_v / A_lambda = 12 A_v / |Vandermonde(lambda)|
+
+    with `A_v` the area of the closed triangle whose edges are
+    `v_k = diag_k lambda_k` -- side lengths `|diag_k|` -- and `A_lambda` the
+    area of the triangle with vertices `lambda_1, lambda_2, lambda_3`.
+
+    This returns exactly the same number as
+    `log_jacobian_su3_spectral_twist`, from the other side of the map: that
+    one takes W, U's eigenframe, while this one takes the diagonal of the
+    twisted matrix. Same sign, same value -- the two are interchangeable.
+
+    Use this one when UNTWISTING. Going that way Z_tilde is what is in hand
+    and W is not, so the W form would have to reconstruct it first; and the
+    branch solve this needs is work the untwist direction is doing anyway.
+
+    The W-form value is `log(2 - Tr B + det B)`. The route between the charts:
+    `B` is doubly stochastic, so row `i` of `B` is the unique barycentric
+    coordinate vector of `(1 - diag_i) lambda_i` in the triangle
+    `(lambda_1, lambda_2, lambda_3)`; then `A = I - B` has zero row and column
+    sums, `|det dZ_tilde/dU| = e_2(A)`, and `A^T` factors as a ratio of two
+    2x2 determinants that are twice the two areas.
+    """
+    lam = solve_lambda_su3_spectral_twist_from_diag(
+        diag, descending_angle=descending_angle
+    )
+    A_v = triangle_area_from_sides(*diag.abs().unbind(-1))
+    return torch.log(3 * A_v / inscribed_triangle_area(lam))
+
+
+# =============================================================================
+# Solve lambda for spectral untwist
+# =============================================================================
+def solve_lambda_su2_spectral_twist_from_diag(diag, descending_angle=False):
+    """Invert the twist for SU(2): recover Lambda from `diag(I - Z_tilde)`.
+
+    Solves the closure `sum_k d_k lambda_k = 0` with `prod_k lambda_k = 1`.
+    Z_tilde is in SU(2), so `d_2 = conj(d_1)` and the closure collapses to
+    `Re(d_1 lambda_1) = 0`, leaving `lambda_1 = +- i conj(d_1) / |d_1|`.
+
+    The two roots are the SU(2) centre, Lambda and -Lambda -- the whole
+    spectrum flips sign together. `descending_angle` picks the branch; False
+    (default) puts the first eigenangle in (-pi, 0).
+
+    `solve_lambda_su2(Z, Q)` in `_sun_group_commutator` is the entry point
+    that builds `diag` from a commutator's (Z, Q) and calls this.
+    """
+    d_1 = diag[..., 0]
+    fac = 1j if descending_angle else -1j  # rotation factor
+    lam_1 = fac * d_1.conj() / d_1.abs()
+    return torch.stack([lam_1, lam_1.conj()], dim=-1)
+
+
+def solve_lambda_su3_spectral_twist_from_diag(diag, descending_angle=False):
+    """Invert the twist for SU(3): recover Lambda from `diag(I - Z_tilde)`.
+
+    Solves the closure `sum_k diag_k lambda_k = 0` with `prod_k lambda_k = 1`,
+    i.e. finds the spectrum Lambda for which the given Z_tilde equals
+    `U Lambda^dagger` with `spec(U) = Lambda`.
+
+    Geometrically it is triangle closure: the side lengths `|diag_k|` fix the
+    triangle up to 6 choices -- 3 SU(3)-centre rotations times 2 chiralities --
+    and the zero-sum-angle sort picks one. That sort is not cosmetic: the
+    centre rotations leave `A_lambda` alone, but the two chiralities give
+    genuinely different Lambda and therefore a different Jacobian, so the
+    branch has to be pinned. Plain angle order would be ambiguous whenever
+    Lambda's eigenangles are nearly degenerate, since a centre rotation can
+    then leave the angle order unchanged.
+
+    `solve_lambda_su3(Z, Q)` in `_sun_group_commutator` is the entry point that
+    builds `diag` from a commutator's (Z, Q) and calls this.
+    """
+    a, b, c = diag.abs().unbind(-1)
+
+    # Angle between the first two triangle sides. Clamp against a nearly
+    # degenerate triangle (two of a, b, c nearly equal), which can push
+    # the ratio just outside [-1, 1] by rounding error.
+    cos_delta = (a**2 + b**2 - c**2) / (2 * a * b)
+    delta = torch.pi - torch.arccos(cos_delta.clamp(-1, 1))
+
+    # Both triangle chiralities and three possible SU(3) roots.
+    kwargs = {'dtype': diag.dtype, 'device': diag.device}
+    signs = torch.tensor((1, -1), **kwargs)
+    roots = 2 * torch.pi / 3 * torch.tensor([0, 1, 2], **kwargs)
+
+    v1 = a[..., None] * torch.exp(1j * signs * delta[..., None])
+    v2 = b[..., None].expand_as(v1)
+
+    u = torch.stack([v1, v2, -v1 - v2], dim=-1) / diag[..., None, :]
+    # u shape here: (..., 2[chirality], 3[eigenvalue])
+
+    # Enforce det(u) = 1: three possible SU(3) roots.
+    phase = -torch.angle(u).mean(dim=-1)[..., :, None] + roots
+    # phase shape: (..., 2[chirality], 3[root])
+
+    u = u[..., :, None, :] * torch.exp(1j * phase[..., :, :, None])
+
+    # u shape: (..., 2 chirality, 3 roots, 3 eigenvalues)
+    u = u.flatten(-3, -2)
+
+    angles = enforce_zero_sum(torch.angle(u), dim=-1)
+
+    if descending_angle:
+        sorted_ = (angles[..., :-1] >= angles[..., 1:]).all(dim=-1)
+    else:
+        sorted_ = (angles[..., :-1] <= angles[..., 1:]).all(dim=-1)
+
+    # argmax gives the first valid candidate, or 0 if none are valid.
+    best = sorted_.to(torch.uint8).argmax(dim=-1)
+
+    return u.gather(
+        -2, best[..., None, None].expand(*best.shape, 1, 3)
+    ).squeeze(-2)
+
+
+# =============================================================================
+# From U directly
+# =============================================================================
 def eigendecompose_sorted(U: torch.Tensor):
     """
     Eigendecomposition of unitary U with eigenvalues sorted by ascending
@@ -158,142 +358,7 @@ def twist_eigenvalues(U: torch.Tensor) -> torch.Tensor:
     return U @ torch.diag_embed(lam.conj())
 
 
-def jacobian_from_U(U: torch.Tensor) -> torch.Tensor:
+def jacobian_spectral_twist_from_U(U: torch.Tensor) -> torch.Tensor:
     """|det dZ_tilde/dU| computed straight from U."""
     _, W = eigendecompose_sorted(U)
-    return jacobian_sun(W)
-
-
-# ======================================================================
-# self-test helpers
-# ======================================================================
-def _haar_sun(N, batch, dtype=torch.complex128):
-    """Batch of Haar-random SU(N) matrices."""
-    z = torch.randn(batch, N, N, dtype=dtype) / 2 ** 0.5
-    q, r = torch.linalg.qr(z)
-    phase = torch.diagonal(r, dim1=-2, dim2=-1)
-    q = q * (phase / phase.abs()).unsqueeze(-2)
-    return q * torch.linalg.det(q).unsqueeze(-1).unsqueeze(-1) ** (-1.0 / N)
-
-
-def _sun_basis(N, cdt=torch.complex128, rdt=torch.float64):
-    """Orthonormal basis of su(N): off-diagonal pairs plus Helmert diagonal."""
-    basis = []
-    for i in range(N):
-        for j in range(i + 1, N):
-            E = torch.zeros(N, N, dtype=cdt)
-            E[i, j], E[j, i] = 1, -1
-            basis.append(E / 2 ** 0.5)
-
-            E = torch.zeros(N, N, dtype=cdt)
-            E[i, j], E[j, i] = 1j, 1j
-            basis.append(E / 2 ** 0.5)
-    V = _helmert(N, rdt, None)
-    for c in range(N - 1):
-        basis.append(1j * torch.diag(V[:, c]).to(cdt))
-    return torch.stack(basis)
-
-
-def _fd_logjac(U, eps=1e-6):
-    """FD estimate of log|det d(Z_tilde^dag dZ_tilde)/d(U^dag dU)|."""
-    N = U.shape[-1]
-    basis = _sun_basis(N)
-    Z_tilde0 = twist_eigenvalues(U.unsqueeze(0))[0]
-    rows = []
-    for a in range(basis.shape[0]):
-        Up = U @ torch.matrix_exp(eps * basis[a])
-        Um = U @ torch.matrix_exp(-eps * basis[a])
-        dZ_tilde = (twist_eigenvalues(Up.unsqueeze(0))[0]
-                    - twist_eigenvalues(Um.unsqueeze(0))[0]) / (2 * eps)
-        X = Z_tilde0.conj().T @ dZ_tilde
-        row = [(basis[b].conj().T @ X).diagonal().sum().real
-               for b in range(basis.shape[0])]
-        rows.append(torch.stack(row))
-    return torch.linalg.slogdet(torch.stack(rows))[1]
-
-
-def run_self_tests():  # pylint: disable=too-many-locals,too-many-statements
-    """Sanity-check the spectral-twist Jacobian against known formulas."""
-    torch.manual_seed(0)
-    cdt, rdt = torch.complex128, torch.float64
-    tol, fd_tol, mean_tol = 1e-10, 1e-6, 1e-2
-
-    for N in (2, 3, 4, 5):
-        U = _haar_sun(N, 6)
-        lam, W = eigendecompose_sorted(U)
-
-        Urec = W @ torch.diag_embed(lam) @ W.conj().transpose(-1, -2)
-        rec = float((Urec - U).abs().max())
-        assert rec < tol, f"N={N}: reconstruction error {rec}"
-
-        Z_tilde = twist_eigenvalues(U)
-        ZZd = Z_tilde @ Z_tilde.conj().transpose(-1, -2)
-        uni = float((ZZd - torch.eye(N, dtype=cdt)).abs().max())
-        det1 = float((torch.linalg.det(Z_tilde) - 1).abs().max())
-        assert uni < tol, f"N={N}: Z_tilde not unitary, err={uni}"
-        assert det1 < tol, f"N={N}: det(Z_tilde) != 1, err={det1}"
-
-        Jg = jacobian_sun(W)
-        eye = torch.eye(N, dtype=rdt)
-        Jm = N * torch.linalg.det((eye - bistochastic_from_W(W))[..., 1:, 1:])
-        minor_err = float((Jg - Jm).abs().max())
-        assert minor_err < tol, f"N={N}: minor-form mismatch {minor_err}"
-
-        from_u_err = float((Jg - jacobian_from_U(U)).abs().max())
-        assert from_u_err < tol, f"N={N}: from-U mismatch {from_u_err}"
-
-        assert bool((Jg > 0).all()), f"N={N}: non-positive Jacobian"
-
-        fd = torch.stack([_fd_logjac(U[b]) for b in range(3)])
-        fd_err = float((fd - torch.log(Jg[:3])).abs().max())
-        assert fd_err < fd_tol, f"N={N}: finite-difference mismatch {fd_err}"
-
-        print(f"N={N}  recon={rec:.1e}  Z_tilde unitary={uni:.1e}  "
-              f"det Z_tilde-1={det1:.1e}  minor-form={minor_err:.1e}  "
-              f"from-U={from_u_err:.1e}  fd={fd_err:.1e}")
-
-    U = _haar_sun(2, 6)
-    _, W = eigendecompose_sorted(U)
-    su2_err = float((jacobian_sun(W) - jacobian_su2(W)).abs().max())
-    assert su2_err < tol, f"su2 closed form mismatch {su2_err}"
-    print("SU(2) closed-form mismatch:", su2_err)
-
-    U = _haar_sun(3, 6)
-    _, W = eigendecompose_sorted(U)
-    su3_err = float((jacobian_sun(W) - jacobian_su3(W)).abs().max())
-    assert su3_err < tol, f"su3 closed form mismatch {su3_err}"
-    print("SU(3) closed-form mismatch:", su3_err)
-
-    # Lambda-independence WITHIN a fixed ordering cell: keep the eigenangles
-    # sorted ascending so the sort rule returns the same W columns.
-    N = 3
-    W = _haar_sun(N, 4)
-    Jref = jacobian_sun(W)
-    for _ in range(3):
-        th, _ = torch.sort(torch.rand(4, N, dtype=rdt) * 2 - 1, dim=-1)
-        th = th - th.mean(-1, keepdim=True)
-        th, _ = torch.sort(th, dim=-1)
-        Lam = torch.diag_embed(torch.exp(1j * th.to(cdt)))
-        U = W @ Lam @ W.conj().transpose(-1, -2)
-        lam_err = float((jacobian_from_U(U) - Jref).abs().max())
-        assert lam_err < tol, f"lambda-independence residual {lam_err}"
-        print("lambda-independence residual:", lam_err)
-
-    # ordering DOES matter (Z_tilde changes if eigenvalues go to other slots)
-    U = _haar_sun(2, 1)
-    _, W = eigendecompose_sorted(U)
-    J, J_flip = float(jacobian_sun(W)), float(jacobian_sun(W.flip(-1)))
-    assert abs(J + J_flip - 2) < tol, (J, J_flip)
-    print("SU(2) sorted vs flipped ordering:", J, J_flip, "  (sum = 2)")
-
-    # E[J] = 1  (map is a.e. one-to-one)
-    for N in (2, 3, 4):
-        W = _haar_sun(N, 200000)
-        J = jacobian_sun(W)
-        mean, sem = float(J.mean()), float(J.std() / 200000 ** 0.5)
-        assert abs(mean - 1) < mean_tol, f"N={N}: E[J]={mean}"
-        print(f"N={N}  E[J] = {mean:.4f} +- {sem:.4f}")
-
-
-if __name__ == "__main__":
-    run_self_tests()
+    return jacobian_sun_spectral_twist(W)

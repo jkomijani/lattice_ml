@@ -1,6 +1,25 @@
 # Copyright (c) 2026 Javad Komijani
 
-"""SU(N) group-commutator encode/decode via zero-sum-angle ordering."""
+r"""SU(N) group-commutator encode/decode via zero-sum-angle ordering.
+
+    (X, Y) -> Z = X Y X^dagger Y^dagger
+
+with the reparametrization (X, Y) <-> (D, Q, Z), where Q is Y's eigenframe.
+
+
+Relation to `_spectral_twist`
+-----------------------------
+Two parallel problems reach the same matrix by different routes:
+
+    group commutator (this module):    (X, Y)  ->  Z = X Y X^dagger Y^dagger
+    spectral twist (that module):    U  ->  Z_tilde = U Lambda_U^dagger
+
+where Z_tilde = Q^dagger Z Q, with Q defined below.
+
+They are different maps with different inputs, and the bridge is conjugation
+into Y's eigenframe with Q the eigenframe of Y. The computation of log-Jacobian
+is in the other module.
+"""
 
 # pylint: disable=invalid-name
 
@@ -9,11 +28,18 @@ import torch
 
 from lattice_ml.functions._matrix_func import enforce_zero_sum
 from ._spectral_twist import (
-    log_jacobian_su2, log_jacobian_su3, log_jacobian_sun
+    log_jacobian_sun_spectral_twist,
+    log_jacobian_su2_spectral_twist,
+    log_jacobian_su3_spectral_twist,
+    solve_lambda_su2_spectral_twist_from_diag,
+    solve_lambda_su3_spectral_twist_from_diag,
 )
 
 
-__all__ = ['encode_sun_group_commutator', 'decode_sun_group_commutator']
+__all__ = [
+    'encode_sun_group_commutator',
+    'decode_sun_group_commutator',
+]
 
 
 # =============================================================================
@@ -29,8 +55,8 @@ def encode_sun_group_commutator(
     1. (X, lam, Q) by eigendecomposition of Y as Y = Q diag(lam) Q^dagger.
     2. (X_tilde, lam, Q) by conjugation of X as X_tilde = Q^dagger X Q.
     3. (X_tilde_0, D, lam, Q) by collecting the phase and permutation.
-    4. (U_tilde, D, lam, Q) by eigen composition of lam & X_tilde_0.
-    5. (Z_tilde, D, Q) by collecting the phase twisting of U_tilde.
+    4. (U, D, Q) by eigen composition of lam & X_tilde_0.
+    5. (Z_tilde, D, Q) by the spectral twist of U.
     6. (Z, D, Q) by conjugation of Z_tilde as Z = Q Z_tilde Q^dagger.
 
     Args:
@@ -108,17 +134,20 @@ def decode_sun_group_commutator(D, Q, Z, return_logj=False):
 
 
 # =============================================================================
-def compute_logj_sun_group_commutator_encoder(U):
-    """Dispatch to the N-specific closed-form spectral-twist log-Jacobian."""
-    n = U.shape[-1]
+def compute_logj_sun_group_commutator_encoder(W):
+    """
+    Dispatch to the N-specific closed form spectral-twist log-Jacobian,
+    given X conjugated into Y's eigenframe, `W = X_tilde = Q^dagger X Q`.
+    """
+    n = W.shape[-1]
     if n == 2:
-        compute_logj = log_jacobian_su2
+        compute_logj = log_jacobian_su2_spectral_twist
     elif n == 3:
-        compute_logj = log_jacobian_su3
+        compute_logj = log_jacobian_su3_spectral_twist
     else:
-        compute_logj = log_jacobian_sun
+        compute_logj = log_jacobian_sun_spectral_twist
 
-    return compute_logj(U)
+    return compute_logj(W)
 
 
 # =============================================================================
@@ -140,18 +169,17 @@ def solve_lambda_su2(Z, Q, descending_angle: bool = False):
     Solve `Tr[(I - Q† Z Q) Λ] = 0` for diagonal Λ in SU(2); input
     matrices Z and Q are SU(2).
 
-    Because `Q† Z Q` in SU(2), we have m_2 = conj(m_1), reducing the
-    constraint to `Re(m_1 u_1) = 0`. There are two solutions, the
-    SU(2) center {Y, -Y}. The option `descending_angle` specifies the
-    branch: False (default) puts the first eigenvalue's angle in
-    (-pi, 0).
+    Because `Q† Z Q` in SU(2), we have m_2 = conj(m_1), reducing the constraint
+    to `Re(m_1 u_1) = 0`. There are two solutions, the SU(2) center {Y, -Y}.
+    The option `descending_angle` specifies the branch: False (default) puts
+    the first eigenvalue's angle in (-pi, 0).
     """
     # Near Z = I, conjugating (I - Z) is more precise than (I - Q† Z Q).
     eye = torch.eye(2, dtype=Z.dtype, device=Z.device)
-    m_1 = (Q.adjoint() @ (eye - Z) @ Q)[..., 0, 0]
-    fac = 1j if descending_angle else -1j  # rotation factor
-    u_1 = fac * m_1.conj() / m_1.abs()
-    return torch.stack([u_1, u_1.conj()], dim=-1)
+    diag = torch.diagonal(Q.adjoint() @ (eye - Z) @ Q, dim1=-2, dim2=-1)
+    return solve_lambda_su2_spectral_twist_from_diag(
+        diag, descending_angle=descending_angle
+    )
 
 
 # =============================================================================
@@ -160,7 +188,7 @@ def solve_lambda_su3(Z, Q, descending_angle=False):
     Solve `Tr[(I - Q† Z Q) Λ] = 0` for diagonal Λ in SU(3); input
     matrices Z and Q are SU(3).
 
-    Because `Q† Z Q` in SU(3), the problem reduces to triangle closure
+    Because `Q† Z Q` is in SU(3), the problem reduces to triangle closure
     (sides a, b, c from the diagonal's magnitudes), fixing Λ up to 6 choices:
     3 choices of SU(3)-center rotation (root) times 2 choices of triangle
     chirality (relative sign of a vs b). Searches the 3 center roots times
@@ -172,47 +200,9 @@ def solve_lambda_su3(Z, Q, descending_angle=False):
     # Near Z = I, conjugating (I - Z) is more precise than (I - Q† Z Q).
     eye = torch.eye(3, dtype=Z.dtype, device=Z.device)
     diag = torch.diagonal(Q.adjoint() @ (eye - Z) @ Q, dim1=-2, dim2=-1)
-    a, b, c = diag.abs().unbind(-1)
-
-    # Angle between the first two triangle sides. Clamp against a nearly
-    # degenerate triangle (two of a, b, c nearly equal), which can push
-    # the ratio just outside [-1, 1] by rounding error.
-    cos_delta = (a**2 + b**2 - c**2) / (2 * a * b)
-    delta = torch.pi - torch.arccos(cos_delta.clamp(-1, 1))
-
-    # Both triangle chiralities and three possible SU(3) roots.
-    kwargs = {'dtype': diag.dtype, 'device': diag.device}
-    signs = torch.tensor((1, -1), **kwargs)
-    roots = 2 * torch.pi / 3 * torch.tensor([0, 1, 2], **kwargs)
-
-    v1 = a[..., None] * torch.exp(1j * signs * delta[..., None])
-    v2 = b[..., None].expand_as(v1)
-
-    u = torch.stack([v1, v2, -v1 - v2], dim=-1) / diag[..., None, :]
-    # u shape here: (..., 2[chirality], 3[eigenvalue])
-
-    # Enforce det(u) = 1: three possible SU(3) roots.
-    phase = -torch.angle(u).mean(dim=-1)[..., :, None] + roots
-    # phase shape: (..., 2[chirality], 3[root])
-
-    u = u[..., :, None, :] * torch.exp(1j * phase[..., :, :, None])
-
-    # u shape: (..., 2 chirality, 3 roots, 3 eigenvalues)
-    u = u.flatten(-3, -2)
-
-    angles = enforce_zero_sum(torch.angle(u), dim=-1)
-
-    if descending_angle:
-        sorted_ = (angles[..., :-1] >= angles[..., 1:]).all(dim=-1)
-    else:
-        sorted_ = (angles[..., :-1] <= angles[..., 1:]).all(dim=-1)
-
-    # argmax gives the first valid candidate, or 0 if none are valid.
-    best = sorted_.to(torch.uint8).argmax(dim=-1)
-
-    return u.gather(
-        -2, best[..., None, None].expand(*best.shape, 1, 3)
-    ).squeeze(-2)
+    return solve_lambda_su3_spectral_twist_from_diag(
+        diag, descending_angle=descending_angle
+    )
 
 
 # =============================================================================
