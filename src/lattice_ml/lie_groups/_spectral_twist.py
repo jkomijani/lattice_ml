@@ -12,14 +12,14 @@ In matched left-invariant frames
 the Jacobian is independent of Lambda and equals
 
     |det(d xi / d eta)| = det(I - B) restricted to  { h : sum_m h_m = 0 },
-    B[k, j] = |W[j, k]|^2      (doubly stochastic)
+    B[i, j] = |W[i, j]|^2      (doubly stochastic)
 
             = prod_{k=2}^{N} (1 - mu_k); mu_1 = 1, mu_2..mu_N = rest of spec(B)
             = sum_{k=1}^{N} det[(I - B) with row k and column k deleted]
             = N * det[(I - B) with row 1 and column 1 deleted].
 
 The eigenangles themselves never appear. What does matter is the ORDERING RULE:
-B pairs eigenvector index k with diagonal slot j, so W must be the eigenvector
+B pairs diagonal slot i with eigenvector index j, so W must be the eigenvector
 matrix whose columns are already in the chosen (sorted-by-argument) order.
 A different ordering gives a different Z_tilde and a different J.
 
@@ -65,15 +65,13 @@ __all__ = [
 # B matrix
 # ----------------------------------------------------------------------
 def bistochastic_from_W(W: torch.Tensor) -> torch.Tensor:
-    """B[..., k, j] = |W[..., j, k]|^2.
+    """B[..., i, j] = |W[..., i, j]|^2.
 
     In probability and combinatorics, a doubly stochastic matrix (also called
     bistochastic matrix) is a square matrix with nonnegative entries whose rows
     and columns each sum to 1.
     """
-    # For consistency with docstring, we use W^T; it does not change det(I - B)
-    Q = torch.transpose(W, -1, -2)
-    return (Q.real**2 + Q.imag**2) if Q.is_complex() else Q**2
+    return (W.real**2 + W.imag**2) if W.is_complex() else W**2
 
 
 # ----------------------------------------------------------------------
@@ -199,18 +197,9 @@ def log_jacobian_su2_spectral_twist_from_diag(
     so `d_2 = conj(d_1)` and the value is `|d_1|^2 / Re(d_1)`, whose
     denominator is `det(I - Z_tilde) = 2 - Tr Z_tilde`.
 
-    This returns exactly the same number as
-    `log_jacobian_su2_spectral_twist`, from the other side of the map: that
-    one takes W, U's eigenframe, while this one takes the diagonal of the
-    twisted matrix. Same sign, same value -- the two are interchangeable.
-
-    Use this one when UNTWISTING. Going that way Z_tilde is what is in hand
-    and W is not, so the W form would have to reconstruct it first; this form
-    reads the answer straight off what the untwist direction already has.
-
-    No Lambda is needed: at N = 2 the closure `sum_k d_k lambda_k = 0` has
-    only two terms, so Lambda cancels between numerator and denominator
-    instead of entering through a triangle.
+    This returns exactly the same number as `log_jacobian_su2_spectral_twist`,
+    from the other side of the map: that one takes W, U's eigenframe, while
+    this one takes the diagonal of the twisted matrix. (Same sign, same value.)
     """
     d_1, d_2 = diag.unbind(-1)
     return torch.log((2 * d_1 * d_2 / (d_1 + d_2)).real)
@@ -227,14 +216,9 @@ def log_jacobian_su3_spectral_twist_from_diag(
     `v_k = diag_k lambda_k` -- side lengths `|diag_k|` -- and `A_lambda` the
     area of the triangle with vertices `lambda_1, lambda_2, lambda_3`.
 
-    This returns exactly the same number as
-    `log_jacobian_su3_spectral_twist`, from the other side of the map: that
-    one takes W, U's eigenframe, while this one takes the diagonal of the
-    twisted matrix. Same sign, same value -- the two are interchangeable.
-
-    Use this one when UNTWISTING. Going that way Z_tilde is what is in hand
-    and W is not, so the W form would have to reconstruct it first; and the
-    branch solve this needs is work the untwist direction is doing anyway.
+    This returns exactly the same number as `log_jacobian_su3_spectral_twist`,
+    from the other side of the map: that one takes W, U's eigenframe, while
+    this one takes the diagonal of the twisted matrix. (Same sign, same value.)
 
     The W-form value is `log(2 - Tr B + det B)`. The route between the charts:
     `B` is doubly stochastic, so row `i` of `B` is the unique barycentric
