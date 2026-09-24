@@ -16,6 +16,7 @@ from ._ginibre_dist import GinibreCMatrixDist
 __all__ = [
     "rand_sun_group_like",
     "rand_diagonal_sun_group_like",
+    "DiagonalSUnGroup",
     "SUnGroup",
     "UnGroup",
     "U1Group",
@@ -172,6 +173,55 @@ class SUnGroup(UnGroup):
         """
         logc = log(n) + (n-1) * log(2) + (n**2 + n - 2) * log(pi)
         return 0.5 * logc + sum(-lgamma(1+k) for k in range(1, n))
+
+
+# =============================================================================
+class DiagonalSUnGroup:
+    """Generate random diagonal SU(n) matrices, uniform on the maximal torus.
+
+    Each output matrix lies in the maximal torus of SU(n): the first `n - 1`
+    phases are drawn i.i.d. uniform on the circle, and the last is fixed to
+    minus their sum so that `det = 1`.
+
+    Note that this is *not* the eigenvalue distribution of a Haar-random SU(n)
+    matrix as produced by `rand_sun_group_like`: those eigenvalues repel each
+    other under the Weyl integration formula (density proportional to the
+    squared Vandermonde determinant, as in the circular unitary ensemble),
+    whereas the phases drawn here are independent.
+
+    Parameters
+    ----------
+    n : int
+        Dimension of the SU(n) matrices.
+    shape : tuple (optional)
+        Specifing the shape of tensor of random matrices.
+    """
+
+    def __init__(self, n, shape=None, drop_constant_log_prob=False):
+        if shape is None:
+            shape = ()
+        low = torch.zeros(*shape, n - 1)
+        high = torch.ones(*shape, n - 1) * (2 * pi)
+        self.n = n
+        self.shape = shape
+        self.uniform_dist = torch.distributions.uniform.Uniform(low, high)
+        self.drop_constant_log_prob = drop_constant_log_prob
+        self.log_group_vol = (n - 1) * log(2 * pi)
+        self.log_tot_vol = self.log_group_vol + log(np.prod(shape))
+
+    def sample(self, size=(1,)):  # this is the `sample` of dist (not prior)
+        """Draw random samples."""
+        free = self.uniform_dist.sample(size)
+        last = -free.sum(dim=-1, keepdim=True)
+        angles = torch.cat([free, last], dim=-1)
+        return torch.diag_embed(torch.exp(1j * angles))
+
+    def log_prob(self, x):
+        """Return log_prob of each matrix."""
+        lat_shape = x.shape[:-2]
+        if self.drop_constant_log_prob:
+            return torch.zeros(lat_shape, device=x.device)
+        return torch.zeros(lat_shape, device=x.device) - self.log_group_vol
 
 
 # =============================================================================
