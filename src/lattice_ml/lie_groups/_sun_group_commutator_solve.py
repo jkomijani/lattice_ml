@@ -16,7 +16,7 @@ import torch
 
 from lattice_ml.functions._matrix_func import enforce_zero_sum
 from ._sun_group_commutator_density import (
-    compute_sun_group_commutator_log_density,
+    compute_sun_group_commutator_log_prob,
 )
 
 
@@ -149,7 +149,7 @@ def solve_sun_group_commutator_and_compute_log_density(
        solution family.
 
     2. `log_density`: `log J(Z)`, the log of the *group commutator density*
-       (see `compute_sun_group_commutator_log_density` and its module
+       (see `compute_sun_group_commutator_log_prob` and its module
        docstring). Unlike (1), it does not depend on the particular pair
        this function returns for `X, Y`: it is the density of `Z` obtained
        by drawing `X, Y` independently and uniformly and integrating over
@@ -157,7 +157,7 @@ def solve_sun_group_commutator_and_compute_log_density(
        alone, `J(gZg†) = J(Z)`.
 
     Only `N = 2` and `N = 3` are supported for `log_density`, both exact --
-    see `compute_sun_group_commutator_log_density`.
+    see `compute_sun_group_commutator_log_prob`.
 
     Parameters
     ----------
@@ -176,7 +176,7 @@ def solve_sun_group_commutator_and_compute_log_density(
         Shape `Z.shape[:-2]`.
     """
     X, Y = solve_sun_group_commutator(Z, random_twist=random_twist)
-    log_density = compute_sun_group_commutator_log_density(Z)
+    log_density = compute_sun_group_commutator_log_prob(Z)
     return X, Y, log_density
 
 

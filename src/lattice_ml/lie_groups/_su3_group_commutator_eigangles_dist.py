@@ -32,7 +32,7 @@ import torch
 from lattice_ml.linalg import log_unitary_conjugacy_vol
 
 from ._sun_group_commutator_density import (
-    compute_sun_group_commutator_log_density_from_eigvals,
+    compute_sun_group_commutator_log_prob_from_eigvals,
 )
 
 
@@ -81,7 +81,7 @@ def su3_group_commutator_eigangles_log_joint_dist(
         `log(|Delta|^2) + log_density`, shape `phi_1.shape`.
     """
     if log_density is None:
-        log_density = compute_sun_group_commutator_log_density_from_eigvals
+        log_density = compute_sun_group_commutator_log_prob_from_eigvals
 
     phi = torch.stack([phi_1, phi_2, phi_3], dim=-1)
     eigvals = torch.exp(1j * phi).reshape(-1, 3)

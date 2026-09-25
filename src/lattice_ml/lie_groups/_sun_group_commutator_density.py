@@ -49,13 +49,13 @@ import torch
 
 
 __all__ = [
-    "compute_sun_group_commutator_log_density",
-    "compute_sun_group_commutator_log_density_from_eigvals"
+    "compute_sun_group_commutator_log_prob",
+    "compute_sun_group_commutator_log_prob_from_eigvals"
 ]
 
 
 # =============================================================================
-def compute_sun_group_commutator_log_density(Z: torch.Tensor) -> torch.Tensor:
+def compute_sun_group_commutator_log_prob(Z: torch.Tensor) -> torch.Tensor:
     r"""
     log J(Z), the log of the group commutator density (see module docstring):
 
@@ -69,13 +69,13 @@ def compute_sun_group_commutator_log_density(Z: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: log J(Z), shape `Z.shape[:-2]`.
     """
-    return compute_sun_group_commutator_log_density_from_eigvals(
+    return compute_sun_group_commutator_log_prob_from_eigvals(
         torch.linalg.eigvals(Z)
     )
 
 
 # =============================================================================
-def compute_sun_group_commutator_log_density_from_eigvals(
+def compute_sun_group_commutator_log_prob_from_eigvals(
     eigvals: torch.Tensor
 ) -> torch.Tensor:
     r"""

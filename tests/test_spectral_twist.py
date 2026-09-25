@@ -49,7 +49,7 @@ import torch
 from lattice_ml.lie_groups import (
     encode_sun_group_commutator,
     decode_sun_group_commutator,
-    compute_sun_group_commutator_log_density,
+    compute_sun_group_commutator_log_prob,
 )
 from lattice_ml.lie_groups._spectral_twist import (
     bistochastic_from_W, eigendecompose_sorted, twist_eigenvalues,
@@ -210,7 +210,7 @@ class NormalizationTest(unittest.TestCase):
                     -log_jacobian_su3_spectral_twist_from_diag(diag)
                 )
                 exact = float(
-                    torch.exp(compute_sun_group_commutator_log_density(Z[:1]))
+                    torch.exp(compute_sun_group_commutator_log_prob(Z[:1]))
                 )
                 sem = float(inv.std() / len(inv) ** 0.5)
                 self.assertLess(abs(float(inv.mean()) - exact), 5 * sem)
