@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Javad Komijani
 #
 # Created by Javad Komijani, Jun 2026
-# Modifed to take care of corners, Aug 2026
+# Modified to take care of corners, Aug 2026
+# Corrected for log-probability associated to the corners, Sep 2026
 
 r"""
 Prelink Holonomy
@@ -66,9 +67,8 @@ Conventions
 
 import torch
 
-# from lattice_ml.functions import solve_sun_group_commutator
-from lattice_ml.random import sample_sun_group_commutator
-from lattice_ml.lie_groups import compute_sun_group_commutator_log_density
+from lattice_ml.lie_groups import compute_sun_group_commutator_log_prob
+from lattice_ml.random import sample_sun_group_commutator_xy_given_z
 
 from ..prelink_tools.prelinks import link_to_prelink, prelink_to_link
 
@@ -146,31 +146,35 @@ def holonomy_to_link(
     prefix_dims: int = 1,
     sites_before_link: bool = True,
     constrained: bool = False,
-    return_log_density: bool = False,
+    return_log_prob: bool = False,
+    xy_sampler=None,
 ):
     r"""
     This function composes the maps
 
-        h → V = holonomy_to_prelink(h, constrained, return_log_density)
+        h → V = holonomy_to_prelink(h, constrained, return_log_prob)
         V → U = prelink_to_link(V)
 
-    See func:`holonomy_to_prelink` for the meaning of `constrained` and
-    `return_log_density`.
+    See func:`holonomy_to_prelink` for the meaning of `constrained`,
+    `return_log_prob`, and `xy_sampler`.
 
     Returns
     -------
     torch.Tensor
         Link variables U.
-    torch.Tensor, optional
-        `log J(Z)`, only if `return_log_density=True`.
+    log_prob_corner : torch.Tensor, optional
+        See `holonomy_to_prelink`'s `return_log_prob`.
     """
     kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
-    if return_log_density:
-        V, log_density = holonomy_to_prelink(
-            h, constrained=constrained, return_log_density=True, **kws
+    if return_log_prob:
+        V, log_prob_corner = holonomy_to_prelink(
+            h, constrained=constrained, return_log_prob=True,
+            xy_sampler=xy_sampler, **kws
         )
-        return prelink_to_link(V, **kws), log_density
-    V = holonomy_to_prelink(h, constrained=constrained, **kws)
+        return prelink_to_link(V, **kws), log_prob_corner
+    V = holonomy_to_prelink(
+        h, constrained=constrained, xy_sampler=xy_sampler, **kws
+    )
     return prelink_to_link(V, **kws)
 
 
@@ -180,7 +184,8 @@ def holonomy_to_prelink(
     prefix_dims: int = 1,
     sites_before_link: bool = True,
     constrained: bool = False,
-    return_log_density: bool = False,
+    return_log_prob: bool = False,
+    xy_sampler=None,
 ):
     r"""
     Reconstruct prelinks from the prelink holonomy h_{mu, 0}(x).
@@ -201,32 +206,35 @@ def holonomy_to_prelink(
         no assumptions on the corner holonomies; P and Q are solved directly.
         If True, use :func:`holonomy_to_prelink_with_constraints`: assumes
         constraints A and B hold.
-    return_log_density : bool, default=False
-        If True, also return `log J(Z)`, the log-density of the corner
-        commutator target `Z` under Haar-random, *independent* corner-fixing
-        solutions `(X, Y)` (see `compute_sun_group_commutator_log_density`).
+    return_log_prob : bool, default=False
+        If True and `constrained=False`, also return `log_prob_corner`
+        (see `fix_corner_semiglobal_freedom`).
+    xy_sampler : callable, optional
+        `(Z) -> ((X, Y), log_importance_weight)`, used to fix the corner
+        semi-global freedom (see `fix_corner_semiglobal_freedom`).
 
-        `constrained=True` never solves the corner commutator at all, so
-        `log J(Z)` is undefined for it; combining it with
-        `return_log_density=True` raises `AssertionError`.
+    Note:
+        Both `return_log_prob` and `xy_sampler` options are ignored when
+        `constrained=True`, which never solves a commutator.
 
     Returns
     -------
     torch.Tensor
         Prelinks V in temporal gauge, same shape as h but ndim entries on
         the direction axis (mu = 0, ..., ndim-1).
-    torch.Tensor, optional
-        `log J(Z)`, only if `return_log_density=True`. Shape is `h`'s shape
-        with the time, spatial (mu=1 direction), and link axes removed.
+    log_prob_corner : torch.Tensor, optional
+        `log J(Z) + log_importance_weight`, only if `return_log_prob=True`
+        (see `fix_corner_semiglobal_freedom`). Shape is `h`'s shape with the
+        time, spatial (mu=1 direction), and link axes removed.
     """
-    assert not (constrained and return_log_density), (
-        "log J(Z) is undefined when constrained=True."
+    assert not (constrained and return_log_prob), (
+        "log_prob is undefined when constrained=True (no commutator is solved)."
     )
     kws = {'prefix_dims': prefix_dims, 'sites_before_link': sites_before_link}
     if constrained:
         return holonomy_to_prelink_with_constraints(h, **kws)
     return holonomy_to_prelink_no_constraints(
-        h, return_log_density=return_log_density, **kws
+        h, return_log_prob=return_log_prob, xy_sampler=xy_sampler, **kws
     )
 
 
@@ -301,7 +309,8 @@ def holonomy_to_prelink_no_constraints(
     h: torch.Tensor,
     prefix_dims: int = 1,
     sites_before_link: bool = True,
-    return_log_density: bool = False,
+    return_log_prob: bool = False,
+    xy_sampler=None,
 ):
     r"""
     Reconstruct prelinks from h_{mu, 0}(x), relaxing constraint A only.
@@ -342,25 +351,28 @@ def holonomy_to_prelink_no_constraints(
         Number of leading batch/channel dimensions.
     sites_before_link : bool, default=True
         If True, spatial axes precede the link-direction axis.
-    return_log_density : bool, default=False
-        If True, also return `log J(Z)`, `Z` the corner commutator target.
+    return_log_prob : bool, default=False
+        See `holonomy_to_prelink` and `fix_corner_semiglobal_freedom`.
+    xy_sampler : callable, optional
+        See `holonomy_to_prelink` and `fix_corner_semiglobal_freedom`.
 
     Returns
     -------
     torch.Tensor
         Prelinks V in temporal gauge with corner fix applied, same shape as h
         but ndim entries on the direction axis.
-    torch.Tensor, optional
-        `log J(Z)`, for corner target Z; only if `return_log_density=True`.
+    log_prob_corner : torch.Tensor, optional
+        `log J(Z) + log_importance_weight`, only if `return_log_prob=True`
+        (see `fix_corner_semiglobal_freedom`).
     """
     link_axis = -3 if sites_before_link else prefix_dims
     time_axis = prefix_dims if sites_before_link else prefix_dims + 1
     spatial_axis = prefix_dims + 1 if sites_before_link else prefix_dims + 2
 
     # Part 1: corner semi-global freedoms.
-    P, Q, Z = fix_corner_semiglobal_freedom(
+    (P, Q, Z), log_prob_corner = fix_corner_semiglobal_freedom(
         h, prefix_dims=prefix_dims, sites_before_link=sites_before_link,
-        keepdim=True,
+        keepdim=True, xy_sampler=xy_sampler,
     )
 
     # Part 2: Build V_0.
@@ -386,9 +398,9 @@ def holonomy_to_prelink_no_constraints(
     V_mu = h @ V_0
 
     V = torch.cat([V_0, V_mu], dim=link_axis)
-    if not return_log_density:
+    if not return_log_prob:
         return V
-    return V, compute_sun_group_commutator_log_density(Z)
+    return V, log_prob_corner
 
 
 # =============================================================================
@@ -397,6 +409,7 @@ def fix_corner_semiglobal_freedom(
     prefix_dims: int = 1,
     sites_before_link: bool = True,
     keepdim: bool = False,
+    xy_sampler=None,
 ) -> tuple:
     r"""Return the semi-global gauge freedoms at the top and right borders.
 
@@ -410,8 +423,7 @@ def fix_corner_semiglobal_freedom(
     When ``C != I``, the standard formula ``V_0(N_0, x) = h(N_0, x)† h(0, x)``
     produces inconsistent prelinks at the spatial boundary.
 
-    This function factors ``Z = X Y X† Y†`` (group commutator) via
-    :func:`sample_sun_group_commutator` and recovers
+    This function factors ``Z = X Y X† Y†`` (group commutator) and recovers
 
         P = C_01† Y C_00   (semi-global freedom for the right column, x = N_1)
         Q = C_10 C_00† X   (semi-global freedom for the bottom row, t = N_0)
@@ -434,6 +446,8 @@ def fix_corner_semiglobal_freedom(
         If ``True``, P and Q retain the same number of dimensions as ``h``,
         with size-1 in the collapsed time, spatial, and link axes.
         If ``False`` (default), those axes are dropped.
+    xy_sampler : callable, optional
+        For `(Z) -> ((X, Y), log_importance_weight)` with `Z = X Y X† Y†`.
 
     Returns
     -------
@@ -447,6 +461,9 @@ def fix_corner_semiglobal_freedom(
     Z : torch.Tensor
         The corner commutator target, `Z = C_00 C_10† C_11 C_01†`, shape
         `(...batch..., Nc, Nc)` regardless of `keepdim`.
+    log_prob : torch.Tensor
+        This corner's log-probability `log J(Z)`, corrected for `xy_sampler`'s
+        imperfection by adding `log_importance_weight` of (X, Y) sampling.
     """
     link_axis = -3 if sites_before_link else prefix_dims
     time_axis = prefix_dims         # axis for t
@@ -469,9 +486,9 @@ def fix_corner_semiglobal_freedom(
     C_11 = h_tN.select(spatial_axis - 1, -1)  # t=N_0, x=N_1
 
     # Compute Z = C_00 C_10† C_11 C_01† and solve Z = X Y X† Y†.
-    # sample_sun_group_commutator(Z) returns (X, Y) with Z = [X, Y]
+    xy_sampler = xy_sampler or sample_sun_group_commutator_xy_given_z
     Z = C_00 @ C_10.adjoint() @ C_11 @ C_01.adjoint()
-    X, Y = sample_sun_group_commutator(Z)
+    (X, Y), log_importance_weight = xy_sampler(Z)
 
     # Recover the border semi-global freedoms from the commutator solution.
     P = C_01.adjoint() @ Y @ C_00  # right column (x = N_1), acts on V_0
@@ -484,7 +501,8 @@ def fix_corner_semiglobal_freedom(
         P = P.unsqueeze(time_axis).unsqueeze(spatial_axis).unsqueeze(link_axis)
         Q = Q.unsqueeze(time_axis).unsqueeze(spatial_axis).unsqueeze(link_axis)
 
-    return P, Q, Z
+    log_prob = compute_sun_group_commutator_log_prob(Z) + log_importance_weight
+    return (P, Q, Z), log_prob
 
 
 # =============================================================================
