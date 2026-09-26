@@ -14,16 +14,17 @@ where `[X, Y] = X Y X† Y†`, in closed form.
 
 import torch
 
+from ._sample_su2_group_commutator import sample_su2_group_commutator_xy_given_z
 from ._unitary_group import rand_sun_group_like, rand_diagonal_sun_group_like
 
 
-__all__ = ["sample_sun_group_commutator"]
+__all__ = ["sample_sun_group_commutator_xy_given_z"]
 
 
 # =============================================================================
-def sample_sun_group_commutator(Z: torch.Tensor, n_mix: int = 10):
+def sample_sun_group_commutator_xy_given_z(Z: torch.Tensor, n_mix: int = 10):
     """
-    Sample `Z = X Y X† Y†` for X, Y in SU(N), given Z in SU(N).
+    Sample X, Y in SU(N) given Z, `Z = X Y X† Y†`.
 
     The weight of picking up a fully random Q is not taken into account and
     is not returened. Setting `n_max` to a big number, such as 10, reduces
@@ -37,21 +38,24 @@ def sample_sun_group_commutator(Z: torch.Tensor, n_mix: int = 10):
     Returns
     -------
     X, Y : torch.Tensor
-        One random pair of special unitary matrices satisfying `Z = X Y X† Y†`.
+        One random pair of special unitary matrices satisfying `Z = X Y X† Y†`,
+        drawn from the conditional law given Z.
+    log_importance_weight : torch.Tensor | float | None
+        The importance weight `log p(X,Y|Z) − log q(X,Y|Z)`, where p is the
+        exact PDF and q is proposal PDF. (`None` if it not available).
     """
-    # Part 1: Draw sample for Q and D
-    Q = rand_sun_group_like(Z)
-    D = rand_diagonal_sun_group_like(Z)
-
-    # Part 2: Construct Y
     N = Z.shape[-1]
     assert N in (2, 3), "only 2 and 3 are supported"
 
     if N == 2:
-        Lambda = solve_lambda_su2(Z, Q)
-    else:
-        Lambda = solve_lambda_su3(Z, Q)
+        return sample_su2_group_commutator_xy_given_z(Z)
 
+    # Part 1: Draw sample for Q and D
+    Q = rand_sun_group_like(Z)
+    D = rand_diagonal_sun_group_like(Z)
+
+    # Part 2: Construct Y (N == 3 here; N == 2 returned above)
+    Lambda = solve_lambda_su3(Z, Q)
     Lambda, Q = sort_eig(Lambda, Q, sort_by='angle')
     Y = Q @ torch.diag_embed(Lambda) @ Q.adjoint()
 
@@ -67,24 +71,7 @@ def sample_sun_group_commutator(Z: torch.Tensor, n_mix: int = 10):
     # This is the weight if n_mix is 0
     # weight for Y: |1 - Tr(Q.adjoint() @ Z @ Q)|
 
-    return X, Y
-
-
-# =============================================================================
-def solve_lambda_su2(Z, Q, descending_angle: bool = False):
-    """
-    Solve `Tr (I - Q† Z Q) Λ = 0`, where `Λ` is diagonal and all matrices are
-    SU(2).
-
-    Because `Q† Z Q` is in SU(2), m_2 = conj(m_1) and the constraint
-    `sum_k m_k u_k = 0` is the equation `Re(m_1 u_1) = 0`.
-
-    The angle of the first item if between 0 to pi if `descending_angle=True`.
-    """
-    m_1 = 1 - (Q.adjoint() @ Z @ Q)[..., 0, 0]
-    fac = 1j if descending_angle else -1j  # rotation factor
-    u_1 = fac * m_1.conj() / m_1.abs()
-    return torch.stack([u_1, u_1.conj()], dim=-1)
+    return (X, Y), None
 
 
 # =============================================================================
@@ -168,7 +155,7 @@ def verify_sampler(n=3, n_samples=1024):
     from normflow.prior import UniformSUnPrior
 
     Z = UniformSUnPrior(n).sample(n_samples)
-    X, Y = sample_sun_group_commutator(Z)
+    (X, Y), _ = sample_sun_group_commutator_xy_given_z(Z)
     Z_hat = X @ Y @ X.adjoint() @ Y.adjoint()
 
     err = torch.linalg.matrix_norm(Z_hat - Z)
