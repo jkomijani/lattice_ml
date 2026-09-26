@@ -45,9 +45,10 @@ def sample_su2_group_commutator_xy_given_z(Z: torch.Tensor):
     -------
     X, Y : torch.Tensor
         One random pair of special unitary matrices satisfying `Z = X Y X† Y†`,
-        drawn from the conditional law given Z.
-    log_prob : torch.Tensor | None
-        Conditional log-probability `log p(X, Y | Z)` for the random pair.
+        drawn from the conditional commutator-induced law given Z.
+    log_importance_weight : torch.Tensor | float
+        The importance weight `log p(X,Y|Z) − log q(X,Y|Z)`, where p is the
+        exact PDF and q is proposal PDF. Here, 0 because the sampler is exact.
     """
     eig_options = {
         'sort_by': 'zero-sum-angle',
@@ -67,14 +68,13 @@ def sample_su2_group_commutator_xy_given_z(Z: torch.Tensor):
     # channels of Q stay flat, contributing nothing to the density ratio).
     P = Omega_z.adjoint() @ Q
     a, b, c = su2_to_euler_angles(P, coords='uniform')
-    b, log_db_ds = sample_for_euler_angle(b.unsqueeze(-1), theta.unsqueeze(-1))
-    logq = -log_db_ds
+    b, _ = sample_for_euler_angle(b.unsqueeze(-1), theta.unsqueeze(-1))
     P = euler_angles_to_su2((a, b.squeeze(-1), c), coords='uniform')
     Q = Omega_z @ P
 
-    (X, Y), logj_dcode = decode_sun_group_commutator(D, Q, Z, return_logj=True)
-    log_prob_xy_given_z = -log_db_ds - logj_dcode
-    return (X, Y), log_prob_xy_given_z
+    X, Y = decode_sun_group_commutator(D, Q, Z)
+    log_importance_weight = 0
+    return (X, Y), log_importance_weight
 
 
 # =============================================================================
