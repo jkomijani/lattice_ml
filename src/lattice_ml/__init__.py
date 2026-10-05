@@ -9,3 +9,7 @@ from . import integrate
 from . import linalg
 from . import random
 from . import stats
+
+
+from importlib.metadata import version as _version
+__version__ = _version("lattice_ml")
