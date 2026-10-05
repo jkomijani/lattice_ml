@@ -236,8 +236,8 @@ def _integrate_with_eval(
 
     Requirements:
       * `time_grid` has at least two points and is uniformly spaced.
-      * `t_eval` is monotonic and lies entirely within `time_grid`; onsecutive
-        values in `t_eval` differ by at least `step_size` in magnitude.
+      * `t_eval` is monotonic (matching the direction of `time_grid`) and
+        lies entirely within `time_grid`.
 
     See `odeint` for parameter details.
     """
@@ -262,28 +262,31 @@ def _integrate_with_eval(
         out_eval.append(y if fn_eval is None else fn_eval(y))
         ind_eval += 1
 
+    t = time_grid[0]
+
     # Main integration loop
-    for t in time_grid[:-1]:
+    for t_next in time_grid[1:]:
         # Stop once all evaluation times have been processed
         if ind_eval >= n_eval:
             break
 
-        # Distance from current grid time to next evaluation time
-        delta_t = t_eval[ind_eval] - t
+        y_next = ode_step(func, t, y, step_size, *args)
 
-        # If t_eval lies within this step, take a partial step and record
-        if delta_t / step_size <= 1 + tol:
-            y = ode_step(func, t, y, delta_t, *args)
-            out_eval.append(y if fn_eval is None else fn_eval(y))
+        # Any t_eval points strictly inside (t, t_next)?
+        while (ind_eval < n_eval and
+               is_strictly_between(t_eval[ind_eval], t, t_next, tol)
+               ):
+            aux_dt = t_eval[ind_eval] - t
+            y_aux = ode_step(func, t, y, aux_dt, *args)
+            out_eval.append(y_aux if fn_eval is None else fn_eval(y_aux))
             ind_eval += 1
 
-            # Advance remaining portion of the step if any
-            remaining_step = step_size - delta_t
-            if abs(remaining_step) > tol:
-                y = ode_step(func, t + delta_t, y, remaining_step, *args)
-        else:
-            # Otherwise, take a regular full step
-            y = ode_step(func, t, y, step_size, *args)
+        # Does a t_eval point coincide with the node we just reached?
+        if ind_eval < n_eval and abs(t_next - t_eval[ind_eval]) <= tol:
+            out_eval.append(y_next if fn_eval is None else fn_eval(y_next))
+            ind_eval += 1
+
+        t, y = t_next, y_next
 
     return tuple(out_eval)
 
@@ -372,37 +375,31 @@ def rk4_step(func, t, y, dt, *args):
 # =============================================================================
 def compute_tolerance(time_grid: Union[torch.Tensor, np.ndarray]):
     """
-    Compute a scalar tolerance for floating-point comparisons
-    based on the magnitude and precision of a time grid.
-
-    Returns 10 * eps * max(1, max(|time_grid|)), where eps is
-    the machine epsilon of the grid's dtype.
+    Absolute tolerance for floating-point comparisons among time values:
+    eps, where eps is the machine epsilon of `time_grid`'s dtype.
     """
-
     if isinstance(time_grid, torch.Tensor):
-        scale = float(torch.abs(time_grid).max())
         eps = torch.finfo(time_grid.dtype).eps
     else:
-        scale = float(np.abs(time_grid).max())
         eps = np.finfo(time_grid.dtype).eps
+    return eps
 
-    return 10.0 * eps
+
+def is_strictly_between(t_query, t_a, t_b, tol) -> bool:
+    """
+    True if `t_query` lies strictly inside the open interval bounded by
+    `t_a` and `t_b` (direction-agnostic), outside a `tol`-wide margin around
+    both endpoints.
+    """
+    lo, hi = (t_a, t_b) if t_a <= t_b else (t_b, t_a)
+    return lo + tol < t_query < hi - tol
 
 
 def check_t_eval(time_grid, t_eval, tol):
-    """
-    Ensure t_eval lies within time_grid and increments are at least step_size.
-    Works for increasing or decreasing monotonic grids.
-    """
+    """Ensure t_eval lies within time_grid."""
     t_min = float(time_grid.min())
     t_max = float(time_grid.max())
-    step_size = float(time_grid[1] - time_grid[0])
 
     for i in range(len(t_eval)):
-        if not (t_min <= t_eval[i] <= t_max):
+        if not (t_min - tol <= t_eval[i] <= t_max + tol):
             raise ValueError("t_eval must lie within the time_grid.")
-        if i == 0:
-            continue
-        dt_ratio = (t_eval[i] - t_eval[i - 1]) / step_size
-        if dt_ratio < 1 - tol:
-            raise ValueError("Increment in t_eval is smaller than step size!")

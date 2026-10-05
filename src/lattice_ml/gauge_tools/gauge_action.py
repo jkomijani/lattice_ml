@@ -4,6 +4,7 @@
 Wilson gauge action and force calculations for lattice gauge theory.
 """
 
+import math
 import torch
 
 from .wilson_loops import compute_planar_wilson_1x1_loop
@@ -23,12 +24,12 @@ class WilsonGaugeAction:
     The action is defined as:
 
     .. math::
-        S = - \frac{\beta} {2 N_c} \sum_{\nu \neq \mu} Tr \text{Plaq}_{mu, nu}
-          = - \frac{\beta} {N_c} \sum_{\nu < \mu} ReTr \text{Plaq}_{mu, nu} .
+        S = \frac{\beta} {2 N_c} \sum_{\nu \neq \mu} Tr (I - P_{mu, nu})
+          = \frac{\beta} {N_c} \sum_{\nu < \mu} ReTr (I - P_{mu, nu}) .
 
     Here:
         - :math:`\beta` is the inverse coupling.
-        - :math:`\text{Plaq}_{\mu\nu}` is the plaquette in the (mu, nu) plane.
+        - :math:`P_{\mu\nu}` is the plaquette in the (mu, nu) plane.
 
     Two axis layouts are supported:
 
@@ -76,6 +77,7 @@ class WilsonGaugeAction:
         spatial_ndim = x.ndim - 4  # exclude batch, direction, matrix
         sum_dims = tuple(range(1, 1 + spatial_ndim))  # sum over spatial dims
 
+        num_plaq = math.prod(x.shape[1:-2]) * (spatial_ndim - 1) / 2
         plaq_sum = torch.zeros(len(x), device=x.device, dtype=x.real.dtype)
 
         for mu in range(1, spatial_ndim):
@@ -86,7 +88,7 @@ class WilsonGaugeAction:
                 plaq_sum += torch.sum(plaq, dim=sum_dims)
 
         # Note: 1 / n_c factor is already included in compute_normalized_trace
-        return -self.beta * plaq_sum
+        return self.beta * (num_plaq - plaq_sum)
 
     def force(self, x: torch.Tensor) -> torch.Tensor:
         """

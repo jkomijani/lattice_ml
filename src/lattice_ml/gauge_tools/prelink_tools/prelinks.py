@@ -92,6 +92,8 @@ Conventions
 from typing import List
 import torch
 
+from lattice_ml.functions import matrix_cumprod, matrix_prod
+
 
 __all__ = [
     "link_to_prelink",
@@ -137,12 +139,23 @@ def link_to_prelink(
         Number of leading batch/channel dimensions in the tensor.
     sites_before_link : bool, default=True
         If True, the spatial lattice axes precede the link direction axis.
-    transverse_boundary_mode : {'zero', 'periodic'}, default='zero'
-        Boundary condition applied to the transverse directions when extending
-        the lattice: 'zero' zero-pads the transverse directions and 'periodic'
-        extends the transverse directions periodically.
-        Use 'zero' for the prelink parametrization
-        and 'periodic' for the holonomy parametrization.
+    transverse_boundary_mode : {'zero', 'periodic', 't-periodic'},
+        (default='zero')
+        Boundary condition for sites in the extended strip that have no true
+        degree of freedom (transverse directions beyond the physical lattice).
+        Use 'zero' (default) for the prelink parametrization: zero matrices
+        are not group elements, so any force or gradient through those sites
+        vanishes automatically — no explicit masking needed, the dynamics
+        simply ignores them.
+        Use 'periodic' only for the 2D holonomy parametrization, where the
+        single extended transverse strip has a valid periodic interpretation.
+        Use 't-periodic' for the holonomy parametrization in 3D+: like
+        'periodic', V_0 is padded periodically in all transverse directions;
+        but V_mu (mu > 0) is padded periodically only in the t direction and
+        zero-padded in all other transverse directions. This correctly
+        suppresses dynamics at sites that carry no true degree of freedom in
+        the holonomy formulation. In 2D there is only one transverse direction
+        per V_mu, so 't-periodic' and 'periodic' are equivalent.
 
     Returns
     -------
@@ -244,9 +257,8 @@ def link_to_prelink(
             V0 = torch.narrow(V0, extended_dim, 0, V0.shape[extended_dim] - 1)
 
     # Stack prelinks along the link direction to form full V tensor
-    pad_value = 0 if transverse_boundary_mode == 'zero' else 'periodic'
     V = torch.stack(
-        pad_to_max_shape(prelinks_stack, pad_value=pad_value),
+        pad_to_max_shape(prelinks_stack, pad_value=transverse_boundary_mode),
         dim=link_axis
     )
     return V
@@ -461,7 +473,7 @@ def integrate_prelink_along_axis(
         Shape must match U with the `dim_mu` axis removed.
 
     dim_mu : int
-        Axis along which to integrate (inclduing batch axes).
+        Axis along which to integrate (including batch axes).
 
     n_steps : int or None, default=None
         Number of integration steps. Defaults to U.shape[dim_mu].
@@ -472,36 +484,12 @@ def integrate_prelink_along_axis(
         Prelink tensor V of shape as U, except the size along `dim_mu`
         is always n_steps + 1.
     """
+    if n_steps is not None:
+        U = torch.narrow(U, dim_mu, 0, n_steps)
 
-    # Length along integration axis
-    N = U.shape[dim_mu]
-    if n_steps is None:
-        n_steps = N
+    V_init = V_init.unsqueeze(dim_mu)
 
-    # Construct V shape
-    V_shape = list(U.shape)
-    V_shape[dim_mu] = n_steps + 1
-
-    V = torch.zeros(V_shape, dtype=U.dtype, device=U.device)
-
-    # Set initial value V[..., 0, :, :] = V_init
-    idx0 = [slice(None)] * V.ndim
-    idx0[dim_mu] = 0
-    V[tuple(idx0)] = V_init
-
-    # Forward group integration
-    for i in range(n_steps):
-        # Prepare index slices for current, next prelink, & corresponding link
-        idx_current = [slice(None)] * V.ndim
-        idx_next = [slice(None)] * V.ndim
-
-        idx_current[dim_mu] = i
-        idx_next[dim_mu] = i + 1
-
-        # Compute V[..., i+1, :, :] = V[..., i, :, :] @ U[..., i, :, :]
-        V[tuple(idx_next)] = V[tuple(idx_current)] @ U[tuple(idx_current)]
-
-    return V
+    return V_init @ matrix_cumprod(U, dim=dim_mu, prepend_identity=True)
 
 
 # =============================================================================
@@ -515,8 +503,7 @@ def calc_origin_polyakov(
     Parameters
     ----------
     U_mu0 : torch.Tensor
-        Links in mu=0 direction.
-        Shape: [batch..., n0, n1, ..., nd, Nc, Nc]
+        Links in mu=0 direction. Shape: [batch..., n0, n1, ..., nd, Nc, Nc].
 
     prefix_dims : int
         Number of leading batch/channel dimensions in the tensor.
@@ -526,23 +513,16 @@ def calc_origin_polyakov(
     torch.Tensor
         One matrix per batch element; Shape: [batch..., Nc, Nc].
     """
-
-    # Extract the μ=0 line through the origin
+    # Extract the mu=0 line through the origin
     line = select_spatial_cut(
         U_mu0,
         prefix_dims=prefix_dims,
-        varying_axes=[0],  # only μ=0 free
+        varying_axes=[0],  # only mu=0 free
     )
     # shape: [batch..., n0, Nc, Nc]
 
-    mu_axis = prefix_dims  # Spatial mu=0 axis
-
     # Ordered product along mu=0
-    result = line.select(mu_axis, 0)
-    for i in range(1, line.shape[mu_axis]):
-        result = result @ line.select(mu_axis, i)
-
-    return result
+    return matrix_prod(line, dim=prefix_dims)
 
 
 # =============================================================================
@@ -593,59 +573,83 @@ def pad_to_max_shape(tensor_list, pad_value=0):
     transverse directions. This function pads them to a common shape, and the
     resulting stacked tensor is referred to as V.
 
-    The choice of padding mode matters depending on how V is subsequently used:
+    Sites in the extended strip along a transverse direction nu != mu carry no
+    true degree of freedom for V_mu: they are artefacts of stacking components
+    of different shapes into a single tensor.  The choice of fill value for
+    those sites matters depending on how V is subsequently used:
 
     - For prelink-to-link computations (forward differences along axis mu),
-      the transverse padded boundary sites of V_mu are never accessed, so any
-      padding value (including zero) is harmless.
+      the transverse extended sites of V_mu are never accessed, so any fill
+      value (including zero) is harmless.
 
-    - For the prelink holonomy q_{0,mu}(x) = V_0(x) V_mu(x)^\dagger, both
-      components of V are evaluated at the *same* site x. At sites that fall
-      in the padded region of either V_0 or V_mu, a zero pad would yield a
-      zero matrix instead of a valid group element. Periodic padding is correct
-      here because the physical gauge links are periodic, and the padded
-      boundary value of V_mu along a transverse direction nu should reflect
-      the periodicity of the underlying link configuration.
+    - For the prelink parametrization (the intended use), zero is the correct
+      choice: a zero matrix is not a group element, so any force or gradient
+      flowing through those sites vanishes automatically.  No explicit mask is
+      needed — the dynamics simply ignores them.
+
+    - 'periodic' padding is valid for the 2D holonomy parametrization, where
+      the single transverse extended strip has a physically meaningful periodic
+      interpretation.  In 3D+, fully periodic padding at mixed-corner sites
+      produces artefacts with no valid physical interpretation.
+
+    - 't-periodic' padding is for the holonomy parametrization in 3D+: like
+      'periodic', tensor at index 0 (V_0) is padded periodically in all
+      directions; tensors at index mu > 0 (V_mu) are padded periodically only
+      along dimension 0 (t) and zero-padded in all other transverse directions.
+      The index in the list is assumed to correspond to the mu direction.
 
     Parameters
     ----------
     tensor_list : list[torch.Tensor]
         List of tensors to pad.
 
-    pad_value : scalar or "periodic", default=0
+    pad_value : scalar, "zero", "periodic", or "t-periodic", default=0
+        If "zero" or 0 (or any scalar), pads with that constant value.
         If "periodic", padding wraps values from the beginning of each axis
         (circular padding via `torch.nn.functional.pad` with mode="circular").
-        If a scalar, that constant value is used instead.
+        If "t-periodic", dimension 0 is padded periodically (or all dims for
+        index-0 tensor); other transverse dimensions are zero-padded.
 
     Returns
     -------
     list[torch.Tensor]
         List of tensors all padded to the same shape.
     """
+    pad_value = 0 if pad_value == 'zero' else pad_value
     # Determine max shape along each axis
     max_shape = list(tensor_list[0].shape)
     for t in tensor_list[1:]:
         max_shape = [max(ms, s) for ms, s in zip(max_shape, t.shape)]
 
     padded_list = []
-    for t in tensor_list:
+    for mu, t in enumerate(tensor_list):
         # Compute how many elements to add at the end of each dimension
         pad_sizes = [ms - s for s, ms in zip(t.shape, max_shape)]
-
-        # Prepare padding in PyTorch format (last dimension first)
-        pad_flat = []
-        for p in reversed(pad_sizes):
-            pad_flat.extend([0, p])
 
         if pad_value == "periodic":
             for dim, p in enumerate(pad_sizes):
                 if p > 0:
                     t = _circular_pad_along_dim(t, dim, p)
-            padded_list.append(t)
+        elif pad_value == "t-periodic":
+            for dim, p in enumerate(pad_sizes):
+                if p == 0:
+                    continue
+                if dim == 0 or mu == 0:
+                    t = _circular_pad_along_dim(t, dim, p)
+                else:
+                    zeros_shape = list(t.shape)
+                    zeros_shape[dim] = p
+                    zeros = torch.zeros(
+                        zeros_shape, dtype=t.dtype, device=t.device
+                    )
+                    t = torch.cat([t, zeros], dim=dim)
         else:
-            padded_list.append(
-                torch.nn.functional.pad(t, pad_flat, value=pad_value)
-            )
+            # Prepare padding in PyTorch format (last dimension first)
+            pad_flat = []
+            for p in reversed(pad_sizes):
+                pad_flat.extend([0, p])
+            t = torch.nn.functional.pad(t, pad_flat, value=pad_value)
+        padded_list.append(t)
     return padded_list
 
 

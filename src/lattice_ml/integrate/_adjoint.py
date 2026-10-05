@@ -1,4 +1,4 @@
-# Copyright (c) 2024-2025 Javad Komijani
+# Copyright (c) 2024-2026 Javad Komijani
 
 """
 Defines the AdjODEFlow_ module for adjoint-based ODE integration with
@@ -9,6 +9,8 @@ from abc import abstractmethod, ABC
 
 import functools
 import torch
+
+from lattice_ml.utils._tuple_var import TupleVar  # Helper for tuple of vars.
 
 from ._odeint import odeint
 from ._hutchinson_estimator import hutchinson_estimator
@@ -422,122 +424,3 @@ def tie_adjoints(x_bar, x_dot):
     """
     dim = list(range(1, x_dot.ndim))
     return torch.sum((x_bar.conj() * x_dot).real, dim=dim)
-
-
-# =============================================================================
-class TupleVar:
-    """
-    A lightweight container for elementwise algebraic operations on a tuple of
-    variables.
-
-    This class wraps a tuple of objects (typically tensors or scalars) and
-    supports basic arithmetic operations such as addition, subtraction,
-    scalar multiplication, and division. Operations are applied elementwise
-    across the contained variables, making it useful for manipulating multiple
-    related state variables in ODE or optimization contexts.
-    """
-
-    def __init__(self, *args):
-        """
-        Initializes a TupleVar from a sequence of variables.
-
-        Args:
-            *args: A sequence of variables (e.g., tensors, scalars) to store.
-        """
-        self.tuple = args
-
-    def __str__(self):
-        """
-        Returns a string representation of the TupleVar.
-        """
-        return f"TupleVar:\n{self.tuple}"
-
-    def __repr__(self):
-        """
-        Returns a developer-friendly string representation.
-        """
-        return self.__str__()
-
-    def __pos__(self):
-        """
-        Unary plus: returns self.
-        """
-        return self
-
-    def __neg__(self):
-        """
-        Unary negation: returns a new TupleVar with negated elements.
-        """
-        return TupleVar(*[-var for var in self.tuple])
-
-    def __add__(self, other):
-        """
-        Elementwise addition with another TupleVar.
-        If 'other' is longer, extra elements are ignored.
-        """
-        x = [var1 + var2 for var1, var2 in zip(self.tuple, other.tuple)]
-        return TupleVar(*x)
-
-    def __sub__(self, other):
-        """
-        Elementwise subtraction with another TupleVar.
-        If 'other' is longer, extra elements are ignored.
-        """
-        x = [var1 - var2 for var1, var2 in zip(self.tuple, other.tuple)]
-        return TupleVar(*x)
-
-    def __mul__(self, other):
-        """
-        Scalar multiplication (elementwise).
-        """
-        return TupleVar(*[var * other for var in self.tuple])
-
-    def __truediv__(self, other):
-        """
-        Scalar division (elementwise).
-        """
-        return TupleVar(*[var / other for var in self.tuple])
-
-    def __rmul__(self, other):
-        """
-        Right-hand scalar multiplication (elementwise).
-        """
-        return self.__mul__(other)
-
-    @property
-    def shape(self):
-        """
-        Returns a tuple of shapes of the contained variables.
-
-        This property scans through each element in the tuple and retrieves
-        the shape of each tensor. For non-tensor elements (including None),
-        it returns None as a default shape. The returned tuple contains the
-        shapes of all elements in the tuple, where each shape is either a
-        tensor's shape or None for non-tensors.
-
-        Returns:
-            tuple: A tuple containing the shapes of the contained variables.
-                   If an element is not a tensor, None is used as a placeholder
-                   for its shape.
-
-        Example:
-            If `self.tuple = (None, torch.randn(2, 3), torch.ones(4, 5))`,
-            the result of `shape` will be `(None, (2, 3), (4, 5))`.
-        """
-        return tuple(getattr(var, "shape", None) for var in self.tuple)
-
-    @property
-    def device(self):
-        """
-        Returns the device of the first non-None tensor in the tuple, or None
-        if no tensors are found.
-
-        This property scans through the tuple and identifies the device of the
-        first tensor it encounters. If no tensors are present in the tuple, it
-        returns None.
-        """
-        for var in self.tuple:
-            if isinstance(var, torch.Tensor):
-                return var.device
-
-        return None

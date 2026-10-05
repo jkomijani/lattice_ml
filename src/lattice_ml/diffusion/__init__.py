@@ -1,6 +1,9 @@
 from . import gauge
 
 from ._diffusion_model import *
+from ._diffuser import *
+from ._lie_diffuser import *
+
 from ._lie_diffusion_process import *
 
 from ._noise_schedule import *

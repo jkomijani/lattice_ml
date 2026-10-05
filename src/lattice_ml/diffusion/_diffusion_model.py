@@ -4,20 +4,16 @@
 
 # pylint: disable=too-many-arguments, too-many-positional-arguments
 
-from typing import Callable, Dict, Sequence
+from typing import Callable, Dict, Tuple
 
 import numpy as np
 import pydantic
 import torch
 
-from lattice_ml.integrate import odeint
-
 from ._trainer import Trainer
-from ._sde_schedule import VPScheduleWithInverseTimeGamma
-from ._sde_schedule import SubVPScheduleWithInverseTimeGamma
 
 
-__all__ = ["DiffusionModel", "VPDiffuser", "SubVPDiffuser"]
+__all__ = ["DiffusionModel"]
 
 
 # =============================================================================
@@ -33,8 +29,8 @@ class DiffusionModel(torch.nn.Module):
 
     def __init__(
         self,
+        diffuser: Callable,
         network_fn: Callable,
-        diffuser: Callable | None = None,
         network_role: str = "dynamics_fn",
         use_inverse_snr_weight: bool = True,
         training_config: Dict | None = None,
@@ -43,24 +39,20 @@ class DiffusionModel(torch.nn.Module):
         Initializes the diffusion process with a network function.
 
         Args:
+            diffuser (Callable): Defines the diffusion process.
             network_fn (Callable): A neural network whose output is interpreted
                 according to `network_role`.
-            diffuser (Callable | None): Defines the diffusion process. If not
-                provided, defaults to the default instance of `VPDiffuser`.
             network_role (str): Specifies the role of `network_fn`. The default
-                value is 'synamics_fn'. This reparameterization keeps the model
+                value is 'dynamics_fn'. This reparameterization keeps the model
                 stable even when the diffuser's schedule diverges at t=1.
             use_inverse_snr_weight (bool): Specifies the weight for the loss
                 function. Default is True.
             training_config (Dict | None): Optional dict passed to
                 :class:`TrainingConfiguration`.
         """
-        if diffuser is None:
-            diffuser = VPDiffuser()
-
         super().__init__()
-        self.network_fn = network_fn
         self.diffuser = diffuser
+        self.network_fn = network_fn
         self.network_role = network_role
         self._as_score = network_role == "score_fn"
         self._as_score_plus_x = network_role == "score_plus_x_fn"
@@ -135,7 +127,7 @@ class DiffusionModel(torch.nn.Module):
         t = torch.rand((bsize,), device=x_0.device)
 
         # Run the process to time t & get the context of the diffusion
-        x_t, diffusion_context = self.diffuser(x_0, t_0=0, t=t)
+        x_t, diffusion_context = self.diffuser((0, t), x_0)
 
         # Compute loss: implicit score matching
         loss = self._matching_loss_fn(
@@ -161,362 +153,80 @@ class DiffusionModel(torch.nn.Module):
     def forward(
         self,
         x_0: torch.Tensor,
-        t_0: float = 0.,
-        t_eval: float | Sequence[float] | torch.Tensor = 1.0
+        t_span: Tuple[float, float] = (0, 1),
+        t_eval: Tuple[float] | torch.Tensor | None = None,
     ):
         """
         Simulate the forward diffusion process from an initial state.
 
-        The system is evolved sequentially from the initial time `t_0` to one
-        or multiple evaluation times `t_eval`. For each evaluation time, the
-        underlying diffusion operator `self.diffuser` is called to propagate
-        the state from the current state to the next one.
+        Starts from `x_0` at time `t_span[0]` and evolves to `t_span[1]`.
+        If `t_eval` is given, the state is instead evolved sequentially through
+        each time in `t_eval` in turn; `t_span[1]` is then not used, and should
+        be included in `t_eval` if its state is wanted too.
 
         Args:
-            x_0 (torch.Tensor): The initial state of the system at time `t_0`.
-            t_0 (float): The initial time for the simulation. Default is 0.
-            t_eval (float | Sequence[float] | torch.Tensor): Target evaluation
-               time(s). Times must be monotonically non-decreasing.
+            x_0 (torch.Tensor): The initial state of the system at `t_span[0]`.
+            t_span (Tuple[float, float]): `(t_0, t_1)`, the initial and
+                terminal times, with `t_0 <= t_1`. Default is `(0, 1)`.
+            t_eval (Tuple[float] | torch.Tensor | None): Optional evaluation
+                time(s) to evolve through sequentially instead of jumping
+                directly to `t_span[1]`. If a `torch.Tensor`, must be 1d.
+                Times are expected to be monotonically non-decreasing and not
+                outside `t_span`. However, each entry is silently skipped if it
+                breaks the expected rule.
 
         Returns:
             torch.Tensor | List[torch.Tensor]:
-            - If `t_eval` is a scalar, returns the state `x_t` at that time.
-            - If `t_eval` contains multiple times, returns a list of states
-              evaluated at each time in `t_eval`.
+            - If `t_eval` is `None`, returns a single state, at `t_span[1]`.
+            - Otherwise, returns a list of states, one for each time in t_eval.
         """
-        # Convert evaluation times to tensor
-        if not isinstance(t_eval, torch.Tensor):
-            t_eval = torch.as_tensor(t_eval, device=x_0.device)
+        t_0, t_1 = t_span
+        assert t_1 >= t_0, "`t_span` must go from small to large in `forward`."
 
-        if t_eval.ndim == 0:
-            t_eval = t_eval.unsqueeze(0)
-            squeeze_output = True
-        else:
-            squeeze_output = False
+        if t_eval is None:
+            return self.diffuser((t_0, t_1), x_0)[0]
 
-        x_eval = [None] * len(t_eval)
+        if isinstance(t_eval, torch.Tensor):
+            assert t_eval.ndim == 1, "`t_eval` must be 1d."
 
-        for ind, t in enumerate(t_eval):
-            assert t >= t_0, "`t_eval` must monotonically increase."
+        x_eval = []
+        for t in t_eval:
+            if not t_0 <= t <= t_1:
+                continue
 
             # Run the process to time t
-            x_eval[ind] = self.diffuser(x_0, t_0=t_0, t=t)[0]
+            x_eval.append(self.diffuser((t_0, t), x_0)[0])
 
             # Update the state for the next round
-            x_0, t_0 = x_eval[ind], t
+            x_0, t_0 = x_eval[-1], t
 
-        return x_eval[0] if squeeze_output else x_eval
+        return x_eval
 
     def reverse(
         self,
         x_0: torch.Tensor,
-        t_0: float = 1.0,
-        t_eval: float | Sequence[float] | torch.Tensor = 0.,
-        method: str = 'Euler',
-        step_size: float = 0.01,
+        t_span: Tuple[float, float] = (1, 0),
         **solver_kwargs
     ):
         """Integrate the reverse-time ODE to generate samples.
 
-        Starts from `x_0` at time `t_0` (typically noise) and evolves toward
-        smaller times using the learned score function.
+        Starts from `x_0` at time `t_span[0]` (typically noise) and evolves
+        to `t_span[1]` using the learned score function.
 
         Args:
-            x_0: Initial state at time `t_0`.
-            t_0: Initial time.
-            t_eval: Target time(s) (< t_0).
-            method: ODE solver ("Euler" or "RK4").
-            step_size: Solver step size.
-            **solver_kwargs: Additional arguments for `odeint`.
+            x_0 (torch.Tensor): Initial state at time `t_span[0]`.
+            t_span (Tuple[float, float]): `(t_0, t_1)`, the integration
+                interval. Unlike `forward`, `t_span` may go in either direction
+                here (the solver handles both). Default is `(1, 0)`.
+            **solver_kwargs: Additional keyword arguments forwarded to the
+                solver, e.g. `method` and `num_steps` (or `step_size`) .
 
         Returns:
-            Final state or states at `t_eval`.
+            Final state at `t_span[1]`, or states at `t_eval` if given.
         """
-        # Convert to tensor (on correct device)
-        t_eval = torch.as_tensor(t_eval, device=x_0.device)
-
-        # Determine integration interval
-        t_end = t_eval if t_eval.ndim == 0 else t_eval.min()
-        t_span = (t_0, t_end)
-
-        # Pass solver options
-        kwargs = {**solver_kwargs, "method": method, "step_size": step_size}
-
-        # Only pass t_eval if it's not scalar
-        if t_eval.ndim > 0:
-            kwargs["t_eval"] = t_eval
-
-        return odeint(self.dynamics_fn, t_span, x_0, **kwargs)
-
-
-# =============================================================================
-class VPDiffuser(torch.nn.Module):
-    r"""
-    Implements a variance preserving diffusion process as
-
-    .. math::
-        \frac{d x(t)}{dt} = - \gamma(t) x(t) + \sigma(t) \eta(t)
-        \sigma(t) = \sqrt{2 \gamma(t)}
-
-    By default, we use :math:`\gamma(t) = 1 / (1 - t)`.
-    """
-
-    def __init__(self, sde_schedule: Callable | None = None):
-        """Initializes the diffuser with an SDE schedule.
-
-        Args:
-            sde_schedule (Callable): Defines the time-dependent functions of
-            the SDE. (Default is :class:`VPScheduleWithInverseTimeGamma()`.)
-        """
-        super().__init__()
-        if sde_schedule is None:
-            sde_schedule = VPScheduleWithInverseTimeGamma()
-        self.sde_schedule = sde_schedule
-
-    def forward(self, x_0: torch.Tensor, t_0: torch.Tensor, t: torch.Tensor):
-        """
-        Simulates the forward diffusion process.
-
-        The process starts from the initial state `x_0` at time `t_0` and
-        evolves the states until the terminal time `t` by adding noise to the
-        state.
-
-        Args:
-            x_0 (torch.Tensor): The initial state of the system at time `t_0`.
-            t_0 (torch.Tensor): A 0d or 1d tensor of the initial times.
-            t (torch.Tensor): A 0d or 1d tensor of the terminal times.
-
-        Note:
-            At least one of `t_0` or `t` must be an instance of `torch.Tensor`.
-            If a 1d tensor, their lengths must match the batch size of `x_0`.
-
-        In addition to the state at time `t`, this method computes and returns
-        other useful quantities. Note that
-
-            [x_t, u_t].T = A [signal, noise].T
-
-        where
-                |signal_scale    noise_scale |
-            A = |                            |
-                |-noise_scale    signal_scale|
-
-        with `det(A) = 1`. Quantities `x_t` and `u_t` are complementary states.
-        Unlike the state `x_t`, the complementary state `u_t` mainly contains
-        the noise at small diffusion times and mainly the signal at later
-        times. Moreover, the complementary state `u_t` is proportional to the
-        conditionaly velocity of the state `x_t`.
-
-        Returns
-        -------
-        torch.Tensor, torch.Tensor, torch.Tensor
-            A tuple containing:
-            - `x_t`: the final diffused states of the system,
-            - `diffusion_context`: dictionary containing:
-                - `complementary_state`: complementary component to `x_t`,
-                - `noise`: noise samples used in the diffusion,
-                - `noise_scale`: weight of the noise in `x_t`,
-                - `signal_scale`: weight of the signal in `x_t`.
-                - `half_sigma_square`: half of square of `sigma(t)`.
-        """
-        # Expand t_eval dimensions to match x_0
-        t = t.view(-1, *[1] * (x_0.ndim - 1))
-
-        # Compute accumulated noise standard deviation and its complementary
-        noise_scale = self.sde_schedule.transition_noise_std(t_0, t)
-        signal_scale = self.sde_schedule.transition_mean_scale(t_0, t)
-
-        # Sample from normal distribution
-        noise = torch.randn_like(x_0)
-
-        # Closed-form solution
-        x_t = signal_scale * x_0 + noise_scale * noise
-        u_t = -noise_scale * x_0 + signal_scale * noise
-
-        half_sigma_square = self.sde_schedule.half_sigma_square(t)
-
-        diffusion_context = {
-            'complementary_state': u_t,
-            'noise': noise,
-            'noise_scale': noise_scale,
-            'signal_scale': signal_scale,
-            'half_sigma_square': half_sigma_square,
-        }
-        return x_t, diffusion_context
-
-    def build_score_fn(self, dynamics_fn: Callable) -> Callable:
-        """
-        Build the score function from the probability flow ODE dynamics.
-        """
-        def score_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
-            """Compute the dynamics function of the probability flow ODE."""
-            coeff = -1 / self.sde_schedule.half_sigma_square(t)
-            return coeff * dynamics_fn(t, x_t) - x_t
-
-        return score_fn
-
-    def build_ode_dynamics_fn(self, score_plus_x_fn: Callable) -> Callable:
-        r"""
-        Build the probability flow ODE dynamics of this diffusion process.
-
-        This solves the ODE corresponding to the forward SDE:
-
-        .. math::
-            d x(t) = -\frac{1}{2} \sigma(t)^2 x(t) dt + \sigma(t)\,dW_t,
-
-        by instead integrating its probability flow ODE:
-
-        .. math::
-            \frac{dx}{dt} = -\frac{1}{2} \sigma(t)^2 (x + \nabla_x \log p_t(x))
-
-        where :math:`\nabla_x \log p_t(x)` is the score function, approximated
-        by `score_plus_x_fn(t, x_t) - x_t`.
-
-        Args:
-            score_plus_x_fn (Callable): Function approximating `score + x`.
-
-        Returns:
-            Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
-                Function `f(t, x_t)` computing the ODE dynamics at `(t, x_t)`.
-        """
-        def dynamics_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
-            """Compute the dynamics function of the probability flow ODE."""
-            coeff = - self.sde_schedule.half_sigma_square(t)
-            return coeff * score_plus_x_fn(t, x_t)
-
-        return dynamics_fn
-
-
-# =============================================================================
-class SubVPDiffuser(torch.nn.Module):
-    r"""
-    Implements a sub variance preserving diffusion process as
-
-    .. math::
-        \frac{d x(t)}{dt} = - \gamma(t) x(t) + \sigma(t) \eta(t)
-        \sigma(t) = \sqrt{2 \gamma(t) (1 - e^{-\int \gamma(s) ds})}
-
-    By default, we use :math:`\gamma(t) = 1 / (1 - t)`.
-    """
-
-    _complementary_for_score_plus_x = False
-
-    def __init__(self, sde_schedule: Callable | None = None):
-        """Initializes the diffuser with an SDE schedule.
-
-        Args:
-            sde_schedule (Callable): Defines the time-dependent functions of
-            the SDE. (Default is :class:`SubVPScheduleWithInverseTimeGamma()`.)
-        """
-        super().__init__()
-        if sde_schedule is None:
-            sde_schedule = SubVPScheduleWithInverseTimeGamma()
-        self.sde_schedule = sde_schedule
-
-    def forward(self, x_0: torch.Tensor, t_0: torch.Tensor, t: torch.Tensor):
-        """
-        Simulates the forward diffusion process.
-
-        The process starts from the initial state `x_0` at time `t_0` and
-        evolves the states until the terminal time `t` by adding noise to the
-        state.
-
-        Args:
-            x_0 (torch.Tensor): The initial state of the system at time `t_0`.
-            t_0 (torch.Tensor): A 0d or 1d tensor of the initial times.
-            t (torch.Tensor): A 0d or 1d tensor of the terminal times.
-
-        Note:
-            At least one of `t_0` or `t` must be an instance of `torch.Tensor`.
-            If a 1d tensor, their lengths must match the batch size of `x_0`.
-
-        In addition to the state at time `t`, this method computes and returns
-        other useful quantities. Note that
-
-            [x_t, u_t].T = A [signal, noise].T
-
-        where
-                |signal_scale    noise_scale|
-            A = |                           |
-                |-1              1          |
-
-        with `det(A) = 1`. Quantities `x_t` and `u_t` are complementary states.
-        Unlike the state `x_t`, the complementary state `u_t` mainly contains
-        the noise at small diffusion times and mainly the signal at later
-        times. Moreover, the complementary state `u_t` is proportional to the
-        conditionaly velocity of the state `x_t`.
-
-        Returns
-        -------
-        torch.Tensor, torch.Tensor, torch.Tensor
-            A tuple containing:
-            - `x_t`: the final diffused states of the system,
-            - `diffusion_context`: dictionary containing:
-                - `complementary_state`: complementary component to `x_t`,
-                - `noise`: noise samples used in the diffusion,
-                - `noise_scale`: weight of the noise in `x_t`,
-                - `signal_scale`: weight of the signal in `x_t`.
-        """
-        # Expand t_eval dimensions to match x_0
-        t = t.view(-1, *[1] * (x_0.ndim - 1))
-
-        # Compute accumulated noise standard deviation and its complementary
-        noise_scale = self.sde_schedule.transition_noise_std(t_0, t)
-        signal_scale = self.sde_schedule.transition_mean_scale(t_0, t)
-
-        # Sample from normal distribution
-        noise = torch.randn_like(x_0)
-
-        # Closed-form solution
-        x_t = signal_scale * x_0 + noise_scale * noise
-
-        if self._complementary_for_score_plus_x:
-            u_t = -noise_scale * x_0 + (1 + noise_scale) * noise
-        else:
-            u_t = noise - x_0
-
-        half_sigma_square = self.sde_schedule.half_sigma_square(t)
-
-        diffusion_context = {
-            'complementary_state': u_t,
-            'noise': noise,
-            'noise_scale': noise_scale,
-            'signal_scale': signal_scale,
-            'half_sigma_square': half_sigma_square,
-        }
-        return x_t, diffusion_context
-
-    def build_score_fn(self, dynamics_fn: Callable) -> Callable:
-        """
-        Build the score function from the probability flow ODE dynamics.
-        """
-        def score_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
-            """Compute the dynamics function of the probability flow ODE."""
-            gamma = self.sde_schedule.gamma(t)
-            coeff = -1 / self.sde_schedule.half_sigma_square(t)
-            return coeff * (dynamics_fn(t, x_t) + gamma * x_t)
-
-        return score_fn
-
-    def build_ode_dynamics_fn(self, score_plus_x_fn: Callable) -> Callable:
-        """
-        Build the probability flow ODE dynamics of this diffusion process.
-
-        See `VPDiffuser.dynamics_fn` for the general idea; the drift here
-        additionally includes the `-x_t` term of the sub-VP schedule.
-
-        Args:
-            score_plus_x_fn (Callable): Function approximating `score + x`.
-
-        Returns:
-            Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
-                Function `f(t, x_t)` computing the ODE dynamics at `(t, x_t)`.
-        """
-        def dynamics_fn(t: torch.Tensor, x_t: torch.Tensor) -> torch.Tensor:
-            """Compute the dynamics function of the probability flow ODE."""
-            coeff = - self.sde_schedule.half_sigma_square(t)
-            return -x_t + coeff * score_plus_x_fn(t, x_t)
-
-        return dynamics_fn
+        return self.diffuser.integrate(
+            self.dynamics_fn, t_span, x_0, **solver_kwargs
+        )
 
 
 # =============================================================================

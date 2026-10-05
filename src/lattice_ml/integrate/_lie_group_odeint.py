@@ -10,6 +10,9 @@ a general-purpose ODE integrator (`odeint`) by selecting Lie-group-aware
 integration methods and passing them as custom step functions.
 
 Available integration methods include:
+- "Euler:g", standard Euler step for algebra-valued functions
+- "Euler:su(n)", equivalent to "Euler:g" (Euler's matrix_exp update is exact
+   for any Lie group, so there's no projection needed to distinguish it from).
 - "RK4:SU(n)", Standard Runge-Kutta 4 on SU(n)
 - "RK4:SU(n):aug", Augmented RK4 method
 - "RK3:su(n):auto", Third-order autonomous RK on Lie groups
@@ -43,7 +46,7 @@ def lie_odeint(
     func: Callable,
     t_span: Tuple[float, float],
     y0: torch.Tensor,
-    method: str = "RK4:SU(n)",
+    method: str = "Euler:g",
     **odeint_kwargs
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     r"""
@@ -72,7 +75,7 @@ def lie_odeint(
         Initial state on the Lie group (e.g., an SU(n) matrix).
     method : str, optional
         Name of the Lie group integration method. Determines which ODE step
-        function is passed to `odeint` via `ode_step`. Default is "RK4:SU(n)".
+        function is passed to `odeint` via `ode_step`. Default is "Euler:g".
     **odeint_kwargs : dict
         Additional keyword arguments passed to `odeint`, such as `args`,
         `step_size`, `num_steps`, or `loss_rate`.
@@ -92,7 +95,12 @@ def lie_odeint(
 def _get_lie_ode_step(method: str) -> Callable:
     """Return the appropriate Lie group ODE step function based on method."""
     match method:
-        # SU(n):
+
+        # Suitable for Lie-group-value states with algebra-valued functions
+        case 'Euler:g':
+            ode_step = lie_euler_algebra_step
+
+        # Suitable for SU(n)-group-value states with functions in tangent space
         case 'RK4:SU(n)':
             ode_step = special_unitary_rk4_step
         case 'RK4:SU(n):aug':
@@ -101,16 +109,19 @@ def _get_lie_ode_step(method: str) -> Callable:
             ode_step = lie_euler_step
         case 'Euler:SU(n):aug':
             ode_step = augmented_lie_euler_step
-        # su(n):
+
+        # Suitable for su(n)-algebra-value states with algebra-valued functions
         case 'RK3:su(n):auto':
             ode_step = lie_autonomous_rk3_algebra_step
         case 'Euler:su(n)':
             ode_step = lie_euler_algebra_step
+
         # Mainly for tests:
         case 'RK4:SU(n):grad-projected':
             ode_step = grad_projected_special_unitary_rk4_step
         case 'Euler:SU(n):grad-projected':
             ode_step = grad_projected_lie_euler_step
+
         case _:
             raise ValueError(f"Lie group method '{method}' is not supported.")
 

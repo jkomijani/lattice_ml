@@ -4,6 +4,7 @@
 Wilson gauge action and force calculations for lattice gauge theory.
 """
 
+import math
 import torch
 
 from .sealed_prelinks import compute_sealed_staples
@@ -15,7 +16,8 @@ __all__ = ['WilsonPrelinkAction']
 
 class WilsonPrelinkAction:
     r"""
-    Wilson gauge-prelink action and force calculations for lattice gauge theory.
+    Wilson gauge-prelink action and force calculations for lattice gauge
+    theory.
 
     Implements the Wilson gauge action for SU(N_c) gauge group, together with
     the corresponding gauge force used in HMC simulations.
@@ -23,12 +25,12 @@ class WilsonPrelinkAction:
     The action is defined as:
 
     .. math::
-        S = - \frac{\beta} {2 N_c} \sum_{\nu \neq \mu} Tr \text{Plaq}_{mu, nu}
-          = - \frac{\beta} {N_c} \sum_{\nu < \mu} ReTr \text{Plaq}_{mu, nu} .
+        S = \frac{\beta} {2 N_c} \sum_{\nu \neq \mu} Tr (I - P_{mu, nu})
+          = \frac{\beta} {N_c} \sum_{\nu < \mu} ReTr (I - P_{mu, nu}) .
 
     Here:
         - :math:`\beta` is the inverse coupling.
-        - :math:`\text{Plaq}_{\mu\nu}` is the plaquette in the (mu, nu) plane.
+        - :math:`P_{\mu\nu}` is the plaquette in the (mu, nu) plane.
 
     Two axis layouts are supported:
 
@@ -72,13 +74,16 @@ class WilsonPrelinkAction:
             Per-batch action values.
         """
         bsize = V.shape[0]
+        spatial_ndim = V.ndim - 4  # exclude batch, direction, matrix
+
         S = compute_sealed_staples(V, sites_before_link=self.sites_before_link)
+        num_plaq = math.prod(S.shape[1:-2]) * (spatial_ndim - 1) / 2
 
         trace = compute_normalized_trace(S).real.reshape(bsize, -1).sum(dim=1)
         # Notes:
         # 1) 1/n_c factor is already included in compute_normalized_trace
-        # 2) Each plaquette is counted four times in the trace
-        return (-self.beta / 4) * trace
+        # 2) Each plaquette is counted four times in the trace, hence /4
+        return self.beta * (num_plaq - trace / 4)
 
     def force(self, V: torch.Tensor) -> torch.Tensor:
         """
@@ -98,7 +103,7 @@ class WilsonPrelinkAction:
             Force on each prelink of the same shape of V.
         """
         # The algebra force is multiplied by prelinks to map to group space
-        return self.algebra_force(V) @ V 
+        return self.algebra_force(V) @ V
 
     def algebra_force(self, V: torch.Tensor) -> torch.Tensor:
         """
@@ -119,6 +124,12 @@ class WilsonPrelinkAction:
             same shape of V.
 
         Note:
+            The force at extended-strip sites (outside the physical lattice)
+            is zero by construction: ``compute_sealed_prelinks`` internally
+            calls ``pad_to_max_shape(pad_value=0)`` and applies
+            ``forward_difference_zero_boundary``, so those sites carry no
+            dynamics regardless of the values of V there.
+
             The magnitude of this force depends on the normalization of
             the SU(N_c) generators T^a. Lattice QCD literature often uses
             Tr(T^a T^b) = -1/2 δ^ab, but this code uses Tr(T^a T^b) = -δ^ab.

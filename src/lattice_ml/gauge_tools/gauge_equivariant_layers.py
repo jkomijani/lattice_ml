@@ -390,10 +390,10 @@ def shift_lattice(x, step, dim):
 def _test_gauge_equivaraince():
     """Shows the gauge equivariance of the transformation in GaugeLinkConv."""
 
-    from normflow.prior import SUnPrior
+    from normflow.prior import UniformSUnPrior
 
     shape = (2, 2, 2, 2, 4)  # 2^4 lattice; the last axis is the "mu" axis.
-    prior = SUnPrior(3, shape=shape)
+    prior = UniformSUnPrior(3, shape=shape)
 
     # Define `x` and transform it with instances of GaugeLinkConv
     initializer = StateInitializer()

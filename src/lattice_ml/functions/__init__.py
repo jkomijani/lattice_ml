@@ -1,4 +1,4 @@
-# Created by Javad Komijani (2024)
+# Created by Javad Komijani (2024-2026)
 
 # functions from functions **reliably** support algorithmic differentiation
 

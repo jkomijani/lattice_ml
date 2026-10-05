@@ -2,6 +2,8 @@
 
 """This module contains high-level classes for training."""
 
+# pylint: disable=too-many-arguments, too-many-positional-arguments
+
 import os
 import csv
 from typing import Dict, Callable, Protocol, Literal, Union
@@ -46,11 +48,10 @@ class Trainer:
     Device selection:
         Single- or multi-GPU execution is determined automatically based on the
         runtime environment and launch method. When the script is launched via
-        ``torchrun`` and the environment variable ``WORLD_SIZE`` is greater
-        than 1, the Trainer uses Distributed Data Parallel (DDP) for multi-GPU
-        training. When launched via standard ``python`` (or when
-        ``WORLD_SIZE == 1``), training runs in a single process on one device
-        (GPU if available, CPU otherwise).
+        `torchrun` and the environment variable `WORLD_SIZE` is greater than 1,
+        this class uses Distributed Data Parallel (DDP) for multi-GPU training.
+        When launched via standard `python` (or when `WORLD_SIZE == 1`),
+        training runs in a single process on one device.
 
     Training configuration:
         Training-related configuration (e.g. optimizer, scheduler, and
@@ -81,6 +82,7 @@ class Trainer:
         self,
         model: torch.nn.Module,
         logger: Union["LoggerLike", None] = None,
+        training_device: Literal["gpu", "cpu", "cuda", "default"] = "default",
         **training_config,
     ):
         """Initializes the trainer with the given model.
@@ -88,9 +90,10 @@ class Trainer:
         Args:
             model (torch.nn.Module): The model to be trained.
             logger (LoggerLike or None): If None, uses the default `CSVLogger`.
+            training_device (str): Selects the training device.
             **training_config: Additional kweword arguments, including:
                 optimizer_class: Callable = torch.optim.AdamW
-                scheduler_class: Callable | None = None
+                lr_scheduler_class: Callable | None = None
                 hyperparam: Dict = {}
 
         Notes:
@@ -105,16 +108,23 @@ class Trainer:
         self.model = model
         self.current_epoch = 0
         self.training_dataloader = None
-        self.device_handler = DeviceHandler()
+        self.device_handler = DeviceHandler(training_device)
         self.logger = logger or CSVLogger()
         self.optimizer = None
-        self.scheduler = None
-        self.config = TrainingConfiguration(**training_config)
+        self.lr_scheduler = None
+        self.config = self._build_config(training_config)
         self._step_metrics = {}
         self._epoch_metrics = {}
 
+    def _build_config(self, training_config):
+        return TrainingConfiguration(**training_config)
+
     def configure_optimizers(self, **kwargs):
         """Configure the optimizers and logging."""
+
+        if "training_device" in kwargs:
+            self.device_handler = DeviceHandler(kwargs["training_device"])
+            kwargs.pop("training_device")
 
         if "log_name" in kwargs:
             self.logger.reset_name(kwargs["log_name"])
@@ -126,10 +136,10 @@ class Trainer:
         hyperparam = self.config.hyperparam
         self.optimizer = self.config.optimizer_class(parameters, **hyperparam)
 
-        if self.config.scheduler_class is None:
-            self.scheduler = None
+        if self.config.lr_scheduler_class is None:
+            self.lr_scheduler = None
         else:
-            self.scheduler = self.config.scheduler_class(self.optimizer)
+            self.lr_scheduler = self.config.lr_scheduler_class(self.optimizer)
 
     def run_training(self, training_dataloader, n_epochs: int, **config):
         """Run the training workflow (distributed or non-distributed).
@@ -195,7 +205,7 @@ class Trainer:
             # the start of each epoch. Otherwise, all ranks shuffle the dataset
             # identically across epochs, reducing statistical diversity.
             sampler = self.training_dataloader.sampler
-            if isinstance(sampler, torch.utils.data.DistributedSampler):
+            if isinstance(sampler, DistributedSampler):
                 sampler.set_epoch(self.current_epoch)
             # -----------------------------
 
@@ -204,9 +214,9 @@ class Trainer:
                 self.current_epoch, {'loss': loss, **self._epoch_metrics}
             )
 
-            if self.scheduler is not None:
-                if not self.config.scheduler_per_batch:
-                    self.scheduler.step()
+            if self.lr_scheduler is not None:
+                if not self.config.lr_scheduler_per_batch:
+                    self.lr_scheduler.step()
 
         self.save_checkpoint(save_checkpoint_path)
 
@@ -290,8 +300,9 @@ class Trainer:
 
             self.optimizer.step()
 
-            if self.scheduler is not None and self.config.scheduler_per_batch:
-                self.scheduler.step()
+            if self.lr_scheduler is not None \
+                    and self.config.lr_scheduler_per_batch:
+                self.lr_scheduler.step()
 
             bsize = batch[0].shape[0]
             loss_sum += bsize * loss.detach()
@@ -348,10 +359,10 @@ class TrainingConfiguration(pydantic.BaseModel):
     """Training Configuration."""
 
     optimizer_class: Callable = torch.optim.AdamW
-    scheduler_class: Callable | None = None
+    lr_scheduler_class: Callable | None = None
     hyperparam: Dict = {}
     clip_grad_norm: bool = False
-    scheduler_per_batch: bool = False  # True/False: step every batch/epoch
+    lr_scheduler_per_batch: bool = False  # True/False: step every batch/epoch
 
     def update(self, **kwargs):
         """Update the attributes."""
@@ -384,15 +395,14 @@ class DeviceHandler:
     """
     def __init__(
         self,
-        training_device: Literal["gpu", "cpu", "auto"] = "auto"
+        training_device: Literal["gpu", "cpu", "cuda", "default"] = "default"
     ):
         """Initialize for 1 rank. If needed will be changed later."""
         self.world_size = int(os.environ.get("WORLD_SIZE", 1))
         if self.world_size == 1:
             self.rank = 0  # The global rank of the current process
             self.local_rank = 0  # The rank within the local node (GPU)
-            flag = torch.cuda.is_available() and training_device != "cpu"
-            self.training_device = "cuda" if flag else "cpu"
+            self.training_device = resolve_device(training_device)
         else:
             # to be de determined later in self.init_process_group()
             self.rank = None  # The global rank of the current process
@@ -490,6 +500,43 @@ class DeviceHandler:
         logging.info("Utilized training device: %s", self.training_device)
         if self.world_size > 1:
             torch.distributed.barrier()
+
+
+def resolve_device(preferred_device: str = "gpu") -> str:
+    """Resolve a device preference to an actual device.
+
+    Returns the default device if `preferred_device == "default"`. If
+    `preferred_device == "cuda"`, uses `cuda` if available, otherwise falls
+    back to `cpu` (mps/xpu are not considered). Otherwise, checks GPU
+    accelerators in the order `cuda` > `mps` > `xpu`, falling back to `cpu`
+    if none are available (or if `preferred_device is "cpu"`).
+
+    Args:
+        preferred_device (str): `"cpu"` forces CPU; `"gpu"` tries
+            accelerators in the above order; `"cuda"` uses cuda if available
+            and otherwise falls back to cpu; `"default"` returns the default.
+
+    Returns:
+        str: One of `"cuda"`, `"mps"`, `"xpu"`, `"cpu"`, or the dafault device.
+    """
+    if preferred_device not in ("cpu", "gpu", "cuda", "default"):
+        raise ValueError(
+            f"preferred_device must be 'cpu', 'gpu', 'cuda', or 'default'; "
+            f"got {preferred_device!r}."
+        )
+    if preferred_device == "default":
+        return torch.get_default_device()
+    if preferred_device == "cuda":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+
+    use_accelerator = preferred_device != "cpu"
+    if use_accelerator and torch.cuda.is_available():
+        return "cuda"
+    if use_accelerator and torch.backends.mps.is_available():
+        return "mps"
+    if use_accelerator and hasattr(torch, "xpu") and torch.xpu.is_available():
+        return "xpu"
+    return "cpu"
 
 
 # =============================================================================
